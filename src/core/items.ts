@@ -1,4 +1,11 @@
 import { INF_PENALTY } from "./badness.js";
+import {
+  CJK_CHAR,
+  CJK_GLUE_SHRINK,
+  CJK_GLUE_STRETCH,
+  cjkBreakAllowed,
+  graphemes,
+} from "./cjk.js";
 import { protrusionCodes } from "./protrusion.js";
 import {
   type Box,
@@ -207,6 +214,22 @@ export function buildItems(
     return { pieces: [chunk], fromHyphenator: false };
   };
 
+  /** Emit the word-space glue a previous whitespace run left pending. */
+  const flushPendingSpace = (): void => {
+    if (pendingSpaceRun >= 0 && hasBox) {
+      const space = runs[pendingSpaceRun]!.space;
+      items.push({
+        type: ItemType.Glue,
+        width: space.width,
+        stretch: space.stretch,
+        stretchFil: 0,
+        shrink: space.shrink,
+        run: pendingSpaceRun,
+      } satisfies Glue);
+    }
+    pendingSpaceRun = -1;
+  };
+
   const pushWord = (token: string, runIndex: number): void => {
     const run = runs[runIndex]!;
 
@@ -244,18 +267,7 @@ export function buildItems(
     // would get a doubled glue.
     if (plans.length === 0) return;
 
-    if (pendingSpaceRun >= 0 && hasBox) {
-      const space = runs[pendingSpaceRun]!.space;
-      items.push({
-        type: ItemType.Glue,
-        width: space.width,
-        stretch: space.stretch,
-        stretchFil: 0,
-        shrink: space.shrink,
-        run: pendingSpaceRun,
-      } satisfies Glue);
-    }
-    pendingSpaceRun = -1;
+    flushPendingSpace();
 
     // Fragment widths are measured incrementally over token prefixes so they
     // sum exactly to the kerned whole-token width: adding break opportunities
@@ -283,12 +295,102 @@ export function buildItems(
     }
   };
 
+  /**
+   * A token containing CJK text (no whitespace, like every token here):
+   * each CJK grapheme cluster becomes its own box, and every legal
+   * inter-cluster boundary gets penalty(0) + zero-width stretchable glue —
+   * a break opportunity WITHOUT a space, plus the flex Japanese
+   * justification distributes between characters. Kinsoku-prohibited
+   * boundaries (a line may not start with 。、」ー small kana… nor end
+   * with 「（…) keep the glue but carry an infinite penalty; the glue is
+   * never breakable on its own because it always follows a penalty (the
+   * breaker's glue rule requires a preceding BOX). Embedded non-CJK
+   * stretches (Latin words, digits) stay single boxes: hyphenation never
+   * runs inside a mixed token, and NO break opportunity is invented inside
+   * them — only at their CJK boundaries, where UAX #14 allows one.
+   */
+  const pushCJKToken = (token: string, runIndex: number): void => {
+    const run = runs[runIndex]!;
+    // Soft hyphens are meaningless between ideographs; strip them (the
+    // Latin path likewise drops them from the emitted text).
+    const clean = token.split(SOFT_HYPHEN).join("");
+    if (clean.length === 0) return;
+
+    // Each CJK cluster is its own group; consecutive non-CJK clusters
+    // merge into one opaque group.
+    interface Group {
+      cjk: boolean;
+      text: string;
+    }
+    const groups: Group[] = [];
+    for (const cluster of graphemes(clean)) {
+      const cjk = CJK_CHAR.test(cluster);
+      const last = groups[groups.length - 1];
+      if (!cjk && last !== undefined && !last.cjk) last.text += cluster;
+      else groups.push({ cjk, text: cluster });
+    }
+
+    flushPendingSpace();
+
+    // Each group is measured in ISOLATION, deliberately unlike pushWord's
+    // prefix-incremental scheme: engines disagree on kana kerning between
+    // canvas and DOM (Chromium's DOM kerns kana pairs its canvas never
+    // measures; WebKit is the inverse), so cross-cluster kerning cannot be
+    // modeled consistently. Instead the model assumes NO kerning between
+    // clusters — the traditional solid setting (bete-gumi) — and the
+    // renderer disables it in the DOM to match (font-kerning: none on
+    // CJK-bearing segments; see write.ts).
+    let prev: { group: Group; width: number } | null = null;
+    for (const group of groups) {
+      const width = measure.width(group.text, run);
+      if (prev !== null) {
+        const before = prev.group.cjk
+          ? prev.group.text
+          : (graphemes(prev.group.text).pop() ?? "");
+        const after = group.cjk ? group.text : (graphemes(group.text)[0] ?? "");
+        pushPenalty({
+          penalty: cjkBreakAllowed(before, after) ? 0 : INF_PENALTY,
+          width: 0,
+          flagged: false,
+          hyphen: false,
+          rp: 0, // breakRp walks back to the box, whose own rp applies
+          run: runIndex,
+          cjk: true,
+        });
+        // Glue basis ≈ the em: the neighboring CJK cluster's advance (mean
+        // of the two when both are CJK — punctuation and halfwidth kana
+        // then flex less, as they should). Never the non-CJK side: a whole
+        // Latin word's width would wildly over-flex its two boundaries.
+        const basis =
+          prev.group.cjk && group.cjk
+            ? (prev.width + width) / 2
+            : prev.group.cjk
+              ? prev.width
+              : width;
+        items.push({
+          type: ItemType.Glue,
+          width: 0,
+          stretch: CJK_GLUE_STRETCH * basis,
+          stretchFil: 0,
+          shrink: CJK_GLUE_SHRINK * basis,
+          run: runIndex,
+          cjk: true,
+        } satisfies Glue);
+      }
+      items.push(makeBox(group.text, runIndex, width));
+      hasBox = true;
+      prev = { group, width };
+    }
+  };
+
   for (const { text, run } of texts) {
     const parts = text.split(BREAKABLE_SPLIT);
     for (const part of parts) {
       if (part.length === 0) continue;
       if (BREAKABLE_SPACE.test(part[0]!)) {
         if (hasBox) pendingSpaceRun = run;
+      } else if (CJK_CHAR.test(part)) {
+        pushCJKToken(part, run);
       } else {
         pushWord(part, run);
       }
@@ -298,7 +400,10 @@ export function buildItems(
   if (opts.lastLineMinWords >= 2) {
     let gluesFromEnd = 0;
     for (let i = items.length - 1; i >= 0 && gluesFromEnd < opts.lastLineMinWords - 1; i--) {
-      if (items[i]!.type !== ItemType.Glue) continue;
+      // Only WORD gaps count: CJK inter-character glue is not a word
+      // boundary, and a penalty spliced between a kinsoku penalty and its
+      // glue would legalize a prohibited break (and render a phantom space).
+      if (items[i]!.type !== ItemType.Glue || (items[i] as Glue).cjk === true) continue;
       gluesFromEnd++;
       const run = (items[i] as Glue).run;
       items.splice(i, 0, {

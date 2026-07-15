@@ -1,4 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
+import { kinsokuNotAtLineEnd, kinsokuNotAtLineStart } from "../src/core/cjk.js";
 
 declare global {
   interface Window {
@@ -799,6 +800,83 @@ test("text-indent paragraphs: indented first line, all lines flush", async ({ pa
         .toBeLessThan(1.5);
     }
   }
+});
+
+test("Japanese: multiple flush lines, bare <wbr> joints, space-free copies", async ({ page }) => {
+  const r = await page.evaluate(async () => {
+    const p = document.getElementById("pja")!;
+    const original = p.textContent!;
+    const ctl = window.__justif.justify(p, { protrusion: false, expansion: false });
+    await ctl.ready;
+    const enhanced = p.hasAttribute("data-justif");
+    const g = window.__justifLines(p);
+    // Select the whole paragraph across every line break, as a copy would.
+    const range = document.createRange();
+    range.selectNodeContents(p);
+    const sel = getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(range);
+    const copied = sel.toString();
+    sel.removeAllRanges();
+    return {
+      original,
+      enhanced,
+      copied,
+      text: p.textContent!,
+      wbrs: p.querySelectorAll("wbr").length,
+      contentRight: g.contentRight,
+      lines: g.lines.map((l) => ({ right: l.right, text: l.texts.join("") })),
+    };
+  });
+  expect(r.enhanced).toBe(true);
+  expect(r.lines.length).toBeGreaterThan(3);
+  // Justified: every non-last line ends flush at the measure. Tolerance is
+  // 1px (vs 0.5 for Latin): the inter-character flex renders as
+  // letter-spacing, whose trailing increment engines apply differently.
+  for (const [i, line] of r.lines.entries()) {
+    if (i === r.lines.length - 1) continue;
+    expect
+      .soft(Math.abs(line.right - r.contentRight), `line ${i}: "${line.text.slice(0, 14)}"`)
+      .toBeLessThan(1);
+  }
+  // Line joints are bare <wbr>s: the DOM text stays byte-identical to the
+  // source — no space, NBSP, or hyphen injected between characters.
+  expect(r.wbrs).toBeGreaterThan(0);
+  expect(r.text).toBe(r.original);
+  // Copies too: selection across the line breaks carries no whitespace.
+  expect(r.copied).not.toMatch(/[ \u00A0\u2060\u2010-]/);
+  expect(r.copied.replace(/\s+/g, "")).toBe(r.original);
+});
+
+test("Japanese: kinsoku characters never start or end a rendered line", async ({ page }) => {
+  const lines = await page.evaluate(async () => {
+    const p = document.getElementById("pja")!;
+    const ctl = window.__justif.justify(p, { protrusion: false, expansion: false });
+    await ctl.ready;
+    return window.__justifLines(p).lines.map((l) => l.texts.join(""));
+  });
+  expect(lines.length).toBeGreaterThan(3);
+  const notStart = new Set(kinsokuNotAtLineStart);
+  const notEnd = new Set(kinsokuNotAtLineEnd);
+  for (const line of lines) {
+    const chars = [...line];
+    expect(notStart.has(chars[0]!), `line starts with "${chars[0]}": "${line.slice(0, 14)}"`).toBe(false);
+    expect(notEnd.has(chars[chars.length - 1]!), `line ends with "${chars[chars.length - 1]}"`).toBe(false);
+  }
+});
+
+test("Japanese: destroy() restores the original DOM byte-identically", async ({ page }) => {
+  const r = await page.evaluate(async () => {
+    const host = document.getElementById("ja-host")!;
+    const before = host.innerHTML;
+    const ctl = window.__justif.justify(document.getElementById("pja")!, {});
+    await ctl.ready;
+    const enhanced = host.innerHTML;
+    ctl.destroy();
+    return { before, enhanced, after: host.innerHTML };
+  });
+  expect(r.enhanced).not.toBe(r.before);
+  expect(r.after).toBe(r.before);
 });
 
 test("resize keeps visible text scroll-anchored (no bounce)", async ({ page }) => {

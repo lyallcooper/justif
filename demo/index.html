@@ -612,6 +612,7 @@
         <option value="tech">Technical post</option>
         <option value="specimen">Type specimen</option>
         <option value="rtl">Hebrew &amp; Arabic (RTL)</option>
+        <option value="soseki">吾輩は猫である (Japanese)</option>
         <option value="alice">Alice in Wonderland (long)</option>
       </select>
     </label>
@@ -822,6 +823,16 @@ justify(document.querySelectorAll("article p"), {
       العادة وقواعد السياسة وطبيعة العمران والأحوال في الاجتماع الإنساني،
       ولا قيس الغائب منها بالشاهد والحاضر بالذاهب، فربما لم يؤمن فيها من
       العثور ومزلة القدم والحيد عن جادة الصدق.</p>`,
+    // Natsume Sōseki, "I Am a Cat" (1905), public domain. Japanese prose
+    // has no inter-word spaces: justif breaks between characters (kinsoku
+    // permitting) and justifies by distributing space BETWEEN them, so the
+    // browser column's greedy wrap and justif differ in break choice, not
+    // gap width. Each <p> is a single source line — indentation newlines
+    // inside would become spurious breakable spaces mid-sentence.
+    soseki: `
+      <p lang="ja">吾輩は猫である。名前はまだ無い。どこで生れたかとんと見当がつかぬ。何でも薄暗いじめじめした所でニャーニャー泣いていた事だけは記憶している。吾輩はここで始めて人間というものを見た。しかもあとで聞くとそれは書生という人間中で一番獰悪な種族であったそうだ。この書生というのは時々我々を捕えて煮て食うという話である。しかしその当時は何という考もなかったから別段恐しいとも思わなかった。ただ彼の掌に載せられてスーと持ち上げられた時何だかフワフワした感じがあったばかりである。</p>
+      <p lang="ja">掌の上で少し落ちついて書生の顔を見たのがいわゆる人間というものの見始であろう。この時妙なものだと思った感じが今でも残っている。第一毛をもって装飾されべきはずの顔がつるつるしてまるで薬缶だ。その後猫にもだいぶ逢ったがこんな片輪には一度も出会わした事がない。のみならず顔の真中があまりに突起している。そうしてその穴の中から時々ぷうぷうと煙を吹く。どうも咽せぽくて実に弱った。これが人間の飲む<em>煙草</em>というものである事はようやくこの頃知った。</p>
+      <p lang="ja">この書生の掌の裏でしばらくはよい心持に坐っておったが、しばらくすると非常な速力で運転し始めた。書生が動くのか自分だけが動くのか分らないが無暗に眼が廻る。胸が悪くなる。到底助からないと思っていると、どさりと音がして眼から火が出た。それまでは記憶しているがあとは何の事やらいくら考え出そうとしても分らない。</p>`,
 
     alice: `
       <p><span class="smcp">Chapter I.</span> Down the Rabbit-Hole</p>
@@ -2252,10 +2263,16 @@ justify(document.querySelectorAll("article p"), {
     const ratios = paragraphs.flatMap((para) =>
       para.lines.slice(0, -1).flatMap((line) => line.gaps.map((g) => g.width / g.natural)),
     );
-    const mean = ratios.reduce((a, b) => a + b, 0) / (ratios.length || 1);
-    const variance = ratios.reduce((a, b) => a + (b - mean) ** 2, 0) / (ratios.length || 1);
-    const deviation =
-      ratios.reduce((a, b) => a + Math.abs(b - 1), 0) / (ratios.length || 1);
+    // Spaceless samples (Japanese: justification lives BETWEEN characters,
+    // not at word gaps) yield no ratios; report neutral spacing stats.
+    const noGaps = ratios.length === 0;
+    const mean = noGaps ? 1 : ratios.reduce((a, b) => a + b, 0) / ratios.length;
+    const variance = noGaps
+      ? 0
+      : ratios.reduce((a, b) => a + (b - mean) ** 2, 0) / ratios.length;
+    const deviation = noGaps
+      ? 0
+      : ratios.reduce((a, b) => a + Math.abs(b - 1), 0) / ratios.length;
 
     const allGaps = paragraphs.flatMap((para) => para.lines.flatMap((line) => line.gaps));
 
@@ -2307,7 +2324,7 @@ justify(document.querySelectorAll("article p"), {
         mean,
         sd: Math.sqrt(variance),
         deviation,
-        max: Math.max(...ratios),
+        max: noGaps ? 1 : Math.max(...ratios),
       },
       riverSpaces: allGaps.filter((g) => g.through >= 3).length,
       longestRiver: allGaps.reduce((a, g) => Math.max(a, g.through), 0),

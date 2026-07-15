@@ -134,6 +134,9 @@ describe("breakParagraph vs brute-force oracle", () => {
     "In olden times when wishing still helped one, there lived a king",
     "whose daughters were all beautiful; and the youngest was so beautiful that",
     "Close by the king's castle lay a great dark forest, and under an old lime-tree",
+    // CJK item streams (per-cluster boxes, penalty(0) + inter-character
+    // glue, kinsoku INF penalties) must satisfy the same optimality.
+    "吾輩は猫である。名前はまだ無い。どこで生れたかとんと見当がつかぬ。何でも薄暗い所で泣いていた。",
   ];
   const widths = [140, 170, 210, 260, 320];
 
@@ -165,6 +168,8 @@ describe("breakParagraph vs brute-force oracle", () => {
   it("the oracle itself finds solutions (silent skips above are not vacuous)", () => {
     const para = build(texts[0]!, { hyphenate: fakeHyphenator });
     expect(bruteForce(para, 260, pass2Opts)).not.toBeNull();
+    // The CJK stream too: inter-character glue makes most widths feasible.
+    expect(bruteForce(build(texts[3]!), 210, pass2Opts)).not.toBeNull();
   });
 
   it("supports varying line widths (first-line indent)", () => {

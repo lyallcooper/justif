@@ -47,6 +47,9 @@ const RESPONSE_EPSILON = 0.05;
 // enough (~0.1%) to clear RESPONSE_EPSILON and keep useless expansion on.
 const HEBREW_SAMPLE = "אבגדהוזחטיכלמנסעפצקרשת";
 const ARABIC_SAMPLE = "الحمدللهربالعالمينوبهنستعين";
+// Han + kana + Hangul: CJK typically renders via a system fallback when
+// the author's primary is a Latin webfont, with the same mismatch.
+const CJK_SAMPLE = "永国酬鷹醸あかすなのはたまアカナタマ가나다라마바사";
 
 function calibrationTextFor(runText: string | undefined): { text: string; tag: string } {
   let text = "";
@@ -59,6 +62,10 @@ function calibrationTextFor(runText: string | undefined): { text: string; tag: s
     if (/\p{Script=Arabic}/u.test(runText)) {
       text += ARABIC_SAMPLE;
       tag += "ar";
+    }
+    if (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(runText)) {
+      text += CJK_SAMPLE;
+      tag += "cjk";
     }
   }
   return text === "" ? { text: CALIBRATION_STRING, tag: "" } : { text, tag };

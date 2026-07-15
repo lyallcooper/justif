@@ -54,9 +54,15 @@ const REJECT_TAGS = new Set([
   "SVG",
 ]);
 
-/** Scripts that need shaping-aware breaking or CJK segmentation: out of scope v1. */
-const UNSUPPORTED_SCRIPTS =
-  /[\u0E00-\u0EFF\u1100-\u11FF\u2E80-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF\uFF00-\uFFEF]/;
+/**
+ * Scripts still out of scope: Southeast Asian scripts whose line breaks
+ * need dictionary word segmentation (Thai, Lao). CJK (Han, kana, Hangul,
+ * fullwidth forms) is supported — buildItems segments it into per-cluster
+ * boxes with kinsoku-aware inter-character break opportunities — and
+ * pure-RTL Hebrew/Arabic paragraphs are governed by the direction rules
+ * below.
+ */
+const UNSUPPORTED_SCRIPTS = /[\u0E00-\u0EFF]/;
 
 /**
  * Explicit bidi controls (ALM, LRM/RLM, embeddings, overrides, isolates):

@@ -3,6 +3,7 @@
  * the DOM writer's segment model (write.ts does the actual DOM emission).
  * No lifecycle, no state — index.ts stays plumbing.
  */
+import { CJK_CHAR } from "../core/cjk.js";
 import {
   composeProtrusion,
   type HangingPunctuationMode,
@@ -205,6 +206,9 @@ export function buildRenderSegments(
     let run = -1;
     let trackY = 0;
     let trackZ = 0;
+    let cjkY = 0;
+    let cjkZ = 0;
+    let hasCJK = false;
     let boxChars = 0;
     const flush = (): void => {
       if (run < 0 || text.length === 0) return;
@@ -213,8 +217,19 @@ export function buildRenderSegments(
       // over the box characters. Spaces receive the same increment by CSS,
       // so the word-spacing below subtracts it — gaps stay exactly the
       // width the glue algebra assigned.
+      // CJK inter-character glue renders the same way: it has no character
+      // in the DOM (nothing for word-spacing to widen), so its assigned
+      // flex — glueRatio × the segment's CJK glue pool — joins the
+      // letter-spacing spread. Totals are exact (letter-spacing applies
+      // per box character, and the spread is computed from that count);
+      // only the intra-segment distribution differs from the glue model by
+      // sub-pixel amounts, which the measured wrap guarantee absorbs.
       const trackFlex = line.trackRatio >= 0 ? trackY : trackZ;
-      const ls = boxChars > 0 && trackFlex > 0 ? (line.trackRatio * trackFlex) / boxChars : 0;
+      const cjkFlex = line.glueRatio >= 0 ? cjkY : cjkZ;
+      const extraPx =
+        (trackFlex > 0 ? line.trackRatio * trackFlex : 0) +
+        (cjkFlex > 0 ? line.glueRatio * cjkFlex : 0);
+      const ls = boxChars > 0 && extraPx !== 0 ? extraPx / boxChars : 0;
       // Edge spaces are excluded from the corrective width measurement
       // (they collapse when a retreated segment sits at a line start, making
       // rect widths position-dependent); their widths are modeled exactly:
@@ -242,6 +257,7 @@ export function buildRenderSegments(
         marginStartPx: first ? -line.leftHang : 0,
         marginEndPx: 0, // the line's last segment is patched after the loop
         edgeTrim: { lead, trail, modelPx: (lead + trail) * spacePx },
+        cjk: hasCJK,
         joint,
       });
       joint = "none";
@@ -250,6 +266,9 @@ export function buildRenderSegments(
       run = -1;
       trackY = 0;
       trackZ = 0;
+      cjkY = 0;
+      cjkZ = 0;
+      hasCJK = false;
       boxChars = 0;
     };
 
@@ -273,7 +292,17 @@ export function buildRenderSegments(
         trackY += it.trackStretch;
         trackZ += it.trackShrink;
         boxChars += Array.from(it.text).length;
+        if (!hasCJK && CJK_CHAR.test(it.text)) hasCJK = true;
       } else if (it.type === ItemType.Glue) {
+        if (it.cjk === true) {
+          // CJK inter-character glue: no source character to emit — its
+          // flex is pooled and rendered as this segment's letter-spacing
+          // (see flush). It always sits between two boxes of one run, so
+          // no run-boundary handling is needed.
+          cjkY += it.stretch;
+          cjkZ += it.shrink;
+          continue;
+        }
         // Mid-line spaces stay INSIDE a nowrap segment, in the segment of
         // THEIR OWN run (a prose space after a link must not render inside
         // the link). A space at a segment edge becomes U+00A0: NBSP is
@@ -314,12 +343,15 @@ export function buildRenderSegments(
       brk.width === 0 &&
       !brk.flagged
     ) {
-      // Unflagged zero-width penalties sit BEFORE a glue (lastLineMinWords
-      // inserts them): the break consumes that space, which must still
-      // appear in the DOM text — a <wbr> here would silently delete it
-      // from copies and find-in-page. Explicit-hyphen breaks are flagged
-      // and keep the <wbr>.
-      pendingJoint = "space";
+      // Unflagged zero-width penalties come in two kinds, told apart by
+      // the `cjk` discriminator. lastLineMinWords penalties sit BEFORE a
+      // glue at a real space: the break consumes that space, which must
+      // still appear in the DOM text — a <wbr> there would silently delete
+      // it from copies and find-in-page. CJK inter-character penalties
+      // have NO source space: a space joint would inject one into copies
+      // (and render a visible gap), so they get the bare <wbr>.
+      // Explicit-hyphen breaks are flagged and keep the <wbr> below.
+      pendingJoint = brk.cjk === true ? "wbr" : "space";
     } else pendingJoint = "wbr"; // zero-width flagged penalty (explicit hyphen)
   }
 

@@ -8,6 +8,13 @@ export {
   INF_BAD,
   INF_PENALTY,
 } from "./core/badness.js";
+export {
+  CJK_CHAR,
+  cjkBreakAllowed,
+  graphemes,
+  kinsokuNotAtLineEnd,
+  kinsokuNotAtLineStart,
+} from "./core/cjk.js";
 export { breakRp, buildItems, withSums } from "./core/items.js";
 export {
   composeProtrusion,

@@ -64,8 +64,8 @@ describe("textSupported (RTL scope decisions)", () => {
     }
   });
 
-  it("still bails on CJK whatever the direction", () => {
-    expect(textSupported("漢字テキスト", "ltr")).toBe(false);
+  it("accepts CJK in LTR (supported) but bails on CJK inside RTL", () => {
+    expect(textSupported("漢字テキスト", "ltr")).toBe(true);
     expect(textSupported("שלום 漢字", "rtl")).toBe(false);
   });
 });

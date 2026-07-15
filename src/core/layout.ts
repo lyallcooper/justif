@@ -223,7 +223,8 @@ export function lineText(para: ParagraphItems, line: Line): string {
   for (let i = line.start; i < line.end; i++) {
     const it = para.items[i]!;
     if (it.type === ItemType.Box) out += it.text;
-    else if (it.type === ItemType.Glue) out += " ";
+    // CJK inter-character glue has no source space — emit nothing for it.
+    else if (it.type === ItemType.Glue && it.cjk !== true) out += " ";
   }
   if (line.hyphenated) out += "‐";
   return out;

@@ -106,6 +106,15 @@ export interface Glue {
   stretchFil: number;
   shrink: number;
   run: number;
+  /**
+   * CJK inter-character glue: no source space exists here. Renderers must
+   * not emit a space character for it — its flex renders as inter-character
+   * spacing (letter-spacing) instead of word-spacing — and lastLineMinWords
+   * must not count it as a word gap. Never breakable on its own (buildItems
+   * always puts a penalty in front of it, so the glue-after-box rule never
+   * fires).
+   */
+  cjk?: boolean;
 }
 
 export interface Penalty {
@@ -121,6 +130,14 @@ export interface Penalty {
   /** Protrusion credit of the materialized hyphen if the line ends here. */
   rp: number;
   run: number;
+  /**
+   * CJK inter-character break: the break site has NO source space, so a
+   * line broken here must render a bare <wbr> joint, never a space. This is
+   * what distinguishes it from the other unflagged zero-width penalties
+   * (lastLineMinWords), which sit at real spaces and must keep rendering
+   * the space they consumed.
+   */
+  cjk?: boolean;
 }
 
 export type Item = Box | Glue | Penalty;

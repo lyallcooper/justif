@@ -195,6 +195,15 @@ export const hangingPunctuation: ProtrusionTable = {
   "(": { l: 1000 },
   "[": { l: 1000 },
   "{": { l: 1000 },
+  // Burasage (ぶら下げ組み): the ideographic and fullwidth stops hang fully
+  // into the right margin — the classical Japanese newspaper/book setting.
+  // Their glyphs sit in the left half of a fullwidth advance, so the ink
+  // lands just past the margin while the em-box hangs; kinsoku already
+  // guarantees they can end a line but never start one.
+  "、": { r: 1000 },
+  "。": { r: 1000 },
+  "，": { r: 1000 },
+  "．": { r: 1000 },
 };
 
 export type HangingPunctuationMode = false | "first-line" | "all-lines";
