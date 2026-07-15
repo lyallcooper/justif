@@ -535,7 +535,7 @@
   .article a { color: inherit; text-decoration: underline; }
   .article code {
     --code-chip: color-mix(in srgb, var(--ink) 4.5%, var(--paper));
-    font-family: "Courier Prime", ui-monospace, monospace;
+    font-family: "Courier Prime", ui-monospace, Menlo, Consolas, "DejaVu Sans Mono", monospace;
     /* Courier Prime's small typewriter body sits at 95% so inline code
        matches the serif's optical size and weight. */
     font-size: 0.95em;
@@ -795,16 +795,20 @@
           <option value="'Amstelvar'">Amstelvar</option>
           <option value="'Latin Modern Roman'">Latin Modern (TeX)</option>
           <option value="Georgia">Georgia</option>
-          <option value="ui-serif">System serif</option>
+          <!-- ui-serif/ui-monospace are WebKit-only; the stacks behind them
+               pick the nearest system face per platform (Chrome/Firefox
+               would otherwise skip the keyword and land on the article's
+               Georgia fallback — a serif, even for "System mono"). -->
+          <option value="ui-serif, Charter, 'Bitstream Charter', 'Sitka Text', Cambria, serif">System serif</option>
         </optgroup>
         <optgroup label="Sans">
           <option value="'Roboto Flex'">Roboto Flex</option>
-          <option value="system-ui">System sans</option>
+          <option value="system-ui, sans-serif">System sans</option>
         </optgroup>
         <optgroup label="Monospace">
           <option value="'Courier Prime'">Courier Prime</option>
           <option value="'IBM Plex Mono'">IBM Plex Mono</option>
-          <option value="ui-monospace">System mono</option>
+          <option value="ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace">System mono</option>
         </optgroup>
       </select>
     </label>
@@ -2236,6 +2240,14 @@ justify(document.querySelectorAll("article p"), {
   try {
     const saved = JSON.parse(localStorage.getItem(PARAM_STORE) ?? "null");
     if (saved !== null) {
+      // Saves from before the system options carried full cross-browser
+      // stacks stored the bare ui-*/system-ui keyword; match it to the
+      // option that now starts with it.
+      if (/^(ui-serif|system-ui|ui-monospace)$/.test(saved.font ?? "")) {
+        const opt = [...document.getElementById("font").options]
+          .find((o) => o.value.startsWith(saved.font));
+        if (opt !== undefined) saved.font = opt.value;
+      }
       for (const id of PARAM_IDS) {
         const el = document.getElementById(id);
         if (el === null || !(id in saved)) continue;
@@ -2277,14 +2289,15 @@ justify(document.querySelectorAll("article p"), {
     "'Vollkorn'": '"Vollkorn SC"',
     "'Latin Modern Roman'": '"Latin Modern Roman Caps"',
   };
-  const SYSTEM_FAMILIES = new Set(["Georgia", "ui-serif", "system-ui", "ui-monospace"]);
   const fontLoads = new Map();
 
   // A font is fetched before it can replace the current article face. This
   // keeps both columns on one set of metrics and prevents a second layout
-  // when a local font finishes decoding.
+  // when a local font finishes decoding. Self-hosted webfont options all
+  // start with a quoted family; system options (Georgia and the
+  // ui-*/system-ui stacks) are unquoted and need no fetch.
   function loadFontFamily(family) {
-    if (SYSTEM_FAMILIES.has(family)) return Promise.resolve();
+    if (!family.startsWith("'")) return Promise.resolve();
     let pending = fontLoads.get(family);
     if (pending !== undefined) return pending;
 
@@ -2831,9 +2844,12 @@ justify(document.querySelectorAll("article p"), {
     applyMeasure();
     document.body.style.setProperty("--demo-family", family);
     // Monospace main fonts: inline code has nothing to contrast with — inherit.
-    const MONO_BODY = new Set(["'Courier Prime'", "'IBM Plex Mono'", "ui-monospace"]);
+    const MONO_BODY = new Set(["'Courier Prime'", "'IBM Plex Mono'"]);
     syncExpansionAvailability();
-    document.body.classList.toggle("mono-body", MONO_BODY.has(family));
+    document.body.classList.toggle(
+      "mono-body",
+      MONO_BODY.has(family) || family.startsWith("ui-monospace"),
+    );
     // Companion small-caps families: these designs ship true small caps as
     // a separate font rather than an smcp feature.
     const scFamily = SC_FAMILIES[family];
