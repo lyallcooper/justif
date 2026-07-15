@@ -82,6 +82,11 @@ To limit the automatic scan, add a selector to the script:
 ></script>
 ```
 
+Add `data-justif-debug` to the script tag to log one console line for each
+paragraph justif declines to manage, with the failing check — useful when a
+paragraph unexpectedly keeps native justification. (With the JavaScript API,
+pass `onSkip` instead.)
+
 ### Use the JavaScript API
 
 Install the package:
@@ -172,9 +177,16 @@ These are the options most applications need:
 | `observeResize` | `true` | Reflows managed paragraphs when their width changes |
 | `cleanClipboard` | `true` | Removes layout-only characters from copied text while preserving author nonbreaking spaces |
 | `onRelayout` | none | Runs after a paragraph is patched, including after resize and refresh |
+| `onSkip` | none | Runs once per paragraph justif declines, with a short reason — the diagnosis channel for "why is this paragraph still native?" |
 
-The exported `JustifyOptions` type also includes lower-level line-breaking
-penalties and tolerances for applications that need TeX-style tuning.
+For TeX-style tuning, `JustifyOptions` also exposes the line-breaking
+penalties and tolerances, with TeX's defaults: `tolerance` (200),
+`pretolerance` (100; below it the hyphen-free first pass is skipped),
+`linePenalty` (10), `hyphenPenalty` (50), `exHyphenPenalty` (50, explicit
+"-" breaks), `adjDemerits` (10000, adjacent-line looseness contrast),
+`doubleHyphenDemerits` (10000), `finalHyphenDemerits` (5000), and
+`emergencyStretch` (`"auto"` ≈ 3 em, the pass-three rescue stretch; a px
+number pins it, `0` disables the third pass).
 
 ## Supported content and fallback behavior
 
@@ -189,7 +201,9 @@ inline elements (styled `code`, `kbd`, badges) are modeled as layout width,
 lines stay flush, and the word spaces beside them never shrink below their
 natural width. An element with `white-space: nowrap` never breaks inside.
 Padding follows `box-decoration-break: slice` (the initial value) when an
-element wraps.
+element wraps. Horizontal **margins** on inline elements remain unmodeled —
+they add layout width outside the border box — and bail the paragraph; use
+padding for chip insets.
 
 A paragraph stays on native browser layout when `justif` cannot reproduce it
 reliably. Important examples include:
