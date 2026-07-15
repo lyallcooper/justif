@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.2.0 (2026-07-15)
+
+- Inline chips and pills are now first-class: horizontal padding and
+  borders on inline elements (styled `code`, `kbd`, badges) are modeled
+  as layout width instead of bailing the paragraph to native. Padding
+  follows `box-decoration-break: slice` (the initial value) when an
+  element wraps; `clone`, inline margins, and preserved-whitespace
+  `white-space` values still bail.
+- Word spaces at font-family boundaries stretch but no longer shrink
+  below their natural width by default — chips live at those boundaries,
+  and native CSS justification never shrinks a space. New
+  `spacing.boundaryShrink` option (default `0`; `1` restores TeX
+  semantics).
+- `white-space: nowrap` on inline elements is honored: no break
+  opportunity inside (spaces keep their justification flexibility).
+- Author `font-variant-*` values and `font-feature-settings` no longer
+  bail paragraphs to native: runs canvas cannot shape are measured with
+  batched DOM probes, so small caps, oldstyle/tabular numerals, and
+  stylistic sets justify like everything else.
+- An unbreakable word wider than the measure now overflows from a line
+  of its own — like a browser — instead of dragging the preceding words
+  onto the overfull line with their spaces crushed.
+- The corrective line-end margin lands outside a cloned inline element
+  that closes at the line end, so a padded chip's end inset is never
+  visually pinched.
+- Drop-in: the import base is picked by URL shape instead of probing,
+  removing a console 404 on non-English pages served from bare package
+  CDN URLs.
+
 ## 0.1.1 (2026-07-15)
 
 - Drop-in: on-demand language modules now load correctly from bare
