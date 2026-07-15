@@ -128,12 +128,14 @@
   },
   "scripts": {
     "build": "tsup",
+    "build:demo": "npm run build && node tools/build-demo.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.core.json --noEmit",
     "compare:tex": "node tools/tex-compare.mjs",
-    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+    "prepublishOnly": "npm run typecheck && npm test && npm run build",
+    "version": "node tools/sync-version.mjs && git add README.md"
   },
   "keywords": [
     "typography",
