@@ -50,9 +50,14 @@ const REJECT_TAGS = new Set([
   "SVG",
 ]);
 
-/** Scripts that need shaping-aware breaking or CJK segmentation: out of scope v1. */
-const UNSUPPORTED_SCRIPTS =
-  /[\u0590-\u08FF\u0E00-\u0EFF\u1100-\u11FF\u2E80-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF\uFF00-\uFFEF]/;
+/**
+ * Scripts still out of scope: RTL (Hebrew/Arabic \u2014 bidi and shaping-aware
+ * breaking) and Southeast Asian scripts whose line breaks need dictionary
+ * word segmentation (Thai, Lao). CJK (Han, kana, Hangul, fullwidth forms)
+ * is supported: buildItems segments it into per-cluster boxes with
+ * kinsoku-aware inter-character break opportunities.
+ */
+const UNSUPPORTED_SCRIPTS = /[\u0590-\u08FF\u0E00-\u0EFF]/;
 
 /** Inline box extras that add layout width the measurement model never sees. */
 const SIDE_BOX_PROPS = [

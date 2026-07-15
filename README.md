@@ -24,6 +24,10 @@ refinements:
   hyphens (`&shy;`) are always honored, and CSS `hyphens: none` on any inline
   element (e.g. `code { hyphens: none }`) suppresses hyphenation inside it —
   identifiers never gain misleading hyphens.
+- **CJK justification** (Japanese-first) — lines may break between
+  characters with kinsoku shori (禁則処理) rules, and justification
+  distributes space *between* characters, JIS-style. See
+  [CJK support](#cjk-japanese-support).
 
 Zero dependencies. ESM. The layout core is DOM-free and runs in Node.
 
@@ -114,6 +118,37 @@ The headless core is available separately for canvas/SSR/custom renderers:
 import { buildItems, breakParagraph, layoutLines } from "justif/core";
 ```
 
+## CJK (Japanese) support
+
+CJK paragraphs (Han ideographs, kana, Hangul, fullwidth forms — mixed with
+Latin freely) enhance like any other; no option is needed:
+
+- Every CJK grapheme cluster is its own box; between clusters justif places
+  a zero-width break opportunity plus a little stretchable inter-character
+  glue (~0.1 em stretch, whisker shrink), so lines justify by opening space
+  *between characters* — the JIS X 4051 convention — rather than only at
+  word spaces.
+- **Kinsoku shori**: characters that must not start a line (。、」ー
+  small kana, closing brackets…) or end one (「（ opening brackets…) never
+  do; the character classes are exported as `kinsokuNotAtLineStart` /
+  `kinsokuNotAtLineEnd`.
+- Line breaks between CJK characters render as bare `<wbr>` joints:
+  selection, copies, and find-in-page see the original text with **no
+  injected spaces or hyphens**. Hyphenation never applies inside CJK runs.
+- **Burasage** (ぶら下げ組み): with protrusion on (the default), the
+  ideographic and fullwidth stops — 、 。 ， ． — hang into the right
+  margin like Latin terminal punctuation.
+- Rendering assumes solid setting (bete-gumi): CJK-bearing segments are set
+  with `font-kerning: none`, because browser engines disagree between canvas
+  measurement and DOM rendering on kana kerning (Chromium's DOM kerns pairs
+  its canvas never reports; WebKit is the inverse) — a consistent solid grid
+  beats an unmeasurable kern.
+
+Out of scope for now: vertical writing (`writing-mode` other than
+`horizontal-tb` bails to native rendering), Thai/Lao (dictionary-based word
+segmentation), and dedicated JIS spacing classes for fullwidth punctuation
+compression.
+
 ## Very long documents
 
 Re-justifying hundreds of paragraphs is fast (the layout core is a few
@@ -146,9 +181,9 @@ reflow with large variable fonts. Two things help:
 
 ## Limitations (v1)
 
-- Latin-script, left-to-right text only; paragraphs containing CJK, RTL
-  scripts, images, `<br>`, floats, or non-`inline` elements are left
-  untouched (native rendering, your CSS fallback applies).
+- Left-to-right, horizontal text only (Latin and CJK); paragraphs containing
+  RTL scripts, Thai/Lao, images, `<br>`, floats, or non-`inline` elements are
+  left untouched (native rendering, your CSS fallback applies).
 - Floats / `shape-outside` intruding on the paragraph are ignored.
 
 ## Development

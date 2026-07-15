@@ -14,6 +14,18 @@
     padding: 0;
     border: 0;
   }
+  #ja-host { width: 440px; }
+  #ja-host p {
+    /* A system CJK stack every engine can shape (the fixture runs on the
+       host OS's fonts); the generic tail keeps kana rendering anywhere. */
+    font-family: "Hiragino Mincho ProN", "Yu Mincho", "Noto Serif CJK JP", serif;
+    font-size: 17px;
+    line-height: 1.8;
+    text-align: justify;
+    margin: 0 0 1em;
+    padding: 0;
+    border: 0;
+  }
 </style>
 </head>
 <body>
@@ -30,6 +42,13 @@
   but on to the ground beyond, and <a id="link1" href="#target">rolled straight into the
   water</a>. The king's daughter followed it with her eyes, but it vanished,
   and <a id="link2" href="#well">the deep well</a> swallowed it, so deep that the bottom could not be seen.</p>
+</div>
+<!-- Japanese (Natsume Sōseki, "I Am a Cat", public domain). Kept OUTSIDE
+     #host so the Latin tests' paragraph counts are undisturbed, and written
+     without inner whitespace: CJK prose has no spaces, and HTML newlines
+     would introduce breakable ones. -->
+<div id="ja-host">
+  <p id="pja" lang="ja">吾輩は猫である。名前はまだ無い。どこで生れたかとんと見当がつかぬ。何でも薄暗いじめじめした所でニャーニャー泣いていた事だけは記憶している。吾輩はここで始めて人間というものを見た。しかもあとで聞くとそれは書生という人間中で一番獰悪な種族であったそうだ。この書生というのは時々我々を捕えて煮て食うという話である。</p>
 </div>
 <script type="module">
   import { hangingPunctuation, justify, unjustify } from "/dist/index.js";

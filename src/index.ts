@@ -44,6 +44,7 @@ import {
   writeParagraph,
 } from "./dom/write.js";
 
+export { kinsokuNotAtLineEnd, kinsokuNotAtLineStart } from "./core/cjk.js";
 export type { ExpansionOptions, Line, ProtrusionTable, TrackingOptions } from "./core/types.js";
 export {
   composeProtrusion,

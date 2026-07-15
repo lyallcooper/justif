@@ -41,6 +41,14 @@ export interface RenderSegment {
   /** Edge spaces excluded from corrective measurement (position-dependent
    * rendering) and re-added as exact model widths. */
   edgeTrim: { lead: number; trail: number; modelPx: number };
+  /** Contains CJK text: rendered with `font-kerning: none` (and Chromium's
+   * text-spacing-trim disabled) so DOM advances equal the model's isolated
+   * cluster advances. Engines disagree between canvas and DOM on kana
+   * kerning — Chromium's DOM kerns pairs its canvas never measures, WebKit
+   * is the inverse — so cross-cluster kerning cannot be measured
+   * consistently; the model assumes solid setting (bete-gumi) and the
+   * renderer matches it. */
+  cjk?: boolean;
   /**
    * What separates this segment from the previous one:
    * "none" — same-line continuation (no break opportunity),
@@ -185,6 +193,15 @@ export function writeParagraph(
     }
     if (segment.marginLeftPx !== 0) el.style.marginLeft = px(segment.marginLeftPx);
     if (segment.marginRightPx !== 0) el.style.marginRight = px(segment.marginRightPx);
+    if (segment.cjk === true) {
+      // Match the measurement model (isolated cluster advances, no
+      // cross-cluster kerning — see RenderSegment.cjk).
+      el.style.fontKerning = "none";
+      // Chromium-only: its DOM trims fullwidth punctuation pairs by
+      // default (text-spacing-trim: normal) while its canvas doesn't;
+      // space-all disables the trim. A no-op in other engines.
+      el.style.setProperty("text-spacing-trim", "space-all");
+    }
     el.textContent = segment.text;
     container.append(el);
     prevContainer = container;
