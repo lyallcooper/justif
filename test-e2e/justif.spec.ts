@@ -602,6 +602,67 @@ test("handles arbitrary font variants and feature settings", async ({ page }) =>
   }
 });
 
+test("CIDEBUG2: localize the GTK all-small-caps width drift", async ({ page }) => {
+  const r = await page.evaluate(async () => {
+    const j = window.__justif;
+    const face = new FontFace("JunicodeVariants", 'url("/demo/fonts/Junicode-Roman.ttf")');
+    document.fonts.add(await face.load());
+    const CAPS = "font-variant-caps: all-small-caps";
+    const mk = (family: string) => {
+      const p = document.createElement("p");
+      p.setAttribute("style", `width:340px;font-family:${family};${CAPS}`);
+      p.textContent =
+        "An afflicted official fills office 1927 efficiently. Historical figures 314159 " +
+        "repeat with difficult affiliations and enough varied prose to wrap over many lines.";
+      document.getElementById("host")!.append(p);
+      return p;
+    };
+    const worstOf = (p: HTMLElement) => {
+      const g = window.__justifLines(p);
+      let worst = 0;
+      for (const line of g.lines.slice(0, -1)) worst = Math.max(worst, Math.abs(g.contentRight - line.right));
+      return +worst.toFixed(2);
+    };
+    // (a) library-style probe host vs plain probe, same text, fully loaded.
+    const measureIn = (hostCss: string) => {
+      const host = document.createElement("div");
+      host.style.cssText = hostCss;
+      const span = document.createElement("span");
+      span.style.cssText = "font: 16px JunicodeVariants; font-variant-caps: all-small-caps; display:block;width:max-content;white-space:pre";
+      span.textContent = "Historical figures repeat with difficult affiliations";
+      host.append(span);
+      document.body.append(host);
+      const w = span.getBoundingClientRect().width;
+      host.remove();
+      return +w.toFixed(3);
+    };
+    const plain = measureIn("position:absolute;visibility:hidden;white-space:pre");
+    const libStyle = measureIn(
+      "position:absolute;left:-100000px;top:0;visibility:hidden;pointer-events:none;" +
+      "white-space:pre;width:max-content;contain:layout style paint;",
+    );
+    // (b) first justify (cold caches) vs a second justify under a FRESH
+    // family alias measured after everything is settled.
+    const p1 = mk("JunicodeVariants");
+    const before = document.fonts.check("16px JunicodeVariants");
+    const ctl1 = j.justify(p1, { expansion: false, tracking: false, protrusion: false });
+    await ctl1.ready;
+    const worst1 = worstOf(p1);
+    const face2 = new FontFace("JunicodeVariantsB", 'url("/demo/fonts/Junicode-Roman.ttf")');
+    document.fonts.add(await face2.load());
+    await document.fonts.ready;
+    await new Promise((res) => setTimeout(res, 300));
+    const p2 = mk("JunicodeVariantsB");
+    const ctl2 = j.justify(p2, { expansion: false, tracking: false, protrusion: false });
+    await ctl2.ready;
+    const worst2 = worstOf(p2);
+    ctl1.destroy(); ctl2.destroy(); p1.remove(); p2.remove();
+    return { plain, libStyle, before, worst1, worst2 };
+  });
+  console.log("CIDEBUG2", JSON.stringify(r));
+  expect(true).toBe(true);
+});
+
 test("tracking preserves an author's ligature and low-level feature choices", async ({ page }) => {
   const result = await page.evaluate(async () => {
     const face = new FontFace("JunicodeFeatureTracking", 'url("/demo/fonts/Junicode-Roman.ttf")');
