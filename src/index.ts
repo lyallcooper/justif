@@ -110,6 +110,24 @@ export interface JustifyOptions {
    * variable.
    */
   tracking?: boolean | Partial<TrackingOptions>;
+  /**
+   * Last-line color matching (eTeX's \lastlinefit): the paragraph ending's
+   * spaces are set at this fraction (0–1) of the paragraph's average
+   * looseness, instead of always natural width — a connoisseur's
+   * refinement mainstream DTP tools only approximate with a static
+   * "desired spacing" value. 0 (default) = off.
+   */
+  lastLineFit?: number;
+  /**
+   * Clean library-introduced characters out of copied text (default true).
+   * Wrap determinism renders mid-line run-boundary spaces as NBSP and rare
+   * dash junctions carry a U+2060 word joiner — plumbing that shouldn't
+   * survive into the clipboard. Word joiners are always removed; NBSPs are
+   * normalized back to spaces only when the selection's paragraphs
+   * contained no author NBSPs (author intent like `Fig.&nbsp;7` wins over
+   * cleanup). `false` restores raw copies.
+   */
+  cleanClipboard?: boolean;
   observeResize?: boolean;
   /**
    * Called after a paragraph's lines are (re)patched into the DOM — initial
@@ -242,6 +260,7 @@ export function justify(
   const buildOpts: BuildOptions = {
     ...defaultBuildOptions,
     hyphenate,
+    lastLineFit: Math.max(0, Math.min(1, options.lastLineFit ?? 0)),
     hyphenPenalty: options.hyphenPenalty ?? defaultBuildOptions.hyphenPenalty,
     exHyphenPenalty: options.exHyphenPenalty ?? defaultBuildOptions.exHyphenPenalty,
     lastLineMinWords: options.lastLineMinWords ?? defaultBuildOptions.lastLineMinWords,
@@ -647,6 +666,64 @@ export function justify(
     if (pendingCorrections.size > 0 || pendingWidths.size > 0) scheduleSlice();
   };
 
+  /**
+   * Rewrites copies that touch enhanced paragraphs: strips the word
+   * joiners and (when no author NBSP is at stake) normalizes the
+   * run-boundary NBSPs back to ordinary spaces, for both text/plain and
+   * text/html flavors.
+   */
+  const onCopy = (e: ClipboardEvent): void => {
+    if (e.clipboardData === null) return;
+    const sel = document.getSelection();
+    if (sel === null || sel.rangeCount === 0 || sel.isCollapsed) return;
+    let touches = false;
+    let authorNbsp = false;
+    for (const p of paragraphs) {
+      const state = states.get(p);
+      if (state === undefined || state.owner !== owner || !state.enhanced) continue;
+      if (!sel.containsNode(p, true)) continue;
+      touches = true;
+      if (state.scan.runs.some((r) => /[\u00A0\u202F]/.test(r.text))) authorNbsp = true;
+    }
+    if (!touches) return;
+
+    const clean = (v: string): string => {
+      const noWj = v.replace(/\u2060/g, "");
+      return authorNbsp ? noWj : noWj.replace(/\u00A0/g, " ");
+    };
+    // text/plain comes from the cloned fragments, not Selection.toString():
+    // Firefox's toString() folds NBSP to a plain space, which would drop
+    // the very author NBSPs the authorNbsp guard exists to preserve.
+    const BLOCKY =
+      /^(?:P|DIV|LI|UL|OL|BLOCKQUOTE|H[1-6]|PRE|TABLE|TR|SECTION|ARTICLE|HEADER|FOOTER|FIGURE|FIGCAPTION)$/;
+    const plainOf = (node: Node): string => {
+      if (node.nodeType === Node.TEXT_NODE) return node.nodeValue ?? "";
+      let out = "";
+      for (let c = node.firstChild; c !== null; c = c.nextSibling) out += plainOf(c);
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const tag = (node as Element).tagName;
+        if (tag === "BR") out += "\n";
+        else if (BLOCKY.test(tag)) out += "\n\n";
+      }
+      return out;
+    };
+    const html = document.createElement("div");
+    let plain = "";
+    for (let i = 0; i < sel.rangeCount; i++) {
+      const frag = sel.getRangeAt(i).cloneContents();
+      const walker = document.createTreeWalker(frag, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
+        n.nodeValue = clean(n.nodeValue ?? "");
+      }
+      plain += plainOf(frag);
+      html.append(frag);
+    }
+    e.clipboardData.setData("text/plain", plain.replace(/\n+$/, ""));
+    e.clipboardData.setData("text/html", html.innerHTML);
+    e.preventDefault();
+  };
+  if (options.cleanClipboard !== false) document.addEventListener("copy", onCopy);
+
   let observer: WidthObserver | null = null;
   const onFontsLoaded = (): void => remeasureAll();
 
@@ -711,6 +788,7 @@ export function justify(
       pendingCorrections.clear();
       hiddenCorrections.clear();
       pendingOrder = [];
+      document.removeEventListener("copy", onCopy);
       document.fonts.removeEventListener("loadingdone", onFontsLoaded);
       viewObserver?.disconnect();
       revealObserver?.disconnect();

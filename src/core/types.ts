@@ -163,6 +163,15 @@ export interface BuildOptions {
    * equivalent (its letterspacing is static styling, not a per-line,
    * break-participating variable). */
   tracking: TrackingOptions | false;
+  /**
+   * eTeX-style \lastlinefit, layout-only: the last line's spaces are set
+   * at this fraction of the paragraph's average adjustment ratio, so a
+   * loose (or tight) paragraph doesn't end on a jarringly natural-width
+   * line. 0 (default) = classic TeX, last line at natural width; 1 = the
+   * ending fully adopts the paragraph's color. Capped at a fully
+   * justified ending; the last line's letterfit stays natural.
+   */
+  lastLineFit: number;
 }
 
 export interface TrackingOptions {
@@ -201,6 +210,7 @@ export const defaultBuildOptions: BuildOptions = {
   protrusion: false,
   expansion: false,
   tracking: false,
+  lastLineFit: 0,
 };
 
 export const defaultBreakOptions: BreakOptions = {

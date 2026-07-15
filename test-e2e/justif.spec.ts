@@ -507,6 +507,97 @@ test("selection across a line break copies a space, not a newline", async ({ pag
   expect(copied.replace(/\s+/g, " ")).toContain("olden times when wishing still helped");
 });
 
+test("copy cleanup strips run-boundary NBSPs and word joiners", async ({ page }) => {
+  await enhance(page, { hyphenate: true });
+  const r = await page.evaluate(() => {
+    const p = document.getElementById("p2")!;
+    const range = document.createRange();
+    range.selectNodeContents(p);
+    const sel = getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(range);
+    // DOM truth, not sel.toString(): Firefox's toString folds NBSP to a
+    // space, which would make this guard vacuous there.
+    const raw = range.cloneContents().textContent ?? "";
+    const e = new ClipboardEvent("copy", {
+      clipboardData: new DataTransfer(),
+      cancelable: true,
+    });
+    document.dispatchEvent(e);
+    sel.removeAllRanges();
+    return {
+      raw,
+      prevented: e.defaultPrevented,
+      plain: e.clipboardData!.getData("text/plain"),
+      html: e.clipboardData!.getData("text/html"),
+    };
+  });
+  // Guard against a vacuous pass: the p2 selection must actually carry a
+  // run-boundary NBSP for the cleanup to remove (the <em> boundary).
+  expect(r.raw).toContain("\u00A0");
+  expect(r.prevented).toBe(true);
+  expect(r.plain).not.toMatch(/[\u00A0\u2060]/);
+  expect(r.html).not.toMatch(/[\u00A0\u2060]|&nbsp;/);
+  expect(r.plain.replace(/\s+/g, " ")).toContain("princess's golden ball");
+  expect(r.html).toContain("<em>");
+});
+
+test("author NBSPs survive copy cleanup", async ({ page }) => {
+  await page.evaluate(() => {
+    const p = document.createElement("p");
+    p.id = "pnbsp";
+    p.innerHTML =
+      "See Fig.\u00A07 for the diagram of the <em>golden ball</em> mechanism, " +
+      "which the youngest daughter threw up on high and caught while playing " +
+      "beside the cool fountain in the great dark forest near the old castle.";
+    document.getElementById("host")!.append(p);
+  });
+  await enhance(page, { hyphenate: true });
+  const r = await page.evaluate(() => {
+    const p = document.getElementById("pnbsp")!;
+    const range = document.createRange();
+    range.selectNodeContents(p);
+    const sel = getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(range);
+    const e = new ClipboardEvent("copy", {
+      clipboardData: new DataTransfer(),
+      cancelable: true,
+    });
+    document.dispatchEvent(e);
+    sel.removeAllRanges();
+    p.remove();
+    return {
+      prevented: e.defaultPrevented,
+      plain: e.clipboardData!.getData("text/plain"),
+    };
+  });
+  expect(r.prevented).toBe(true);
+  // The author meant that NBSP ("Fig. 7" must not wrap) — cleanup leaves
+  // this paragraph's NBSPs alone rather than guess which ones are ours.
+  expect(r.plain).toContain("Fig.\u00A07");
+  expect(r.plain).not.toContain("\u2060");
+});
+
+test("cleanClipboard: false leaves copies untouched", async ({ page }) => {
+  await enhance(page, { hyphenate: true, cleanClipboard: false });
+  const r = await page.evaluate(() => {
+    const range = document.createRange();
+    range.selectNodeContents(document.getElementById("p2")!);
+    const sel = getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(range);
+    const e = new ClipboardEvent("copy", {
+      clipboardData: new DataTransfer(),
+      cancelable: true,
+    });
+    document.dispatchEvent(e);
+    sel.removeAllRanges();
+    return { prevented: e.defaultPrevented };
+  });
+  expect(r.prevented).toBe(false);
+});
+
 test("destroy() restores the original DOM byte-identically", async ({ page }) => {
   const before = await page.evaluate(() => document.getElementById("host")!.innerHTML);
   await enhance(page, { hyphenate: true });

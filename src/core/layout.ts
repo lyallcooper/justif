@@ -144,6 +144,20 @@ export function layoutLines(
       } else {
         glueRatio = glueRatioFor(delta);
       }
+    } else if (delta > 0 && Yfil > 0 && opts.lastLineFit > 0 && lines.length > 0) {
+      // eTeX's \lastlinefit, applied at layout time only (the breaker's
+      // cost model — and its test oracle — are untouched): the ending's
+      // spaces adopt a fraction of the paragraph's average adjustment
+      // ratio. The ending's letterfit stays natural, so the target and
+      // its fully-justified cap use the GLUE-ONLY pool (Yg minus the
+      // tracking flex folded into it).
+      const glueOnly = Yg - (cumTrackY[b]! - cumTrackY[start]!);
+      if (glueOnly > 0) {
+        let sum = 0;
+        for (const l of lines) sum += l.glueRatio;
+        const target = opts.lastLineFit * (sum / lines.length);
+        glueRatio = Math.max(-1, Math.min(target, delta / glueOnly));
+      }
     } else if (delta < 0) {
       let need = delta;
       if (exp !== false && Ze > 0) {
@@ -170,9 +184,11 @@ export function layoutLines(
     // alone. Re-derive the glue-only ratio so the line still fills: the
     // residual R satisfied R = (Yg − Yt)·s + Yt·min(s, 1); when the pooled
     // s exceeds 1, solve the saturated form for the spaces' s.
-    let trackRatio = glueRatio;
+    // Fil lines keep natural letterfit whatever their glue does (both the
+    // default natural ending and a lastLineFit-colored one).
+    let trackRatio = Yfil > 0 ? 0 : glueRatio;
     const Yt = cumTrackY[b]! - cumTrackY[start]!;
-    if (glueRatio > 1 && Yt > 0) {
+    if (Yfil === 0 && glueRatio > 1 && Yt > 0) {
       trackRatio = 1;
       const glueOnly = Yg - Yt;
       glueRatio = glueOnly > 0 ? (glueRatio * Yg - Yt) / glueOnly : 1;

@@ -66,6 +66,8 @@ happens once, so a resize re-runs only arithmetic plus a minimal DOM patch
 | `emergencyStretch` | `"auto"` | Extra badness-only stretch for the final pass |
 | `lastLineMinWords` | `0` | ≥ 2 discourages last lines with fewer words than this |
 | `lastLineStretch` | `Infinity` | Fraction of the measure the last line's fill may stretch (TeX's `\parfillskip=0pt plus f\hsize`); e.g. `0.5` softly avoids orphan-ish short last lines |
+| `lastLineFit` | `0` | eTeX's `\lastlinefit` as a 0–1 fraction: the last line's spaces adopt this fraction of the paragraph's mean stretch, so the ending shares the body's color instead of setting tight against loose lines. Word spacing only — letterfit and expansion stay natural |
+| `cleanClipboard` | `true` | Rewrites copies so layout plumbing (word joiners, run-boundary NBSPs) never reaches the clipboard; author NBSPs (`Fig.&nbsp;7`) are preserved |
 | `spacing` | `{ stretch: 0.5, shrink: 1/3, pull: 0.5 }` | Inter-word glue flexibility as fractions of the space width. `pull` (0–1) is the downward pressure on secondary-font spaces wider than the base font's (e.g. a monospace cell around inline code): 0 keeps each font's natural space, 1 converges fully to the base — which can dissolve word boundaries in loose-fitting fonts; they also flex like prose spaces, keeping one rhythm per line |
 | `observeResize` | `true` | Auto re-layout on container resize |
 | `onRelayout` | — | Callback fired after a paragraph is (re)patched; use it to keep overlays over the text in sync |
