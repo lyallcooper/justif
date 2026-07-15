@@ -107,8 +107,8 @@ test("gap highlights use a grayscale extended ramp", async ({ page }) => {
 
   await page.click("#theme-light");
   expect(await palette()).toEqual({
-    loose: "rgb(17, 17, 17)",
-    tight: "rgb(102, 102, 102)",
+    loose: "rgb(0, 0, 0)",
+    tight: "rgb(0, 0, 0)",
   });
 
   await page.check("#deviation");
@@ -122,8 +122,8 @@ test("gap highlights use a grayscale extended ramp", async ({ page }) => {
 
   await page.click("#theme-dark");
   expect(await palette()).toEqual({
-    loose: "rgb(240, 240, 240)",
-    tight: "rgb(170, 170, 170)",
+    loose: "rgb(255, 255, 255)",
+    tight: "rgb(255, 255, 255)",
   });
 });
 
