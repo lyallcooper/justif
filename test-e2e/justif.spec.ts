@@ -602,6 +602,84 @@ test("cleanClipboard: false leaves copies untouched", async ({ page }) => {
   expect(r.prevented).toBe(false);
 });
 
+test("enhances under a strict Content-Security-Policy (no inline styles)", async ({ page }) => {
+  // fixture-csp.html serves style-src 'self': an injected <style> element
+  // is blocked, so the segment rules must arrive via adoptedStyleSheets.
+  const cspViolations: string[] = [];
+  page.on("console", (m) => {
+    if (m.text().includes("Content-Security-Policy") || m.text().includes("Refused to apply")) {
+      cspViolations.push(m.text());
+    }
+  });
+  await page.goto("/test-e2e/fixture-csp.html");
+  await page.waitForFunction(() => window.__ready === true);
+  const r = await page.evaluate(async () => {
+    const c = window.__justif.justify(document.querySelectorAll("#host p"));
+    await c.ready;
+    const seg = document.querySelector<HTMLElement>("#host .justif-seg");
+    return {
+      segs: document.querySelectorAll("#host .justif-seg").length,
+      // The load-bearing assertion: the nowrap rule genuinely applies —
+      // without it the line model silently collapses.
+      whiteSpace: seg === null ? null : getComputedStyle(seg).whiteSpace,
+      adopted: document.adoptedStyleSheets.length,
+    };
+  });
+  expect(r.segs).toBeGreaterThan(0);
+  expect(r.whiteSpace).toBe("nowrap");
+  expect(r.adopted).toBeGreaterThan(0);
+  expect(cspViolations).toEqual([]);
+});
+
+test("enhances paragraphs inside shadow DOM (rules reach the shadow root)", async ({ page }) => {
+  const r = await page.evaluate(async () => {
+    const host = document.createElement("div");
+    host.style.width = "440px";
+    document.body.append(host);
+    const root = host.attachShadow({ mode: "open" });
+    const p = document.createElement("p");
+    p.style.cssText =
+      "font-family: Georgia, serif; font-size: 17px; line-height: 1.45; text-align: justify; margin: 0;";
+    p.textContent =
+      "In olden times when wishing still helped one, there lived a king " +
+      "whose daughters were all beautiful; and the youngest was so beautiful " +
+      "that the sun itself, which has seen so much, was astonished whenever " +
+      "it shone in her face.";
+    root.append(p);
+    // Flush is asserted, so no protrusion/expansion (hangs are legitimate
+    // deviations), and the deferred wrap-guarantee corrections must settle:
+    // poll until the paragraph's DOM is stable across two 120ms samples.
+    const c = window.__justif.justify(p, { protrusion: false, expansion: false });
+    await c.ready;
+    let last = p.innerHTML;
+    for (let i = 0; i < 16; i++) {
+      await new Promise((r) => setTimeout(r, 120));
+      const now = p.innerHTML;
+      if (now === last) break;
+      last = now;
+    }
+    const seg = p.querySelector(".justif-seg");
+    const g = window.__justifLines(p);
+    const out = {
+      enhanced: p.hasAttribute("data-justif"),
+      whiteSpace: seg === null ? null : getComputedStyle(seg).whiteSpace,
+      adoptedOnRoot: root.adoptedStyleSheets.length,
+      lines: g.lines.length,
+      maxDev: Math.max(
+        ...g.lines.slice(0, -1).map((l) => Math.abs(l.right - g.contentRight)),
+      ),
+    };
+    c.destroy();
+    host.remove();
+    return out;
+  });
+  expect(r.enhanced).toBe(true);
+  expect(r.whiteSpace).toBe("nowrap");
+  expect(r.adoptedOnRoot).toBeGreaterThan(0);
+  expect(r.lines).toBeGreaterThan(2);
+  expect(r.maxDev).toBeLessThan(1);
+});
+
 test("destroy() restores the original DOM byte-identically", async ({ page }) => {
   const before = await page.evaluate(() => document.getElementById("host")!.innerHTML);
   await enhance(page, { hyphenate: true });

@@ -83,15 +83,51 @@ const WRAP_SPARE_PX = 1;
 const STYLE_ID = "justif-style";
 const px = (v: number): string => `${Math.round(v * 1000) / 1000}px`;
 
-function ensureStylesheet(doc: Document): void {
-  if (doc.getElementById(STYLE_ID) !== null) return;
+const SHEET_TEXT =
+  ".justif-seg{white-space:nowrap}" +
+  '.justif-hyphen::after{content:"-"}' +
+  '@supports (content:"-" / ""){.justif-hyphen::after{content:"-" / ""}}';
+
+/** Roots (documents and shadow roots) that already carry the sheet. */
+const styledRoots = new WeakSet<Document | ShadowRoot>();
+
+/**
+ * Install the segment rules at the paragraph's ROOT — the document, or the
+ * shadow root it lives in (document-level styles don't pierce shadow
+ * boundaries; without `.justif-seg{white-space:nowrap}` the entire line
+ * model silently collapses). Constructable stylesheets are preferred: they
+ * also work under a strict Content-Security-Policy, where an injected
+ * inline `<style>` element is blocked by `style-src` without
+ * 'unsafe-inline'. The `<style>` element is only the legacy fallback
+ * (pre-2023 engines without adoptedStyleSheets).
+ */
+function ensureStylesheet(root: Document | ShadowRoot): void {
+  if (styledRoots.has(root)) return;
+  // Duck-typed, not instanceof: an iframe's document is another realm's
+  // Document and instanceof would misclassify it.
+  const isDoc = root.nodeType === 9; /* DOCUMENT_NODE */
+  const doc = isDoc ? (root as Document) : (root as ShadowRoot).ownerDocument;
+  const win = doc.defaultView;
+  if (win !== null && "adoptedStyleSheets" in root) {
+    try {
+      const sheet = new win.CSSStyleSheet();
+      sheet.replaceSync(SHEET_TEXT);
+      root.adoptedStyleSheets = [...root.adoptedStyleSheets, sheet];
+      styledRoots.add(root);
+      return;
+    } catch {
+      /* same-realm constraint or frozen list: fall through to <style> */
+    }
+  }
+  if (isDoc && doc.getElementById(STYLE_ID) !== null) {
+    styledRoots.add(root);
+    return;
+  }
   const style = doc.createElement("style");
   style.id = STYLE_ID;
-  style.textContent =
-    ".justif-seg{white-space:nowrap}" +
-    '.justif-hyphen::after{content:"-"}' +
-    '@supports (content:"-" / ""){.justif-hyphen::after{content:"-" / ""}}';
-  doc.head.append(style);
+  style.textContent = SHEET_TEXT;
+  (isDoc ? doc.head : (root as ShadowRoot)).append(style);
+  styledRoots.add(root);
 }
 
 interface LineEntry {
@@ -122,7 +158,12 @@ export function writeParagraph(
   lineWidths: readonly number[],
 ): PendingParagraph {
   const doc = p.ownerDocument;
-  ensureStylesheet(doc);
+  const root = p.getRootNode();
+  ensureStylesheet(
+    root.nodeType === 9 || (root.nodeType === 11 && "host" in root)
+      ? (root as Document | ShadowRoot)
+      : doc,
+  );
   /** Per intended line: its visual elements (with their segment data);
    * the last one takes the corrective margin. */
   const lineElements: LineEntry[][] = [[]];

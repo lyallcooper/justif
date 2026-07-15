@@ -195,6 +195,27 @@ Cyrillic, …), an LTR paragraph containing any RTL characters, nested
 characters — the browser's visual reordering of opposite-direction runs
 is out of scope for the line model, so your CSS fallback applies.
 
+## Deployment notes
+
+- **Browser support**: evergreen browsers (Chrome/Edge 105+, Firefox 110+,
+  Safari 16.4+). The hard requirements are `ResizeObserver`,
+  `IntersectionObserver`, canvas `measureText`, and CSS logical margins;
+  everything newer (constructable stylesheets, `Intl.Segmenter`, canvas
+  `letterSpacing`) has a built-in fallback. No polyfills are bundled.
+- **Content-Security-Policy**: safe under a strict `style-src` (no
+  `'unsafe-inline'`) — segment rules install via constructable stylesheets
+  (`adoptedStyleSheets`), not an injected `<style>` element, and per-line
+  values are CSSOM property writes, which CSP does not govern.
+- **Shadow DOM**: paragraphs inside open or closed shadow roots work; the
+  segment rules are adopted onto the paragraph's own root.
+- **Fail-safe by contract**: any paragraph the model cannot reproduce — and
+  any unexpected exception while enhancing one — downgrades that paragraph
+  to native rendering (your `text-align: justify` CSS applies). One bad
+  paragraph never affects its siblings, the resize loop, or the controller.
+- **SSR**: importing the package is side-effect-free and DOM-free;
+  `justify()` is a client enhancement (call it after hydration). The
+  headless core (`justif/core`) runs in Node.
+
 ## Limitations (v1)
 
 - Horizontal Latin-script LTR, CJK (Han/kana/Hangul), and pure-RTL

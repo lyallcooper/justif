@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<!-- Strict style-src: no 'unsafe-inline', so an injected <style> element
+     is BLOCKED. justif must install its segment rules via constructable
+     stylesheets (adoptedStyleSheets) for the line model to survive.
+     CSSOM property writes (el.style.x) are not governed by style-src.
+     No <style> block in this fixture for the same reason. -->
+<meta http-equiv="Content-Security-Policy"
+      content="style-src 'self'; script-src 'self' 'unsafe-inline'" />
+<title>justif CSP fixture</title>
+</head>
+<body>
+  <div id="host">
+    <p id="p1">In olden times when wishing still helped one, there lived a king
+    whose daughters were all beautiful; and the youngest was so beautiful that
+    the sun itself, which has seen so much, was astonished whenever it shone in
+    her face. Close by the king's castle lay a great dark forest, and under an
+    old lime-tree in the forest was a well.</p>
+  </div>
+  <script type="module">
+    import { justify } from "../dist/index.js";
+    const host = document.getElementById("host");
+    host.style.width = "440px";
+    const p = document.getElementById("p1");
+    p.style.fontFamily = "Georgia, serif";
+    p.style.fontSize = "17px";
+    p.style.lineHeight = "1.45";
+    p.style.textAlign = "justify";
+    window.__justif = { justify };
+    window.__ready = true;
+  </script>
+</body>
+</html>

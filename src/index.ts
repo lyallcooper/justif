@@ -280,8 +280,18 @@ export function justify(
     if (states.get(p)?.enhanced) return true; // idempotent (possibly foreign)
     if (bailed.has(p)) return false;
     if (scanned.has(p)) return true;
-    const scan = readParagraph(p);
-    if (scan === null || scan.specs.some((s) => !supportsSpec(s))) {
+    // Fail-safe: this library's contract is "enhance or leave native" —
+    // an unexpected exception on one paragraph (a bug, hostile content)
+    // must downgrade THAT paragraph to native rendering, never abort the
+    // controller or poison its siblings.
+    let scan: ParagraphScan | null;
+    try {
+      scan = readParagraph(p);
+      if (scan !== null && scan.specs.some((sp) => !supportsSpec(sp))) scan = null;
+    } catch {
+      scan = null;
+    }
+    if (scan === null) {
       bailed.add(p);
       return false;
     }
@@ -313,21 +323,27 @@ export function justify(
     if (scan === undefined) return false;
     scanned.delete(p);
 
-    const specByKey = new Map<string, FontSpec>();
-    for (const spec of scan.specs) specByKey.set(spec.key, spec);
-    const runsMetrics = buildRunMetrics(scan, expansion, spacing, protrusionCtx);
-    states.set(p, {
-      owner,
-      original: document.createDocumentFragment(),
-      originalStyleAttr: p.getAttribute("style"),
-      scan,
-      runsMetrics,
-      specByKey,
-      para: buildPara(scan, runsMetrics, specByKey),
-      width: scan.contentWidth,
-      lastPatch: "",
-      enhanced: false,
-    });
+    try {
+      const specByKey = new Map<string, FontSpec>();
+      for (const spec of scan.specs) specByKey.set(spec.key, spec);
+      const runsMetrics = buildRunMetrics(scan, expansion, spacing, protrusionCtx);
+      states.set(p, {
+        owner,
+        original: document.createDocumentFragment(),
+        originalStyleAttr: p.getAttribute("style"),
+        scan,
+        runsMetrics,
+        specByKey,
+        para: buildPara(scan, runsMetrics, specByKey),
+        width: scan.contentWidth,
+        lastPatch: "",
+        enhanced: false,
+      });
+    } catch {
+      // Same fail-safe as the scan: this paragraph stays native.
+      bailed.add(p);
+      return false;
+    }
     return true;
   };
 
@@ -338,6 +354,34 @@ export function justify(
    * layout instead of one per paragraph. Returns null when the patch is a
    * no-op (unchanged fingerprint or foreign state).
    */
+  /**
+   * patchOne with the per-paragraph fail-safe: an unexpected throw while
+   * breaking/laying out/writing restores the paragraph's original DOM and
+   * bails it to native rendering — never a half-patched paragraph, a dead
+   * resize loop, or a poisoned controller. (writeParagraph builds its
+   * fragment off-DOM and installs it atomically, so a throw cannot leave
+   * partial segments behind; restore() covers the already-enhanced case.)
+   */
+  const safePatch = (p: HTMLElement): PendingParagraph | null => {
+    try {
+      return patchOne(p);
+    } catch {
+      restore(p);
+      bailed.add(p);
+      return null;
+    }
+  };
+
+  /** User callbacks are isolated like observer callbacks: one throwing
+   * onRelayout must not abort the batch or kill a drain slice. */
+  const emitRelayout = (p: HTMLElement): void => {
+    try {
+      options.onRelayout?.(p);
+    } catch (err) {
+      console.error("justif: onRelayout callback threw", err);
+    }
+  };
+
   const patchOne = (p: HTMLElement): PendingParagraph | null => {
     const state = states.get(p);
     if (state === undefined || state.owner !== owner) return null;
@@ -452,11 +496,11 @@ export function justify(
     const batch: PatchEntry[] = [];
     for (const p of scannable) {
       if (!prepare(p)) continue;
-      const pending = patchOne(p);
+      const pending = safePatch(p);
       if (pending !== null) batch.push({ p, pending });
     }
     flushPatches(batch);
-    for (const e of batch) options.onRelayout?.(e.p);
+    for (const e of batch) emitRelayout(e.p);
   };
 
   const remeasureAll = (): void => {
@@ -475,11 +519,11 @@ export function justify(
       state.para = buildPara(state.scan, state.runsMetrics, state.specByKey);
       state.width = widths.get(p)!;
       state.lastPatch = "";
-      const pending = patchOne(p);
+      const pending = safePatch(p);
       if (pending !== null) batch.push({ p, pending });
     }
     flushPatches(batch);
-    for (const e of batch) options.onRelayout?.(e.p);
+    for (const e of batch) emitRelayout(e.p);
   };
 
   // Resize re-layouts run in frame-budgeted slices, paragraphs in (or
@@ -650,11 +694,11 @@ export function justify(
       if (state === undefined || state.owner !== owner || !state.enhanced) continue;
       if (Math.abs(width - state.width) < 0.05) continue;
       state.width = width;
-      const pending = patchOne(el);
+      const pending = safePatch(el);
       if (pending !== null) {
         pendingCorrections.set(el, pending);
         wrote = true;
-        options.onRelayout?.(el);
+        emitRelayout(el);
         // onRelayout may call destroy(); stop before touching anything else.
         if (destroyed) return;
       }
