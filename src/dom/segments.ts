@@ -24,6 +24,32 @@ import { type FontSpec, isMonospace, measureInkBearings, measureWidth } from "./
 import type { ParagraphScan } from "./read.js";
 import { type RenderSegment, WRAP_SAFETY_PAD_PX } from "./write.js";
 
+/**
+ * Rendered advance of the inter-word space in a run containing `runText`.
+ * When the author's font stack lacks a script's glyphs the engine renders
+ * words in a FALLBACK font — and in Blink/WebKit the spaces BETWEEN those
+ * words take the fallback font's advance too, not the first stack font's,
+ * so `measureText(" ")` (which sees only the stack font) overstates every
+ * gap by a fraction of a pixel. Canvas agrees with the DOM when the space
+ * is measured in script context, so RTL runs probe "X X" − 2·"X" with a
+ * letter of their own script (space-adjacent fallback is exactly how their
+ * fixture words render). LTR paragraphs cannot reach this path with RTL
+ * text (they bail), and keep the one-glyph measurement unchanged.
+ */
+function spaceWidthIn(spec: FontSpec, runText: string): number {
+  if (spec.direction === "rtl") {
+    const probe = /\p{Script=Arabic}/u.test(runText)
+      ? "ل" // Arabic lam
+      : /\p{Script=Hebrew}/u.test(runText)
+        ? "א" // Hebrew alef
+        : null;
+    if (probe !== null) {
+      return measureWidth(`${probe} ${probe}`, spec) - 2 * measureWidth(probe, spec);
+    }
+  }
+  return measureWidth(" ", spec);
+}
+
 /** Core Measure implementation backed by the canvas cache. */
 export function measureFor(specByKey: Map<string, FontSpec>): Measure {
   return {
@@ -48,7 +74,10 @@ export function buildRunMetrics(
     hang: HangingPunctuationMode;
   },
 ): RunMetrics[] {
-  const baseSpaceWidth = measureWidth(" ", scan.specs[scan.baseSpec]!);
+  // Base-space context is the whole paragraph: the base font's spaces sit
+  // between whatever script the paragraph is written in.
+  const paragraphText = scan.runs.map((r) => r.text).join(" ");
+  const baseSpaceWidth = spaceWidthIn(scan.specs[scan.baseSpec]!, paragraphText);
   const pull = spacing.pull ?? 0.7;
   // Every quantized stretch value the layout can emit gets its own
   // measurement (linear interpolation between the endpoints errs by
@@ -82,7 +111,7 @@ export function buildRunMetrics(
         if (composed.first !== composed.rest) perFontFirst = composed.first;
       }
     }
-    const naturalSpace = measureWidth(" ", spec);
+    const naturalSpace = spaceWidthIn(spec, run.text);
     // Oversized secondary-font spaces (monospace inline code — a full cell
     // wide) get downward pressure toward the paragraph's base space: the
     // line's rhythm is set by the base font, and a raw cell-space reads as
@@ -121,7 +150,13 @@ export function buildRunMetrics(
       ratioAtMax: calibration.ratioAtMax,
       ratioAtMin: calibration.ratioAtMin,
       expansionRatios: calibration.ratios,
-      noHyphens: spec.hyphens === "none",
+      // RTL paragraphs never hyphenate: Arabic cursive joining makes the
+      // prefix-incremental fragment measurement in buildItems invalid
+      // (splitting changes the glyphs on both sides of the cut), and
+      // Hebrew convention breaks without hyphens if at all. noHyphens
+      // also strips soft hyphens and keeps the hyphenate callback from
+      // ever being called for these runs.
+      noHyphens: spec.hyphens === "none" || scan.direction === "rtl",
       // Monospace cells carry huge side bearings; advance-relative protrusion
       // codes would hang the ink visibly past the margin — but only when the
       // mono run sits INSIDE another font's prose (inline code), where the
@@ -155,7 +190,10 @@ export function buildRenderSegments(
     const desired = (runIndex: number): number => {
       const metrics = runsMetrics[runIndex]!;
       const spec = scan.specs[scan.runs[runIndex]!.spec]!;
-      const widthOffset = metrics.space.width - measureWidth(" ", spec);
+      // The rendered space advance (script-contextual — see spaceWidthIn)
+      // is what CSS word-spacing adds to; the offset closes the gap from
+      // that advance to the glue width the engine assigned.
+      const widthOffset = metrics.space.width - spaceWidthIn(spec, scan.runs[runIndex]!.text);
       const flex = line.glueRatio >= 0 ? metrics.space.stretch : metrics.space.shrink;
       return spec.wordSpacingPx + widthOffset + line.glueRatio * flex;
     };
@@ -192,7 +230,7 @@ export function buildRenderSegments(
       const key = Math.round(line.fontStretch * 1000) / 1000;
       const ratio = table?.get(key) ?? 1;
       const wordSpacing = desired(run);
-      const spacePx = measureWidth(" ", spec) * ratio + wordSpacing;
+      const spacePx = spaceWidthIn(spec, scan.runs[run]!.text) * ratio + wordSpacing;
       segments.push({
         text,
         ancestors: scan.runs[run]!.ancestors,
@@ -200,8 +238,8 @@ export function buildRenderSegments(
         letterSpacingPx: ls !== 0 ? spec.letterSpacingPx + ls : null,
         forceLigatures: ls !== 0 && spec.letterSpacingPx === 0,
         fontStretchPct: line.fontStretch,
-        marginLeftPx: first ? -line.leftHang : 0,
-        marginRightPx: 0, // the line's last segment is patched after the loop
+        marginStartPx: first ? -line.leftHang : 0,
+        marginEndPx: 0, // the line's last segment is patched after the loop
         edgeTrim: { lead, trail, modelPx: (lead + trail) * spacePx },
         joint,
       });
@@ -262,7 +300,7 @@ export function buildRenderSegments(
     // keeps the line from re-wrapping before its (possibly deferred/
     // parked) correction lands.
     if (last !== undefined) {
-      last.marginRightPx = -(line.rightHang + line.overflowPx + WRAP_SAFETY_PAD_PX);
+      last.marginEndPx = -(line.rightHang + line.overflowPx + WRAP_SAFETY_PAD_PX);
     }
 
     // Decide the joint that separates this line from the next.

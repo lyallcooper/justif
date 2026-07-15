@@ -42,20 +42,23 @@ async function openFixture(page: Page): Promise<void> {
   await page.waitForFunction(() => window.__ready === true);
 }
 
-async function enhance(page: Page, options: object): Promise<void> {
-  await page.evaluate(async (opts) => {
-    const j = window.__justif;
-    j.controller?.destroy();
-    j.controller = j.justify(document.querySelectorAll("#host p"), {
-      ...opts,
-      hyphenate: (opts as { hyphenate?: boolean }).hyphenate ? j.hyphenateEnUS : undefined,
-      protrusion:
-        (opts as { protrusion?: unknown }).protrusion === "hanging"
-          ? j.hangingPunctuation
-          : (opts as { protrusion?: boolean }).protrusion,
-    });
-    await j.controller.ready;
-  }, options);
+async function enhance(page: Page, options: object, selector = "#host p"): Promise<void> {
+  await page.evaluate(
+    async ([opts, sel]) => {
+      const j = window.__justif;
+      j.controller?.destroy();
+      j.controller = j.justify(document.querySelectorAll(sel as string), {
+        ...(opts as object),
+        hyphenate: (opts as { hyphenate?: boolean }).hyphenate ? j.hyphenateEnUS : undefined,
+        protrusion:
+          (opts as { protrusion?: unknown }).protrusion === "hanging"
+            ? j.hangingPunctuation
+            : (opts as { protrusion?: boolean }).protrusion,
+      });
+      await j.controller.ready;
+    },
+    [options, selector] as const,
+  );
 }
 
 /**
@@ -850,4 +853,149 @@ test("resize keeps visible text scroll-anchored (no bounce)", async ({ page }) =
     document.getElementById("host")!.style.width = "";
     window.scrollTo(0, 0);
   });
+});
+
+// ---------------------------------------------------------------------------
+// RTL (pure-RTL paragraphs only; mixed bidi bails to native)
+// ---------------------------------------------------------------------------
+
+/** Line geometry of one #rtl-host paragraph, plus its LEFT content edge
+ * (__justifLines exposes the right edge; RTL lines END at the left). */
+async function readRtlGeometry(page: Page, id: string) {
+  return page.evaluate((pid) => {
+    const p = document.getElementById(pid)!;
+    const cs = getComputedStyle(p);
+    const contentLeft =
+      p.getBoundingClientRect().left +
+      parseFloat(cs.paddingLeft) +
+      parseFloat(cs.borderLeftWidth);
+    const g = window.__justifLines(p);
+    return {
+      enhanced: p.hasAttribute("data-justif"),
+      contentLeft,
+      contentRight: g.contentRight,
+      lines: g.lines,
+    };
+  }, id);
+}
+
+test("RTL paragraphs justify with lines flush at both edges", async ({ page }) => {
+  // hyphenate passed on purpose: it must be ignored for RTL paragraphs.
+  await enhance(
+    page,
+    { hyphenate: true, protrusion: false, expansion: false },
+    "#rtl-host p",
+  );
+  for (const id of ["rtl-he", "rtl-ar"]) {
+    const g = await readRtlGeometry(page, id);
+    expect(g.enhanced, id).toBe(true);
+    expect(g.lines.length, id).toBeGreaterThan(3);
+    for (const [i, line] of g.lines.entries()) {
+      const label = `${id} line ${i} "${line.texts.slice(-4).join(" ")}"`;
+      // A line STARTS at the right edge in RTL: every line (including the
+      // ragged last) sets out flush against the right content edge.
+      expect.soft(Math.abs(line.right - g.contentRight), `${label} (start/right)`).toBeLessThan(1);
+      // A line ENDS at the left edge: flush on all but the last line.
+      if (i === g.lines.length - 1) continue;
+      expect.soft(Math.abs(line.left - g.contentLeft), `${label} (end/left)`).toBeLessThan(1);
+    }
+    // No hyphenation artifacts whatsoever.
+    expect(await page.locator(`#${id} .justif-hyphen`).count(), id).toBe(0);
+  }
+  // Visual order is RTL: the paragraph's first word renders at the first
+  // line's RIGHT edge (texts are ordered by left position, so it is last).
+  const he = await readRtlGeometry(page, "rtl-he");
+  expect(he.lines[0]!.texts.at(-1)).toBe("בראשית");
+});
+
+test("RTL protrusion hangs line-end punctuation past the LEFT edge", async ({ page }) => {
+  // Full hangs make the check unambiguous (~a full comma advance).
+  await enhance(page, { protrusion: "hanging", expansion: false }, "#rtl-host p");
+  const punctuated: Array<{ label: string; overhang: number }> = [];
+  for (const id of ["rtl-he", "rtl-ar"]) {
+    const g = await readRtlGeometry(page, id);
+    for (const [i, line] of g.lines.entries()) {
+      if (i === g.lines.length - 1) continue;
+      // texts are left-ordered, so texts[0] is the line's LAST (logical)
+      // word; its trailing stop renders at the line's left end.
+      if (!/[.,،؛]$/.test(line.texts[0] ?? "")) continue;
+      punctuated.push({
+        label: `${id} line ${i} "${line.texts[0]}"`,
+        overhang: g.contentLeft - line.left,
+      });
+    }
+  }
+  // Both fixtures are stop-dense; across two paragraphs at least one
+  // non-last line ends on punctuation in every engine's break pattern.
+  expect(punctuated.length).toBeGreaterThan(0);
+  for (const { label, overhang } of punctuated) {
+    expect(overhang, label).toBeGreaterThan(0.5);
+    expect(overhang, label).toBeLessThan(10);
+  }
+});
+
+test("mixed-direction paragraphs bail to native rendering", async ({ page }) => {
+  await enhance(page, { protrusion: false }, "#rtl-host p");
+  // Hebrew + English in one dir="rtl" paragraph: untouched.
+  const mixed = await page.evaluate(() => {
+    const p = document.getElementById("rtl-mixed")!;
+    return {
+      enhanced: p.hasAttribute("data-justif"),
+      segs: p.querySelectorAll(".justif-seg").length,
+    };
+  });
+  expect(mixed.enhanced).toBe(false);
+  expect(mixed.segs).toBe(0);
+  // The two pure-RTL siblings enhanced under the same controller.
+  expect(await page.locator("#rtl-he .justif-seg").count()).toBeGreaterThan(0);
+  // And the converse: an LTR paragraph containing strong-RTL characters
+  // also bails (explicitly — not by silent measurement mismatch).
+  const ltr = await page.evaluate(async () => {
+    const p = document.createElement("p");
+    p.textContent =
+      "An English paragraph that quotes שלום עולם inline must keep native " +
+      "rendering, because bidi reordering is out of scope for the enhancer, " +
+      "however long the text runs on and wraps across its lines.";
+    document.getElementById("host")!.append(p);
+    const ctl = window.__justif.justify(p);
+    await ctl.ready;
+    const took = p.hasAttribute("data-justif");
+    ctl.destroy();
+    p.remove();
+    return took;
+  });
+  expect(ltr).toBe(false);
+});
+
+test("destroy() restores RTL paragraphs byte-identically", async ({ page }) => {
+  const before = await page.evaluate(() => document.getElementById("rtl-host")!.innerHTML);
+  await enhance(page, { hyphenate: true }, "#rtl-host p");
+  await waitForQuiescence(page, "#rtl-host");
+  const enhanced = await page.evaluate(() => document.getElementById("rtl-host")!.innerHTML);
+  expect(enhanced).not.toBe(before);
+  await page.evaluate(() => window.__justif.controller!.destroy());
+  const after = await page.evaluate(() => document.getElementById("rtl-host")!.innerHTML);
+  expect(after).toBe(before);
+});
+
+test("canvas measureText advances are direction-independent (cache-key guard)", async ({ page }) => {
+  // measure.ts deliberately keeps `direction` OUT of the width-cache key:
+  // words are measured whole, so joining/reordering stay internal to the
+  // string. This guards that assumption in every engine — if it ever
+  // fails, direction must join FontSpec.key.
+  const diffs = await page.evaluate(() => {
+    const ctx = document.createElement("canvas").getContext("2d")!;
+    ctx.font = "17px Georgia, serif";
+    const words = ["בראשית", "וּבְרָכָה", "העולם.", "السلام", "العربية،", "مرحبا", "ב12", "١٢٣", "(שלום)"];
+    const out: Array<{ word: string; ltr: number; rtl: number }> = [];
+    for (const word of words) {
+      ctx.direction = "ltr";
+      const ltr = ctx.measureText(word).width;
+      ctx.direction = "rtl";
+      const rtl = ctx.measureText(word).width;
+      if (Math.abs(ltr - rtl) > 1e-6) out.push({ word, ltr, rtl });
+    }
+    return out;
+  });
+  expect(diffs).toEqual([]);
 });

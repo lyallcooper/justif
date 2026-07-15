@@ -4,7 +4,8 @@
 <meta charset="utf-8" />
 <title>justif e2e fixture</title>
 <style>
-  #host { width: 440px; }
+  #host, #rtl-host { width: 440px; }
+  #rtl-host p,
   #host p {
     font-family: Georgia, serif;
     font-size: 17px;
@@ -30,6 +31,27 @@
   but on to the ground beyond, and <a id="link1" href="#target">rolled straight into the
   water</a>. The king's daughter followed it with her eyes, but it vanished,
   and <a id="link2" href="#well">the deep well</a> swallowed it, so deep that the bottom could not be seen.</p>
+</div>
+<!-- Pure-RTL enhancement fixtures (separate host: many tests assert
+     #host contains exactly two paragraphs). The Hebrew and Arabic
+     paragraphs each carry European digits and native punctuation so the
+     line-flush test also proves digit/neutral bidi reordering stays
+     compatible with the measured wrap guarantee. -->
+<div id="rtl-host" dir="rtl">
+  <p id="rtl-he">בראשית ברא אלהים את השמים ואת הארץ. והארץ היתה תהו ובהו,
+  וחשך על פני תהום; ורוח אלהים מרחפת על פני המים. ויאמר אלהים: יהי אור,
+  ויהי אור. וירא אלהים את האור כי טוב, ויבדל אלהים בין האור ובין החשך.
+  ויקרא אלהים לאור יום, ולחשך קרא לילה. ויהי ערב ויהי בקר, יום אחד.
+  ובשנת 1948 הודפסו הדברים האלה מחדש בדפוס חדש.</p>
+  <p id="rtl-ar">في قديم الزمان، عندما كانت الأمنيات لا تزال تتحقق، عاش ملك
+  كانت بناته كلهن جميلات، وكانت الصغرى جميلة حتى أن الشمس نفسها، التي رأت
+  الكثير، كانت تتعجب كلما أشرقت على وجهها. وبالقرب من قصر الملك كانت هناك
+  غابة كبيرة مظلمة، وتحت شجرة زيزفون قديمة في الغابة كانت هناك بئر عميقة؛
+  وعندما كان النهار حارا جدا، كانت ابنة الملك تخرج إلى الغابة وتجلس بجانب
+  النافورة الباردة. وفي سنة 1957 طبعت هذه الحكاية من جديد.</p>
+  <p id="rtl-mixed">זהו משפט בעברית עם כמה English words באמצע השורה, ולכן
+  העיבוד המשופר חייב לסגת ולהשאיר את הפסקה הזאת לעיבוד הדפדפן הרגיל, בדיוק
+  כפי שקורה בכל תוכן דו-כיווני אחר שמערבב כתבים חזקים משני הכיוונים.</p>
 </div>
 <script type="module">
   import { hangingPunctuation, justify, unjustify } from "/dist/index.js";

@@ -142,6 +142,19 @@ export const latinProtrusion: ProtrusionTable = {
   x: { l: 50, r: 50 },
   y: { r: 50 },
 
+  // RTL punctuation (pure-RTL paragraph support). Hebrew and Arabic share
+  // most ASCII punctuation, which the entries above already cover — table
+  // lookup is per character and `l`/`r` are logical line-start/line-end,
+  // so a Hebrew period hangs into the LEFT margin automatically. These are
+  // the script-specific marks, mirroring their Latin counterparts' values.
+  "،": { r: 500 }, // Arabic comma ~ ","
+  "؛": { r: 300 }, // Arabic semicolon ~ ";"
+  "؟": { r: 100 }, // Arabic question mark ~ "?"
+  "۔": { r: 700 }, // Arabic full stop ~ "."
+  "־": { l: 500, r: 500 }, // Hebrew maqaf ~ "-"
+  "׳": { l: 300, r: 400 }, // Hebrew geresh ~ "'"
+  "״": { l: 300, r: 300 }, // Hebrew gershayim ~ '"'
+
   // Round capitals: a curve meets the margin at one tangent point, so
   // flush-set rounds read as slightly indented. microtype's generic
   // default omits them, but its hand-tuned Garalde configs (EB Garamond,

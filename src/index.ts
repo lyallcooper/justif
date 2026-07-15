@@ -54,7 +54,9 @@ export {
 export { fontProtrusion } from "./core/protrusion-fonts.js";
 
 export interface JustifyOptions {
-  /** Word splitter, e.g. `hyphenateEnUS` from "justif/hyphenate/en-us". */
+  /** Word splitter, e.g. `hyphenateEnUS` from "justif/hyphenate/en-us".
+   * Never called for RTL paragraphs (Arabic joining makes fragment
+   * measurement invalid; Hebrew convention breaks without hyphens). */
   hyphenate?: (word: string) => readonly string[];
   tolerance?: number;
   pretolerance?: number;
@@ -107,7 +109,8 @@ export interface JustifyOptions {
    * primary flexes (tracking saturates at its budget), and the last line
    * always keeps its natural letterfit. Beyond TeX: microtype's
    * letterspacing is static styling, never a per-line justification
-   * variable.
+   * variable. Always off for RTL paragraphs (letterspacing cursive Arabic
+   * is typographically wrong and renders inconsistently across engines).
    */
   tracking?: boolean | Partial<TrackingOptions>;
   /**
@@ -289,7 +292,15 @@ export function justify(
     scan: ParagraphScan,
     runsMetrics: RunMetrics[],
     specByKey: Map<string, FontSpec>,
-  ): ParagraphItems => buildItems(runTexts(scan), runsMetrics, buildOpts, measureFor(specByKey));
+  ): ParagraphItems => {
+    // RTL paragraphs never letterspace: tracking inside Arabic cursive
+    // joining is typographically wrong, and engines disagree on whether
+    // joined pairs receive letter-spacing at all — the width model would
+    // drift by pixels per word. (Hyphenation is likewise suppressed, via
+    // noHyphens in buildRunMetrics.)
+    const opts = scan.direction === "rtl" ? { ...buildOpts, tracking: false as const } : buildOpts;
+    return buildItems(runTexts(scan), runsMetrics, opts, measureFor(specByKey));
+  };
 
   /** Phase 2: measurement + item building (fonts must be loaded by now). */
   const prepare = (p: HTMLElement): boolean => {
@@ -351,7 +362,10 @@ export function justify(
       state.original.append(...p.childNodes);
       state.enhanced = true;
       p.setAttribute("data-justif", "");
-      p.style.textAlign = "left";
+      // Neutralize the author's text-align: justify (the browser must not
+      // re-justify our exactly-filled lines) — toward the line-START edge,
+      // which is the right edge in an RTL paragraph.
+      p.style.textAlign = state.scan.direction === "rtl" ? "right" : "left";
       // Neutralize CSS hanging-punctuation (Safari): it would hang quotes
       // and stops on top of our protrusion — a double hang — and shift
       // rendered widths our wrap model doesn't know about. A no-op in

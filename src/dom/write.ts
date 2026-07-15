@@ -33,11 +33,17 @@ export interface RenderSegment {
   forceLigatures?: boolean;
   /** The line's expansion; 100 = natural (declaration omitted). */
   fontStretchPct: number;
-  /** Negative left protrusion on a line's first segment; 0 otherwise. */
-  marginLeftPx: number;
-  /** Negative right protrusion + wrap-safety margin on a line's last
-   * segment (shrinks layout advance only; glyphs paint unchanged). */
-  marginRightPx: number;
+  /** Negative line-start protrusion on a line's first segment; 0 otherwise.
+   * LOGICAL: emitted as margin-inline-start, which the browser resolves to
+   * the left edge in LTR and the right edge in RTL — line starts hang into
+   * the correct margin in both directions. */
+  marginStartPx: number;
+  /** Negative line-end protrusion + wrap-safety margin on a line's last
+   * segment (shrinks layout advance only; glyphs paint unchanged). LOGICAL:
+   * emitted as margin-inline-end (right in LTR, left in RTL), so the
+   * corrective trailing margin always shrinks the line's advance at its
+   * END edge. */
+  marginEndPx: number;
   /** Edge spaces excluded from corrective measurement (position-dependent
    * rendering) and re-added as exact model widths. */
   edgeTrim: { lead: number; trail: number; modelPx: number };
@@ -146,13 +152,15 @@ export function writeParagraph(
       const hyphen = doc.createElement("span");
       hyphen.className = "justif-hyphen";
       // The line's trailing protrusion margin must sit AFTER the hyphen —
-      // on the preceding text segment it would pull the hyphen glyph left
-      // into the word it belongs to.
+      // on the preceding text segment it would pull the hyphen glyph back
+      // into the word it belongs to. (RTL paragraphs never hyphenate, so
+      // this path is LTR-only in practice; logical margins keep it
+      // direction-correct regardless.)
       const entries = lineElements[lineElements.length - 1]!;
       const prevEntry = entries[entries.length - 1];
-      if (prevEntry !== undefined && prevEntry.el.style.marginRight !== "") {
-        hyphen.style.marginRight = prevEntry.el.style.marginRight;
-        prevEntry.el.style.marginRight = "";
+      if (prevEntry !== undefined && prevEntry.el.style.marginInlineEnd !== "") {
+        hyphen.style.marginInlineEnd = prevEntry.el.style.marginInlineEnd;
+        prevEntry.el.style.marginInlineEnd = "";
       }
       prevContainer.append(hyphen);
       entries.push({ el: hyphen, seg: null });
@@ -183,8 +191,8 @@ export function writeParagraph(
     if (segment.fontStretchPct !== 100) {
       el.style.fontStretch = `${Math.round(segment.fontStretchPct * 100) / 100}%`;
     }
-    if (segment.marginLeftPx !== 0) el.style.marginLeft = px(segment.marginLeftPx);
-    if (segment.marginRightPx !== 0) el.style.marginRight = px(segment.marginRightPx);
+    if (segment.marginStartPx !== 0) el.style.marginInlineStart = px(segment.marginStartPx);
+    if (segment.marginEndPx !== 0) el.style.marginInlineEnd = px(segment.marginEndPx);
     el.textContent = segment.text;
     container.append(el);
     prevContainer = container;
@@ -257,10 +265,10 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
           rectPx += range.getBoundingClientRect().width;
           modelPx += seg.edgeTrim.modelPx;
         }
-        modelPx += parseFloat(el.style.marginLeft) || 0;
-        const mr = parseFloat(el.style.marginRight) || 0;
-        modelPx += mr;
-        ownMargins += mr;
+        modelPx += parseFloat(el.style.marginInlineStart) || 0;
+        const me = parseFloat(el.style.marginInlineEnd) || 0;
+        modelPx += me;
+        ownMargins += me;
       }
       // Skipped content (content-visibility: auto off-screen) measures
       // zero rects; model widths and margins still parse, so the "is this
@@ -279,7 +287,8 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
   return { corrections, hidden };
 }
 
-/** Write phase of the wrap guarantee. */
+/** Write phase of the wrap guarantee. The corrective margin lands on the
+ * line's END edge (inline-end: right in LTR, left in RTL). */
 export function applyCorrections(corrections: readonly Correction[]): void {
-  for (const c of corrections) c.el.style.marginRight = px(c.marginPx);
+  for (const c of corrections) c.el.style.marginInlineEnd = px(c.marginPx);
 }
