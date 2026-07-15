@@ -355,7 +355,27 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
 }
 
 /** Write phase of the wrap guarantee. The corrective margin lands on the
- * line's END edge (inline-end: right in LTR, left in RTL). */
+ * line's END edge (inline-end: right in LTR, left in RTL) — hoisted OUT of
+ * any cloned inline element that closes at this line end. Inside the clone
+ * the negative margin shrinks the clone's own decoration box, visibly
+ * pinching a padded chip's end inset; inline-end margins accumulate at the
+ * same line edge wherever they sit in the nesting, so the hoist is
+ * layout-neutral. A clone whose element continues onto the next line has
+ * later children, so the walk stops there and the margin stays inside —
+ * where that line actually ends. */
 export function applyCorrections(corrections: readonly Correction[]): void {
-  for (const c of corrections) c.el.style.marginInlineEnd = px(c.marginPx);
+  for (const c of corrections) {
+    let target = c.el;
+    for (
+      let parent = target.parentElement;
+      parent !== null &&
+      !parent.hasAttribute("data-justif") &&
+      parent.lastChild === target;
+      parent = target.parentElement
+    ) {
+      target = parent;
+    }
+    if (target !== c.el) c.el.style.marginInlineEnd = "0px";
+    target.style.marginInlineEnd = px(c.marginPx);
+  }
 }
