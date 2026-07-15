@@ -21,7 +21,13 @@ import {
   type RunText,
 } from "../core/types.js";
 import { calibrateStretch, NO_EXPANSION } from "./calibrate.js";
-import { type FontSpec, isMonospace, measureInkBearings, measureWidth } from "./measure.js";
+import {
+  type FontSpec,
+  isMonospace,
+  measureInkBearings,
+  measureWidth,
+  requiresDomMeasurement,
+} from "./measure.js";
 import type { ParagraphScan } from "./read.js";
 import { type RenderSegment, WRAP_SAFETY_PAD_PX } from "./write.js";
 
@@ -65,6 +71,20 @@ function spaceWidthIn(spec: FontSpec, runText: string): number {
     if (probe !== null) {
       return measureWidth(`${probe} ${probe}`, spec) - 2 * measureWidth(probe, spec);
     }
+  }
+  if (requiresDomMeasurement(spec) && spec.variantPosition === "normal") {
+    // Variant-bearing runs measure spaces IN LETTER CONTEXT for the same
+    // reason: engines that SYNTHESIZE a variant can scale a run's interior
+    // spaces along with its letters (GTK WebKit renders all-small-caps at
+    // ~0.7x, spaces included), while a lone space carries nothing to case
+    // and measures full-size — every modeled gap then overshoots the
+    // rendered one and lines come out short. variant-position runs are the
+    // exception BOTH ways: the renderer isolates each of their words and
+    // spaces into its own shaping segment (Firefox shapes sub/super
+    // contextually across a run), so their spaces really do render alone
+    // and the lone-space measurement is the matching one.
+    const letter = /\p{L}/u.exec(runText)?.[0] ?? "n";
+    return measureWidth(`${letter} ${letter}`, spec) - 2 * measureWidth(letter, spec);
   }
   return measureWidth(" ", spec);
 }
