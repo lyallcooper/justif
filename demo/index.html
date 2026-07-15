@@ -257,7 +257,6 @@
     justify-content: center;
     align-items: center;
     margin: 0;
-    position: relative;
   }
   .view-toggle button {
     font: inherit;
@@ -277,38 +276,38 @@
   #flicker-hint {
     position: absolute;
     left: 50%;
-    bottom: calc(100% + 0.65rem);
+    bottom: calc(100% + 1.5rem);
     z-index: 1;
     width: max-content;
     max-width: calc(100vw - 2rem);
-    padding: 0.3rem 0.55rem;
-    transform: translateX(-50%);
-    color: var(--ink);
-    background: var(--paper);
-    border: 1px solid var(--ink);
-    font-size: 0.8rem;
-    line-height: 1.25;
+    box-sizing: border-box;
+    padding: 0.55rem 0.8rem;
+    transform: translate(-50%, 0.35rem);
+    color: var(--paper);
+    background: var(--ink);
+    border-radius: 0.2rem;
+    box-shadow: 0 0.35rem 1.25rem rgb(0 0 0 / 0.16);
+    font-size: 0.85rem;
+    line-height: 1.3;
     text-align: center;
     pointer-events: none;
     visibility: hidden;
     opacity: 0;
-    transition: opacity 120ms ease;
-  }
-  #flicker-hint::after {
-    content: "";
-    position: absolute;
-    left: 50%;
-    bottom: -0.3rem;
-    width: 0.5rem;
-    height: 0.5rem;
-    transform: translateX(-50%) rotate(45deg);
-    background: var(--paper);
-    border-right: 1px solid var(--ink);
-    border-bottom: 1px solid var(--ink);
+    transition:
+      opacity 260ms ease,
+      transform 260ms ease,
+      visibility 0s linear 260ms;
   }
   #flicker-hint[data-visible] {
     visibility: visible;
     opacity: 1;
+    transform: translate(-50%, 0);
+    transition-delay: 0s;
+  }
+  #flicker-hint .touch-action { display: none; }
+  @media (pointer: coarse) {
+    #flicker-hint .pointer-action { display: none; }
+    #flicker-hint .touch-action { display: inline; }
   }
   body.flicker-mode .panes {
     -webkit-touch-callout: none;    /* no long-press link/text callouts */
@@ -825,13 +824,13 @@
 <p class="ornament" aria-hidden="true">❧</p>
 
 <div id="dock">
+<span id="flicker-hint" role="status" aria-hidden="true"><span class="pointer-action">Click</span><span class="touch-action">Tap</span> &amp; hold anywhere to reveal the browser rendering</span>
 <div id="dock-bar">
   <div class="view-toggle" role="group" aria-label="Comparison view">
     <button id="view-side" type="button" aria-pressed="true">side-by-side</button>
     <button id="view-flicker" type="button" aria-pressed="false"
       aria-label="Flicker view. Hold the text to reveal the browser rendering"
       aria-describedby="flicker-hint">flicker</button>
-    <span id="flicker-hint" role="tooltip" aria-hidden="true">Hold the text to reveal the browser rendering</span>
   </div>
   <button id="dock-toggle" type="button" aria-expanded="false">controls &amp; metrics ▴</button>
 </div>
@@ -3035,7 +3034,7 @@ justify(document.querySelectorAll("article p"), {
     flickerHintShown = true;
     $("flicker-hint").setAttribute("data-visible", "");
     $("flicker-hint").setAttribute("aria-hidden", "false");
-    flickerHintTimer = window.setTimeout(hideFlickerHint, 2500);
+    flickerHintTimer = window.setTimeout(hideFlickerHint, 5000);
   }
   function setView(v) {
     $("view").value = v;

@@ -20,9 +20,12 @@ test("comparison controls stay stable and explain flicker once", async ({ page }
   await page.click("#view-flicker");
   await expect(page.locator("body")).toHaveClass(/flicker-mode/);
   await expect(page.locator("#flicker-hint")).toBeVisible();
+  await expect(page.locator("#flicker-hint .pointer-action")).toBeVisible();
+  await expect(page.locator("#flicker-hint .touch-action")).toBeHidden();
 
   const edges = await page.evaluate(() => {
     const views = document.querySelector(".view-toggle")!.getBoundingClientRect();
+    const dock = document.getElementById("dock")!.getBoundingClientRect();
     const label = document.getElementById("dock-toggle")!.getBoundingClientRect();
     const hint = document.getElementById("flicker-hint")!.getBoundingClientRect();
     return {
@@ -32,6 +35,9 @@ test("comparison controls stay stable and explain flicker once", async ({ page }
       labelCenter: label.left + label.width / 2,
       hintLeft: hint.left,
       hintRight: hint.right,
+      hintCenter: hint.left + hint.width / 2,
+      hintBottom: hint.bottom,
+      dockTop: dock.top,
       viewport: document.documentElement.clientWidth,
     };
   });
@@ -39,9 +45,21 @@ test("comparison controls stay stable and explain flicker once", async ({ page }
   expect(edges.viewsRight).toBeLessThanOrEqual(edges.labelLeft);
   expect(edges.hintLeft).toBeGreaterThanOrEqual(0);
   expect(edges.hintRight).toBeLessThanOrEqual(edges.viewport);
+  expect(Math.abs(edges.hintCenter - edges.viewport / 2)).toBeLessThan(1);
+  expect(edges.hintBottom).toBeLessThan(edges.dockTop);
   expect(Math.abs(edges.left - viewsBefore.left)).toBeLessThan(0.01);
   expect(Math.abs(edges.viewsRight - viewsBefore.right)).toBeLessThan(0.01);
   expect(Math.abs(edges.labelCenter - centerBefore)).toBeLessThan(0.01);
+
+  await page.click("#dock-toggle");
+  await expect(page.locator("#dock-body")).toBeVisible();
+  await expect(page.locator("#dock-bar > .view-toggle")).toBeVisible();
+  const expandedEdges = await page.evaluate(() => {
+    const dock = document.getElementById("dock")!.getBoundingClientRect();
+    const hint = document.getElementById("flicker-hint")!.getBoundingClientRect();
+    return { dockTop: dock.top, hintBottom: hint.bottom };
+  });
+  expect(expandedEdges.hintBottom).toBeLessThan(expandedEdges.dockTop);
 
   const text = page.locator("#enhanced .justif-seg").first();
   await text.dispatchEvent("pointerdown", { button: 0 });
@@ -49,14 +67,31 @@ test("comparison controls stay stable and explain flicker once", async ({ page }
   await text.dispatchEvent("pointerup", { button: 0 });
   await expect(page.locator("body")).not.toHaveClass(/show-browser/);
 
-  await expect(page.locator("#flicker-hint")).toBeHidden({ timeout: 3500 });
+  await page.waitForFunction(
+    () => !document.getElementById("flicker-hint")!.hasAttribute("data-visible"),
+    undefined,
+    { timeout: 6000 },
+  );
+  expect(
+    await page.locator("#flicker-hint").evaluate((el) => getComputedStyle(el).visibility),
+  ).toBe("visible");
+  await expect(page.locator("#flicker-hint")).toBeHidden({ timeout: 500 });
   await page.click("#view-side");
   await page.click("#view-flicker");
   await expect(page.locator("#flicker-hint")).toBeHidden();
+});
 
-  await page.click("#dock-toggle");
-  await expect(page.locator("#dock-body")).toBeVisible();
-  await expect(page.locator("#dock-bar > .view-toggle")).toBeVisible();
+test("flicker toast uses touch wording on coarse pointers", async ({ browser }) => {
+  const context = await browser.newContext({
+    hasTouch: true,
+    viewport: { width: 390, height: 844 },
+  });
+  const page = await context.newPage();
+  await page.goto("http://localhost:5199/demo/");
+  await page.click("#view-flicker");
+  await expect(page.locator("#flicker-hint .pointer-action")).toBeHidden();
+  await expect(page.locator("#flicker-hint .touch-action")).toBeVisible();
+  await context.close();
 });
 
 test("inline code background follows protruded end punctuation", async ({ page }) => {
