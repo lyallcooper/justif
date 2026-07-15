@@ -51,7 +51,10 @@ Keep native justification in your CSS, then load the automatic entry:
   }
 </style>
 
-<script type="module" src="https://cdn.jsdelivr.net/npm/justif"></script>
+<script
+  type="module"
+  src="https://cdn.jsdelivr.net/npm/justif@0.1.0/dist/auto.js"
+></script>
 ```
 
 The script scans `p`, `li`, `dd`, `blockquote`, and `figcaption` elements once
@@ -74,7 +77,7 @@ To limit the automatic scan, add a selector to the script:
 <script
   type="module"
   data-justif-selector="article .prose p"
-  src="https://cdn.jsdelivr.net/npm/justif"
+  src="https://cdn.jsdelivr.net/npm/justif@0.1.0/dist/auto.js"
 ></script>
 ```
 
