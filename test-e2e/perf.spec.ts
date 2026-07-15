@@ -1,5 +1,12 @@
 import { expect, test } from "@playwright/test";
 
+/** Spec files run in Node, but this tsconfig has no node types — reach
+ * process through globalThis with a local shape instead of @types/node. */
+function ciEnv(): string | undefined {
+  const g = globalThis as { process?: { env: Record<string, string | undefined> } };
+  return g.process?.env["CI"];
+}
+
 /**
  * Performance budget from the project plan: ~10k words prepare+layout+patch
  * in well under 50ms warm. The "resize" number measures time-to-FIRST-flush:
@@ -73,7 +80,7 @@ test("10k-word document enhances within budget", async ({ page }) => {
   // 2-core runners are ~2-4x slower (observed: WebKit resize 186ms vs ~30ms
   // local), so CI gets 4x headroom — still tight enough to catch an
   // order-of-magnitude regression, without flaking on runner variance.
-  const scale = process.env.CI === undefined ? 1 : 4;
+  const scale = ciEnv() === undefined ? 1 : 4;
   expect(timings.cold).toBeLessThan(150 * scale);
   expect(timings.resize).toBeLessThan(100 * scale); // includes rAF waits; arithmetic is a fraction
 });
