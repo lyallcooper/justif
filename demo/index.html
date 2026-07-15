@@ -2306,9 +2306,11 @@ justify(document.querySelectorAll("article p"), {
   const PARAM_STORE = "justif-demo-params";
   const PARAM_IDS = ["sample", "font", "measure", "hyphenate", "protrusion", "hangpunct",
                      "expansion", "tracking", "lastline", "lastlinefit", "pretty", "blur", "view", "rulers", "deviation"];
+  let savedParams = null;
   try {
     const saved = JSON.parse(localStorage.getItem(PARAM_STORE) ?? "null");
     if (saved !== null) {
+      savedParams = saved;
       // Saves from before the system options carried full cross-browser
       // stacks stored the bare ui-*/system-ui keyword; match it to the
       // option that now starts with it.
@@ -2330,21 +2332,37 @@ justify(document.querySelectorAll("article p"), {
     }
   } catch { /* corrupt or unavailable storage: fall through to defaults */ }
 
-  // Fresh loads are always side-by-side; the default measure is the widest
-  // two-column fit, capped at 16em (a comfortable book measure beats a
-  // maximal one as a first impression). Saved preferences win.
+  // Fresh loads start side-by-side at the widest two-column fit, capped at
+  // 16em (a comfortable book measure beats a maximal one as a first
+  // impression). Flicker gets a wider default, while saved preferences win.
   function defaultMeasureForWindow() {
     const gap = window.innerWidth <= 1100 ? 24 : 48; // .panes gap (1.5/3rem)
     const padding = 48; // .panes horizontal padding (2 × 1.5rem)
     const perColumnEm = (window.innerWidth - padding - gap) / 2 / 16;
     return Math.max(10, Math.min(16, Math.floor(perColumnEm / 0.5) * 0.5));
   }
-  try {
-    const saved = JSON.parse(localStorage.getItem(PARAM_STORE) ?? "null");
-    if (saved === null || !("measure" in saved)) {
-      document.getElementById("measure").value = String(defaultMeasureForWindow());
-    }
-  } catch { /* defaults stand */ }
+  function defaultFlickerMeasure(sideMeasure = defaultMeasureForWindow()) {
+    return Math.min(24, sideMeasure * 1.5);
+  }
+  function storedMeasure(value) {
+    if (value === null || value === undefined || value === "") return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? Math.max(10, Math.min(36, number)) : null;
+  }
+
+  const initialView = document.getElementById("view").value === "flicker" ? "flicker" : "side";
+  const sideDefault = defaultMeasureForWindow();
+  const flickerDefault = defaultFlickerMeasure(sideDefault);
+  const legacyMeasure = storedMeasure(savedParams?.measure);
+  const viewMeasures = {
+    side: storedMeasure(savedParams?.measureByView?.side)
+      ?? (initialView === "side" ? legacyMeasure : null)
+      ?? sideDefault,
+    flicker: storedMeasure(savedParams?.measureByView?.flicker)
+      ?? (initialView === "flicker" ? legacyMeasure : null)
+      ?? flickerDefault,
+  };
+  document.getElementById("measure").value = String(viewMeasures[initialView]);
 
   function setSample() {
     const html = SAMPLES[document.getElementById("sample").value];
@@ -2872,11 +2890,12 @@ justify(document.querySelectorAll("article p"), {
   // Controls.
   // ------------------------------------------------------------------
 
-  function syncMeasureLimit() {
+  function syncMeasureLimit(preferredMeasure) {
     const slider = $("measure");
     // Mirror the .article CSS clamp: min(--measure, 100vw − 2.75rem).
     const availEm = Math.min(36, Math.floor((window.innerWidth - 2.75 * 16) / 16 / 0.5) * 0.5);
     slider.max = String(availEm);
+    if (preferredMeasure !== undefined) slider.value = String(preferredMeasure);
     const limited = availEm < 36;
     $("width-info").hidden = !limited;
     if (limited) {
@@ -3038,6 +3057,8 @@ justify(document.querySelectorAll("article p"), {
   }
   function setView(v) {
     $("view").value = v;
+    syncMeasureLimit(viewMeasures[v]);
+    applyMeasure();
     document.body.classList.toggle("flicker-mode", v === "flicker");
     if (v !== "flicker") document.body.classList.remove("show-browser");
     if (v === "flicker") showFlickerHintOnce();
@@ -3116,16 +3137,20 @@ justify(document.querySelectorAll("article p"), {
   // Width changes exercise the ResizeObserver fast path — no re-justify;
   // metrics and overlays recalculate live with the drag.
   $("measure").addEventListener("input", () => {
+    const view = $("view").value === "flicker" ? "flicker" : "side";
+    viewMeasures[view] = Number($("measure").value);
     applyMeasure();
     scheduleUpdate();
   });
   window.addEventListener("resize", () => {
-    syncMeasureLimit();
+    const view = $("view").value === "flicker" ? "flicker" : "side";
+    syncMeasureLimit(viewMeasures[view]);
+    applyMeasure();
     scheduleUpdate();
   });
   // (No scroll handling needed: nothing is layout-skipped, so the
   // geometry the flicker alignment pinned to is stable while scrolling.)
-  syncMeasureLimit();
+  syncMeasureLimit(viewMeasures[initialView]);
 
   // Expansion needs a responsive variable-width (wdth) axis; gray the
   // toggle out (with an explanation) for fonts that lack one, probed the
@@ -3188,9 +3213,11 @@ justify(document.querySelectorAll("article p"), {
       }
     }
     // Fully fresh-load semantics: window-derived defaults, not static ones.
-    syncMeasureLimit();
+    const sideMeasure = defaultMeasureForWindow();
+    viewMeasures.side = sideMeasure;
+    viewMeasures.flicker = defaultFlickerMeasure(sideMeasure);
     $("view").value = "side";
-    $("measure").value = String(defaultMeasureForWindow());
+    syncMeasureLimit(viewMeasures.side);
     applyMeasure();
     syncSideEffects();
     setSample();
@@ -3203,6 +3230,7 @@ justify(document.querySelectorAll("article p"), {
       const el = $(id);
       state[id] = el.type === "checkbox" ? el.checked : el.value;
     }
+    state.measureByView = { ...viewMeasures };
     try {
       localStorage.setItem(PARAM_STORE, JSON.stringify(state));
     } catch { /* private mode / quota: settings just won't persist */ }

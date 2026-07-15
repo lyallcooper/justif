@@ -94,6 +94,50 @@ test("flicker toast uses touch wording on coarse pointers", async ({ browser }) 
   await context.close();
 });
 
+test("comparison views retain independent widths", async ({ page }) => {
+  await page.setViewportSize({ width: 500, height: 844 });
+  await page.goto("/demo/");
+  await page.waitForFunction(
+    () => !document.documentElement.classList.contains("fonts-loading"),
+  );
+
+  const measure = page.locator("#measure");
+  const setMeasure = (value: string) => measure.evaluate((el: HTMLInputElement, next) => {
+    el.value = next;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }, value);
+
+  await expect(measure).toHaveValue("13");
+  await page.click("#view-flicker");
+  await expect(measure).toHaveValue("19.5");
+  await setMeasure("18");
+
+  await page.click("#view-side");
+  await expect(measure).toHaveValue("13");
+  await setMeasure("15");
+  await page.click("#view-flicker");
+  await expect(measure).toHaveValue("18");
+  await page.click("#view-side");
+  await expect(measure).toHaveValue("15");
+
+  expect(await page.evaluate(() => {
+    const saved = JSON.parse(localStorage.getItem("justif-demo-params")!);
+    return saved.measureByView;
+  })).toEqual({ side: 15, flicker: 18 });
+
+  await page.reload();
+  await expect(measure).toHaveValue("15");
+  await page.click("#view-flicker");
+  await expect(measure).toHaveValue("18");
+
+  await page.evaluate(() => localStorage.removeItem("justif-demo-params"));
+  await page.setViewportSize({ width: 1280, height: 844 });
+  await page.reload();
+  await expect(measure).toHaveValue("16");
+  await page.click("#view-flicker");
+  await expect(measure).toHaveValue("24");
+});
+
 test("inline code background follows protruded end punctuation", async ({ page }) => {
   await page.goto("/demo/");
   await page.waitForFunction(
