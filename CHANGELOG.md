@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+- Critical: `dist` now ships with destructuring pre-lowered, and the build
+  gates on esbuild accepting every file at Vite 6's default `build.target`.
+  esbuild marks all destructuring as broken below Safari 14.1 and refuses
+  to transform it; the older esbuilds bundled in Vite 6 / Astro 5 shipped
+  the broken transform instead — a default production build initialized
+  justif cleanly and silently managed zero paragraphs.
+- New `onSkip(paragraph, reason)` option: one callback per paragraph justif
+  declines, with the failing check ("inline `<kbd>` has a horizontal
+  margin", "author font-stretch: 75% on a run"). The drop-in script accepts
+  `data-justif-debug` to log the same to the console.
+- Caps variants (`small-caps`, `all-small-caps`, …) are measured with DOM
+  probes on every engine, and variant-run word spaces are measured in
+  letter context: GTK WebKit synthesizes small caps at ~0.7× — scaling
+  interior spaces with the letters — where other engines use the font's
+  real feature, and lone-space probes measured full-size, leaving
+  small-caps lines visibly under-filled on that port.
+- README: the TeX-style tuning knobs are documented, and the inline-margin
+  limitation is stated next to the chip padding/border support note.
+
 ## 0.2.0 (2026-07-15)
 
 - Inline chips and pills are now first-class: horizontal padding and
