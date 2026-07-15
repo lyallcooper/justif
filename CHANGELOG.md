@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.1 (2026-07-15)
 
 - Critical: `dist` now ships with destructuring pre-lowered, and the build
   gates on esbuild accepting every file at Vite 6's default `build.target`.
