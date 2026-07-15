@@ -26,6 +26,37 @@ test("favicon SVG adapts to the preferred color scheme", async ({ page }) => {
   });
 });
 
+test("appearance control supports system, light, and dark modes", async ({ page }) => {
+  const root = page.locator("html");
+  const background = () => root.evaluate((el) => getComputedStyle(el).backgroundColor);
+
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.goto("/demo/");
+  await expect(root).toHaveAttribute("data-theme", "system");
+  expect(await background()).toBe("rgb(18, 18, 16)");
+
+  await page.click("#dock-toggle");
+  await expect(page.locator("#theme-system")).toHaveAttribute("aria-pressed", "true");
+  await page.click("#theme-light");
+  await expect(root).toHaveAttribute("data-theme", "light");
+  expect(await background()).toBe("rgb(255, 255, 255)");
+
+  await page.reload();
+  await expect(root).toHaveAttribute("data-theme", "light");
+  expect(await background()).toBe("rgb(255, 255, 255)");
+
+  await page.click("#dock-toggle");
+  await page.click("#theme-dark");
+  await expect(root).toHaveAttribute("data-theme", "dark");
+  expect(await background()).toBe("rgb(18, 18, 16)");
+
+  await page.click("#theme-system");
+  await page.emulateMedia({ colorScheme: "light" });
+  expect(await background()).toBe("rgb(255, 255, 255)");
+  await page.emulateMedia({ colorScheme: "dark" });
+  expect(await background()).toBe("rgb(18, 18, 16)");
+});
+
 test("comparison controls stay stable and explain flicker once", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/demo/");

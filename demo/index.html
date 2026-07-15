@@ -1,11 +1,20 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="system">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>justif — publication-grade text justification for the web</title>
 <link rel="icon" href="./favicon.svg?v=2" type="image/svg+xml" />
 <script>
+  // Restore appearance before CSS is parsed so explicit light/dark choices
+  // never flash through the system default on reload.
+  try {
+    const theme = JSON.parse(localStorage.getItem("justif-demo-params") ?? "null")?.theme;
+    if (["system", "light", "dark"].includes(theme)) {
+      document.documentElement.dataset.theme = theme;
+    }
+  } catch { /* corrupt or unavailable storage: keep the system default */ }
+
   // Keep the first paint on final font metrics. The timeout is only a
   // fail-safe for a broken asset or disabled module script.
   document.documentElement.classList.add("fonts-loading");
@@ -205,6 +214,34 @@
     --accent: #a23b2e; /* madder red: loose spaces, worse metrics — NOT general UI */
     --tight: #2e5f8a;  /* tight spaces */
     --good: #2a6b46;
+    --float-shadow: rgb(0 0 0 / 0.16);
+    --scroll-shadow: rgb(0 0 0 / 0.28);
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --ink: #f2f0ea;
+    --paper: #121210;
+    --muted: #d4d0c7;
+    --hairline: #817d75;
+    --accent: #e17a6d;
+    --tight: #73aee0;
+    --good: #72bd8b;
+    --float-shadow: rgb(0 0 0 / 0.55);
+    --scroll-shadow: rgb(255 255 255 / 0.2);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root[data-theme="system"] {
+      color-scheme: dark;
+      --ink: #f2f0ea;
+      --paper: #121210;
+      --muted: #d4d0c7;
+      --hairline: #817d75;
+      --accent: #e17a6d;
+      --tight: #73aee0;
+      --good: #72bd8b;
+      --float-shadow: rgb(0 0 0 / 0.55);
+      --scroll-shadow: rgb(255 255 255 / 0.2);
+    }
   }
 
   html {
@@ -287,7 +324,7 @@
     color: var(--paper);
     background: var(--ink);
     border-radius: 0.2rem;
-    box-shadow: 0 0.35rem 1.25rem rgb(0 0 0 / 0.16);
+    box-shadow: 0 0.35rem 1.25rem var(--float-shadow);
     font-size: 0.85rem;
     line-height: 1.3;
     text-align: center;
@@ -366,7 +403,7 @@
     white-space: nowrap;
   }
   .controls input[type="checkbox"],
-  .controls input[type="range"] { accent-color: #000; }
+  .controls input[type="range"] { accent-color: var(--ink); }
   .controls label:has(input:disabled),
   .controls label:has(select:disabled) { opacity: 0.45; }
   .controls input[type="checkbox"] {
@@ -429,6 +466,25 @@
     border-radius: 3px;
     padding: 0.05rem 0.35rem;
     max-width: 17rem;
+  }
+  .theme-control {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .controls .theme-toggle {
+    display: inline-flex;
+  }
+  .controls .theme-toggle button {
+    border-radius: 0;
+    padding: 0.05rem 0.55rem;
+  }
+  .controls .theme-toggle button + button { border-left: none; }
+  .controls .theme-toggle button:first-child { border-radius: 3px 0 0 3px; }
+  .controls .theme-toggle button:last-child { border-radius: 0 3px 3px 0; }
+  .controls .theme-toggle button[aria-pressed="true"] {
+    color: var(--paper);
+    background: var(--ink);
   }
   #measure-out { font-variant-numeric: oldstyle-nums tabular-nums; color: var(--muted); min-width: 3.2em; }
 
@@ -503,7 +559,7 @@
     border-right: 1px solid transparent;
   }
   /* Margin truth lines (toggle): protruded glyphs visibly cross them. */
-  body.rulers .article { border-color: #000; }
+  body.rulers .article { border-color: var(--ink); }
   .article p {
     /* Hang headroom: engines can fail to repaint ink painted outside an
        element's box (protruded punctuation flickered at paragraph starts
@@ -718,6 +774,7 @@
       grid-column: 1 / -1;
       justify-self: end;
     }
+    .theme-control { grid-column: 1 / -1; }
     #dock-body { padding: 0.5rem 0.75rem 0.9rem; }
   }
   #metrics th, #metrics td {
@@ -792,9 +849,9 @@
     background:
       linear-gradient(var(--paper) 30%, transparent) center top / 100% 24px,
       linear-gradient(transparent, var(--paper) 70%) center bottom / 100% 24px,
-      radial-gradient(farthest-side at 50% 0, rgba(0, 0, 0, 0.28), transparent)
+      radial-gradient(farthest-side at 50% 0, var(--scroll-shadow), transparent)
         center top / 100% 9px,
-      radial-gradient(farthest-side at 50% 100%, rgba(0, 0, 0, 0.28), transparent)
+      radial-gradient(farthest-side at 50% 100%, var(--scroll-shadow), transparent)
         center bottom / 100% 9px;
     background-repeat: no-repeat;
     background-attachment: local, local, scroll, scroll;
@@ -810,6 +867,7 @@
 </header>
 
 <input type="hidden" id="view" value="side" />
+<input type="hidden" id="theme" value="system" />
 
 <div class="panes">
   <div class="pane">
@@ -838,6 +896,17 @@
 <div id="dock-body" hidden>
 
 <div class="controls">
+  <b>display</b>
+  <div class="control-items">
+    <span class="theme-control">
+      <span>appearance</span>
+      <span class="theme-toggle" role="group" aria-label="Appearance">
+        <button id="theme-system" type="button" aria-pressed="true">system</button>
+        <button id="theme-light" type="button" aria-pressed="false">light</button>
+        <button id="theme-dark" type="button" aria-pressed="false">dark</button>
+      </span>
+    </span>
+  </div>
   <b>text</b>
   <div class="control-items">
     <label>
@@ -2306,7 +2375,7 @@ justify(document.querySelectorAll("article p"), {
   // setSample()/apply() so the initial render already uses them.
   const PARAM_STORE = "justif-demo-params";
   const PARAM_IDS = ["sample", "font", "measure", "hyphenate", "protrusion", "hangpunct",
-                     "expansion", "tracking", "lastline", "lastlinefit", "pretty", "blur", "view", "rulers", "deviation"];
+                     "expansion", "tracking", "lastline", "lastlinefit", "pretty", "blur", "view", "theme", "rulers", "deviation"];
   let savedParams = null;
   try {
     const saved = JSON.parse(localStorage.getItem(PARAM_STORE) ?? "null");
@@ -3042,6 +3111,20 @@ justify(document.querySelectorAll("article p"), {
   $("blur").addEventListener("change", () => {
     document.body.classList.toggle("blur-mode", $("blur").checked);
   });
+  function setTheme(value) {
+    const theme = ["light", "dark"].includes(value) ? value : "system";
+    $("theme").value = theme;
+    document.documentElement.dataset.theme = theme;
+    for (const option of ["system", "light", "dark"]) {
+      $("theme-" + option).setAttribute("aria-pressed", String(theme === option));
+    }
+  }
+  for (const theme of ["system", "light", "dark"]) {
+    $("theme-" + theme).addEventListener("click", () => {
+      setTheme(theme);
+      $("theme").dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  }
   let flickerHintShown = false;
   let flickerHintTimer = 0;
   function hideFlickerHint() {
@@ -3247,7 +3330,8 @@ justify(document.querySelectorAll("article p"), {
     syncHangPunct();
     native.classList.toggle("pretty", $("pretty").checked);
     document.body.classList.toggle("blur-mode", $("blur").checked);
-  setView($("view").value === "flicker" ? "flicker" : "side");
+    setView($("view").value === "flicker" ? "flicker" : "side");
+    setTheme($("theme").value);
     syncBrowserLabel();
     document.body.classList.toggle("rulers", $("rulers").checked);
   }
