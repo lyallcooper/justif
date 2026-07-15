@@ -1,5 +1,5 @@
 /**
- * justif — perfect justified text for the web.
+ * justif — publication-grade text justification for the web.
  *
  * `justify(document.querySelectorAll("p"))` re-lays-out existing paragraphs
  * with Knuth-Plass optimal line breaking, character protrusion (optical

@@ -1,6 +1,6 @@
 # justif
 
-Better justified text for the web.
+Publication-grade text justification for the web.
 
 `justif` is a zero-dependency ESM library that applies TeX-style paragraph
 layout to existing HTML. It chooses line breaks across the whole paragraph,
@@ -17,9 +17,17 @@ Browsers normally justify one line at a time. A locally acceptable break can
 make the next line too loose, create visible rivers of whitespace, or force a
 poor break near the end of the paragraph.
 
+<figure>
+  <img
+    src="docs/images/browser-vs-justif.png"
+    alt="Native browser justification with uneven spacing compared with justif's more balanced line breaks"
+  >
+  <figcaption align="center"><em>Native browser and justif rendering in Google Chrome.</em></figcaption>
+</figure>
+
 `justif` uses the [Knuth-Plass line-breaking
-algorithm](https://doi.org/10.1002/spe.4380111102) to evaluate a paragraph as
-a whole. It can also:
+algorithm](https://en.wikipedia.org/wiki/Knuth%E2%80%93Plass_line-breaking_algorithm)
+to evaluate a paragraph as a whole. It can also:
 
 - hyphenate words using bundled TeX patterns;
 - hang punctuation into the margin for a cleaner text edge;

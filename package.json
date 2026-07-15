@@ -1,7 +1,7 @@
 {
   "name": "justif",
   "version": "0.1.0",
-  "description": "Perfect justified text for the web: Knuth-Plass line breaking + microtypography (character protrusion, font expansion via the wdth axis).",
+  "description": "Publication-grade text justification for the web",
   "type": "module",
   "sideEffects": false,
   "license": "MIT",
