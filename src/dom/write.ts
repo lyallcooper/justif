@@ -25,12 +25,14 @@ export interface RenderSegment {
   /** Absolute letter-spacing (author's + letterfit tracking), or null to
    * inherit the author's value untouched (tracking inactive on this line). */
   letterSpacingPx: number | null;
-  /** Re-enable common ligatures under our letter-spacing: browsers drop
-   * them when letter-spacing ≠ 0, but tracking's fractions of a pixel must
-   * not cost the fi/ffi ligatures. Only set when the AUTHOR's own
-   * letter-spacing is zero — an author who letterspaced their text has
-   * already (and intentionally) unligated it. */
-  forceLigatures?: boolean;
+  /** Feature settings to emit when tracking needs to retain common
+   * ligatures. Includes the author's low-level settings so this declaration
+   * never replaces their stylistic sets or variant choices. */
+  fontFeatureSettings?: string;
+  /** Keep context-sensitive positional variants within the same shaping
+   * unit used for measurement. CSS bidi isolation creates that boundary
+   * without changing inline layout or adding DOM text. */
+  isolateShaping?: boolean;
   /** The line's expansion; 100 = natural (declaration omitted). */
   fontStretchPct: number;
   /** Negative line-start protrusion on a line's first segment; 0 otherwise.
@@ -233,10 +235,11 @@ export function writeParagraph(
     el.style.wordSpacing = px(segment.wordSpacingPx);
     if (segment.letterSpacingPx !== null) {
       el.style.letterSpacing = px(segment.letterSpacingPx);
-      if (segment.forceLigatures === true) {
-        el.style.fontFeatureSettings = '"liga" 1, "clig" 1';
+      if (segment.fontFeatureSettings !== undefined) {
+        el.style.fontFeatureSettings = segment.fontFeatureSettings;
       }
     }
+    if (segment.isolateShaping === true) el.style.unicodeBidi = "isolate";
     if (segment.fontStretchPct !== 100) {
       el.style.fontStretch = `${Math.round(segment.fontStretchPct * 100) / 100}%`;
     }

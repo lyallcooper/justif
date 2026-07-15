@@ -30,8 +30,10 @@ import {
 import { clearCalibrationCache } from "./dom/calibrate.js";
 import {
   clearMeasureCache,
+  collectDomMeasurements,
   ctxFontOf,
   type FontSpec,
+  requiresDomMeasurement,
   supportsSpec,
 } from "./dom/measure.js";
 import { createWidthObserver, type WidthObserver } from "./dom/observe.js";
@@ -493,6 +495,24 @@ export function justify(
       );
     }
     if (destroyed) return;
+    // Discover every string needed by variant-bearing runs using disposable
+    // canvas estimates, then shape all of those strings in one hidden DOM
+    // batch. The real prepare pass below reads exact cached widths.
+    collectDomMeasurements(() => {
+      for (const p of scannable) {
+        const scan = scanned.get(p);
+        if (scan === undefined) continue;
+        if (!scan.specs.some(requiresDomMeasurement)) continue;
+        try {
+          const specByKey = new Map(scan.specs.map((spec) => [spec.key, spec]));
+          const runsMetrics = buildRunMetrics(scan, expansion, spacing, protrusionCtx);
+          buildPara(scan, runsMetrics, specByKey);
+        } catch {
+          // prepare() owns the per-paragraph fail-safe and will bail this
+          // paragraph without affecting its siblings.
+        }
+      }
+    });
     const batch: PatchEntry[] = [];
     for (const p of scannable) {
       if (!prepare(p)) continue;
@@ -512,6 +532,18 @@ export function justify(
     // interleaving reads with the DOM writes would force a layout per
     // paragraph.
     const widths = new Map(mine.map((p) => [p, contentWidthOf(p)]));
+    collectDomMeasurements(() => {
+      for (const p of mine) {
+        const state = states.get(p)!;
+        if (!state.scan.specs.some(requiresDomMeasurement)) continue;
+        try {
+          const runsMetrics = buildRunMetrics(state.scan, expansion, spacing, protrusionCtx);
+          buildPara(state.scan, runsMetrics, state.specByKey);
+        } catch {
+          // The actual pass below owns restoration and native fallback.
+        }
+      }
+    });
     const batch: PatchEntry[] = [];
     for (const p of mine) {
       const state = states.get(p)!;

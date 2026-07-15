@@ -180,7 +180,9 @@ penalties and tolerances for applications that need TeX-style tuning.
 
 `justif` supports horizontal LTR text, CJK text, and pure RTL Hebrew or Arabic
 paragraphs. Inline markup such as links, `em`, `strong`, and `code` may wrap
-across lines.
+across lines. Computed `font-variant-*` values and low-level
+`font-feature-settings` are preserved and measured with their actual glyph
+substitutions.
 
 A paragraph stays on native browser layout when `justif` cannot reproduce it
 reliably. Important examples include:
@@ -189,7 +191,7 @@ reliably. Important examples include:
 - vertical writing, Thai, and Lao;
 - images, form controls, `<br>`, SVG, MathML, floats, or block descendants;
 - inline descendants with horizontal padding, borders, or margins;
-- content-editable paragraphs and unsupported font-feature overrides.
+- content-editable paragraphs.
 
 Keep `text-align: justify` in your CSS so these paragraphs still have a useful
 fallback. One unsupported paragraph does not prevent its siblings from being

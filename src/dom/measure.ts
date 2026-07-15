@@ -1,8 +1,7 @@
 /**
- * Canvas-based text measurement. Everything is measured once at
- * font-stretch 100% (canvas cannot vary wdth — see calibrate.ts for how
- * expansion widths are derived) and cached module-globally, so repeated
- * words across a document cost one measureText total.
+ * Cached text measurement at font-stretch 100%. Ordinary runs use canvas;
+ * variants and OpenType features canvas cannot express use batched DOM
+ * probes. See calibrate.ts for expansion widths.
  */
 
 export interface FontSpec {
@@ -16,18 +15,22 @@ export interface FontSpec {
   stretch: string;
   /** Computed font-variation-settings ("normal" when unset). */
   variationSettings: string;
+  /** Every computed font-variant longhand. These participate in the cache
+   * key because OpenType substitutions can change glyph advances. */
+  variantAlternates: string;
   variantCaps: string;
+  variantEastAsian: string;
+  variantEmoji: string;
   /** Computed `hyphens` ("manual" default); "none" suppresses hyphenation
    * in this run. Not part of the cache key — it doesn't affect widths. */
   hyphens: string;
-  /** Computed font-variant-ligatures; canvas can only shape with the
-   * font's DEFAULT ligatures, so anything but "normal" is unsupported. */
+  /** Computed font-variant-ligatures. */
   ligatures: string;
-  /** Computed font-feature-settings; same constraint as ligatures. */
+  /** Computed font-feature-settings. */
   featureSettings: string;
-  /** Computed font-variant-numeric; oldstyle/tabular overrides change digit
-   * advances canvas cannot reproduce — same constraint as ligatures. */
+  /** Computed font-variant-numeric. */
   numeric: string;
+  variantPosition: string;
   /**
    * Computed direction, applied as canvas context state so RTL words are
    * shaped under the same base direction the DOM renders them with.
@@ -46,6 +49,8 @@ export interface FontSpec {
 export function fontSpecOf(style: CSSStyleDeclaration): FontSpec {
   const letterSpacing = style.letterSpacing === "normal" ? 0 : parseFloat(style.letterSpacing) || 0;
   const wordSpacing = parseFloat(style.wordSpacing) || 0;
+  const computed = (property: string, fallback = "normal"): string =>
+    style.getPropertyValue(property).trim() || fallback;
   const spec: FontSpec = {
     style: style.fontStyle,
     weight: style.fontWeight,
@@ -55,14 +60,21 @@ export function fontSpecOf(style: CSSStyleDeclaration): FontSpec {
     wordSpacingPx: wordSpacing,
     stretch: style.fontStretch || "100%",
     variationSettings: style.fontVariationSettings || "normal",
-    variantCaps: style.fontVariantCaps || "normal",
+    variantAlternates: computed("font-variant-alternates"),
+    variantCaps: computed("font-variant-caps"),
+    variantEastAsian: computed("font-variant-east-asian"),
+    // font-variant-emoji is newer than the other longhands and is absent
+    // from older CSSStyleDeclaration typings/engines. An unsupported
+    // property computes to the same effective initial value.
+    variantEmoji: computed("font-variant-emoji"),
     hyphens:
       style.hyphens ||
       (style as CSSStyleDeclaration & { webkitHyphens?: string }).webkitHyphens ||
       "manual",
-    ligatures: style.fontVariantLigatures || "normal",
-    featureSettings: style.fontFeatureSettings || "normal",
-    numeric: style.fontVariantNumeric || "normal",
+    ligatures: computed("font-variant-ligatures"),
+    featureSettings: computed("font-feature-settings"),
+    numeric: computed("font-variant-numeric"),
+    variantPosition: computed("font-variant-position"),
     direction: style.direction === "rtl" ? "rtl" : "ltr",
     key: "",
   };
@@ -75,7 +87,14 @@ export function fontSpecOf(style: CSSStyleDeclaration): FontSpec {
     spec.wordSpacingPx,
     spec.stretch,
     spec.variationSettings,
+    spec.variantAlternates,
     spec.variantCaps,
+    spec.variantEastAsian,
+    spec.variantEmoji,
+    spec.ligatures,
+    spec.featureSettings,
+    spec.numeric,
+    spec.variantPosition,
   ].join("|");
   return spec;
 }
@@ -134,24 +153,61 @@ function setFont(ctx: MeasureCtx, spec: FontSpec): void {
   currentKey = spec.key;
 }
 
-/** Paragraphs whose styling canvas cannot reproduce must bail. */
+/** Apply every width-affecting font property represented by FontSpec to a
+ * DOM probe. The low-level feature setting is deliberately written after
+ * the font-variant longhands, matching the cascade already computed on the
+ * source run and OpenType's feature resolution order. */
+export function applyFontSpec(el: HTMLElement, spec: FontSpec): void {
+  el.style.fontStyle = spec.style;
+  el.style.fontWeight = spec.weight;
+  el.style.fontSize = spec.sizePx + "px";
+  el.style.fontFamily = spec.family;
+  el.style.letterSpacing = spec.letterSpacingPx + "px";
+  el.style.wordSpacing = spec.wordSpacingPx + "px";
+  el.style.direction = spec.direction;
+  el.style.fontStretch = spec.stretch;
+  el.style.fontVariationSettings = spec.variationSettings;
+  el.style.setProperty("font-variant-alternates", spec.variantAlternates);
+  el.style.setProperty("font-variant-caps", spec.variantCaps);
+  el.style.setProperty("font-variant-east-asian", spec.variantEastAsian);
+  el.style.setProperty("font-variant-emoji", spec.variantEmoji);
+  el.style.setProperty("font-variant-ligatures", spec.ligatures);
+  el.style.setProperty("font-variant-numeric", spec.numeric);
+  el.style.setProperty("font-variant-position", spec.variantPosition);
+  el.style.setProperty("font-feature-settings", spec.featureSettings);
+}
+
+/** True when the run needs the DOM shaper rather than canvas measureText.
+ * Canvas exposes only caps variants, and even that property is absent in
+ * WebKit. All other variant/feature values are measured in a styled DOM
+ * probe so their actual substitutions and advances are honored. */
+export function requiresDomMeasurement(spec: FontSpec): boolean {
+  if (spec.variantCaps !== "normal" && !("fontVariantCaps" in getCtx())) return true;
+  return (
+    spec.variantAlternates !== "normal" ||
+    spec.variantEastAsian !== "normal" ||
+    spec.variantEmoji !== "normal" ||
+    spec.ligatures !== "normal" ||
+    spec.featureSettings !== "normal" ||
+    spec.numeric !== "normal" ||
+    spec.variantPosition !== "normal"
+  );
+}
+
+/** Paragraphs whose styling neither measurement path can reproduce bail. */
 export function supportsSpec(spec: FontSpec): boolean {
-  if (spec.variantCaps !== "normal" && !("fontVariantCaps" in getCtx())) return false;
-  // Canvas always shapes with the font's default ligatures/features — there
-  // is no API to vary them — so author overrides would make every DOM width
-  // differ from its measurement.
-  if (spec.ligatures !== "normal") return false;
-  if (spec.featureSettings !== "normal") return false;
-  if (spec.numeric !== "normal") return false;
   // Canvas measures at default stretch with no variation settings: an
-  // author-condensed/expanded or variation-pinned run would make every
-  // width wrong by the axis delta.
+  // author-condensed/expanded or variation-pinned run is still outside the
+  // expansion model: our per-line font-stretch would overwrite it.
   if (spec.stretch !== "100%" && spec.stretch !== "normal") return false;
   if (spec.variationSettings !== "normal") return false;
   return true;
 }
 
 const widthCache = new Map<string, Map<string, number>>();
+const domWidthCache = new Map<string, Map<string, number>>();
+const pendingDomWidths = new Map<string, { spec: FontSpec; texts: Set<string> }>();
+let collectingDomWidths = false;
 let segmenter: Intl.Segmenter | null | undefined;
 
 function graphemeCount(text: string): number {
@@ -164,8 +220,10 @@ function graphemeCount(text: string): number {
   return n;
 }
 
-/** Advance of `text` under `spec` at font-stretch 100%, CSS px. */
-export function measureWidth(text: string, spec: FontSpec): number {
+/** Canvas advance under `spec`. Used directly for ordinary runs and as a
+ * throwaway estimate while discovering all strings a DOM-measured
+ * paragraph will need. */
+function measureCanvasWidth(text: string, spec: FontSpec): number {
   let perFont = widthCache.get(spec.key);
   if (perFont === undefined) {
     perFont = new Map();
@@ -189,6 +247,101 @@ export function measureWidth(text: string, spec: FontSpec): number {
   }
   perFont.set(text, width);
   return width;
+}
+
+function cachedDomWidth(text: string, spec: FontSpec): number | undefined {
+  return domWidthCache.get(spec.key)?.get(text);
+}
+
+function queueDomWidth(text: string, spec: FontSpec): void {
+  let pending = pendingDomWidths.get(spec.key);
+  if (pending === undefined) {
+    pending = { spec, texts: new Set() };
+    pendingDomWidths.set(spec.key, pending);
+  }
+  pending.texts.add(text);
+}
+
+/** Measure all queued variant-bearing strings in one DOM layout. */
+function flushDomWidths(): void {
+  if (pendingDomWidths.size === 0) return;
+  if (typeof document === "undefined" || document.body === null) {
+    pendingDomWidths.clear();
+    return;
+  }
+
+  const host = document.createElement("div");
+  host.style.cssText =
+    "position:absolute;left:-100000px;top:0;visibility:hidden;pointer-events:none;" +
+    "white-space:pre;width:max-content;contain:layout style paint;";
+  const probes: Array<{ span: HTMLSpanElement; text: string; spec: FontSpec }> = [];
+
+  for (const { spec, texts } of pendingDomWidths.values()) {
+    let perFont = domWidthCache.get(spec.key);
+    if (perFont === undefined) {
+      perFont = new Map();
+      domWidthCache.set(spec.key, perFont);
+    }
+    for (const text of texts) {
+      if (perFont.has(text)) continue;
+      if (text.length === 0) {
+        perFont.set(text, 0);
+        continue;
+      }
+      const span = document.createElement("span");
+      applyFontSpec(span, spec);
+      span.style.display = "block";
+      span.style.width = "max-content";
+      span.style.whiteSpace = "pre";
+      span.textContent = text;
+      host.append(span);
+      probes.push({ span, text, spec });
+    }
+  }
+  pendingDomWidths.clear();
+  document.body.append(host);
+  try {
+    // Appending every probe before the first read lets the engine shape and
+    // lay them out as one batch rather than forcing a layout per word.
+    for (const { span, text, spec } of probes) {
+      domWidthCache.get(spec.key)!.set(text, span.getBoundingClientRect().width);
+    }
+  } finally {
+    host.remove();
+  }
+}
+
+/**
+ * Run a discovery pass, then resolve all DOM-only measurements together.
+ * The callback's results are intentionally disposable: uncached variant
+ * widths use canvas estimates during discovery and become exact only after
+ * this function returns.
+ */
+export function collectDomMeasurements<T>(work: () => T): T {
+  if (collectingDomWidths) return work();
+  collectingDomWidths = true;
+  try {
+    return work();
+  } finally {
+    collectingDomWidths = false;
+    flushDomWidths();
+  }
+}
+
+/** Advance of `text` under `spec` at font-stretch 100%, CSS px. */
+export function measureWidth(text: string, spec: FontSpec): number {
+  if (!requiresDomMeasurement(spec)) return measureCanvasWidth(text, spec);
+
+  const hit = cachedDomWidth(text, spec);
+  if (hit !== undefined) return hit;
+  queueDomWidth(text, spec);
+  if (collectingDomWidths) return measureCanvasWidth(text, spec);
+
+  // A correctly integrated paragraph will have discovered this string in a
+  // batch. Keep the primitive safe for direct callers and unusual late
+  // paths by resolving a cache miss immediately.
+  flushDomWidths();
+  return cachedDomWidth(text, spec) ?? measureCanvasWidth(text, spec);
 }
 
 const bearingCache = new Map<string, Map<string, { l: number; r: number }>>();
@@ -228,6 +381,8 @@ export function isMonospace(spec: FontSpec): boolean {
 /** Drop cached measurements (call when webfonts finish loading). */
 export function clearMeasureCache(): void {
   widthCache.clear();
+  domWidthCache.clear();
+  pendingDomWidths.clear();
   bearingCache.clear();
   currentKey = "";
 }

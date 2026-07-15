@@ -1,4 +1,4 @@
-import type { FontSpec } from "./measure.js";
+import { applyFontSpec, type FontSpec } from "./measure.js";
 
 /**
  * Canvas cannot measure at arbitrary font-stretch values (keyword-only API,
@@ -101,14 +101,11 @@ export function calibrateStretch(
   host.style.cssText =
     "position:absolute;left:-100000px;top:0;visibility:hidden;white-space:pre;width:max-content;contain:layout style;";
   const span = document.createElement("span");
-  span.style.fontStyle = spec.style;
-  span.style.fontWeight = spec.weight;
-  span.style.fontSize = spec.sizePx + "px";
-  span.style.fontFamily = spec.family;
-  span.style.letterSpacing = spec.letterSpacingPx + "px";
-  span.style.wordSpacing = spec.wordSpacingPx + "px";
-  // Small-caps runs must calibrate against small-caps advances.
-  span.style.fontVariantCaps = spec.variantCaps;
+  // Expansion must be calibrated with the same substitutions/features the
+  // run renders with: small caps, alternate figures, stylistic sets, and
+  // the other font-variant longhands can all change the response of its
+  // glyph mix to the width axis.
+  applyFontSpec(span, spec);
   span.textContent = calibrationText;
   host.append(span);
   document.body.append(host);

@@ -218,7 +218,7 @@ test("tracking's letter-spacing does not cost ligatures", async ({ page }) => {
   expect(r!.word).toBeLessThan(r!.unligated - 0.1);
 });
 
-test("small-caps runs don't poison later measurements", async ({ page, browserName }) => {
+test("small-caps runs don't poison later measurements", async ({ page }) => {
   // Regression: Firefox's OffscreenCanvas 2D context kept SHAPING in
   // small-caps after fontVariantCaps was reset to "normal", inflating every
   // word measured after an smcp run by ~4-11% — lines then rendered ragged.
@@ -249,14 +249,10 @@ test("small-caps runs don't poison later measurements", async ({ page, browserNa
     p.remove();
     return { enhanced, worst };
   });
-  if (browserName === "webkit") {
-    // WebKit's canvas has no fontVariantCaps: the smcp paragraph correctly
-    // bails to native rendering instead of guessing widths.
-    expect(r.enhanced).toBe(false);
-  } else {
-    expect(r.enhanced).toBe(true);
-    expect(r.worst).toBeLessThan(1.5);
-  }
+  // WebKit has no canvas fontVariantCaps, so it reaches the DOM measurement
+  // path; Chromium and Firefox can keep using their canvas caps support.
+  expect(r.enhanced).toBe(true);
+  expect(r.worst).toBeLessThan(1.5);
 });
 
 test("content-visibility paragraphs get corrected when scrolled into view", async ({ page }) => {
@@ -311,29 +307,91 @@ test("content-visibility paragraphs get corrected when scrolled into view", asyn
   expect(r.worst).toBeLessThan(1.5);
 });
 
-test("bails on ligature/feature overrides canvas cannot reproduce", async ({ page }) => {
+test("handles arbitrary font variants and feature settings", async ({ page }) => {
   const results = await page.evaluate(async () => {
     const j = window.__justif;
-    const out: boolean[] = [];
+    const face = new FontFace("JunicodeVariants", 'url("/demo/fonts/Junicode-Roman.ttf")');
+    document.fonts.add(await face.load());
+    const out: Array<{ css: string; enhanced: boolean; worst: number }> = [];
     for (const css of [
       "font-variant-ligatures: none",
-      'font-feature-settings: "ss01"',
-      "font-variant-numeric: oldstyle-nums",
+      'font-feature-settings: "smcp" 1, "ss01" 1',
+      "font-variant-numeric: oldstyle-nums proportional-nums",
+      "font-variant-caps: all-small-caps",
+      "font-variant-alternates: historical-forms",
+      "font-variant-east-asian: ruby",
+      "font-variant-position: super",
+      "font-variant-emoji: text",
     ]) {
       const p = document.createElement("p");
-      p.setAttribute("style", css);
+      p.setAttribute("style", `width:340px;font-family:JunicodeVariants;${css}`);
       p.textContent =
-        "An afflicted official fills a difficult office efficiently, long enough to wrap.";
+        "An afflicted official fills office 1927 efficiently. Historical figures 314159 " +
+        "repeat with difficult affiliations and enough varied prose to wrap over many lines.";
       document.getElementById("host")!.append(p);
-      const ctl = j.justify(p);
+      const ctl = j.justify(p, { expansion: false, tracking: false, protrusion: false });
       await ctl.ready;
-      out.push(p.hasAttribute("data-justif"));
+      const enhanced = p.hasAttribute("data-justif");
+      let worst = Infinity;
+      if (enhanced) {
+        const g = window.__justifLines(p);
+        worst = 0;
+        for (const line of g.lines.slice(0, -1)) {
+          worst = Math.max(worst, Math.abs(g.contentRight - line.right));
+        }
+      }
+      out.push({ css, enhanced, worst });
       ctl.destroy();
       p.remove();
     }
     return out;
   });
-  expect(results).toEqual([false, false, false]);
+  for (const result of results) {
+    expect.soft(result.enhanced, result.css).toBe(true);
+    expect.soft(result.worst, result.css).toBeLessThan(1.5);
+  }
+});
+
+test("tracking preserves an author's ligature and low-level feature choices", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const face = new FontFace("JunicodeFeatureTracking", 'url("/demo/fonts/Junicode-Roman.ttf")');
+    document.fonts.add(await face.load());
+    const host = document.getElementById("host")!;
+    const inspect = async (css: string) => {
+      const p = document.createElement("p");
+      p.setAttribute("style", `width:337px;font-family:JunicodeFeatureTracking;${css}`);
+      p.textContent =
+        "An afflicted official fills a difficult office efficiently, while affiliated " +
+        "figures finish fitting into sufficiently irregular lines of repeated prose.";
+      host.append(p);
+      const ctl = window.__justif.justify(p, { expansion: false, tracking: true });
+      await ctl.ready;
+      const tracked = [...p.querySelectorAll<HTMLElement>(".justif-seg")].find(
+        (el) => el.style.letterSpacing !== "",
+      );
+      const value = tracked
+        ? {
+            inlineFeatures: tracked.style.fontFeatureSettings,
+            features: getComputedStyle(tracked).fontFeatureSettings,
+            ligatures: getComputedStyle(tracked).fontVariantLigatures,
+          }
+        : null;
+      ctl.destroy();
+      p.remove();
+      return value;
+    };
+    return {
+      disabled: await inspect("font-variant-ligatures:none"),
+      custom: await inspect('font-feature-settings:"ss01" 1, "liga" 0'),
+    };
+  });
+
+  expect(result.disabled).not.toBeNull();
+  expect(result.disabled!.ligatures).toBe("none");
+  expect(result.disabled!.inlineFeatures).toBe("");
+  expect(result.custom).not.toBeNull();
+  expect(result.custom!.features).toContain("ss01");
+  expect(result.custom!.features).toMatch(/"liga"(?: 0| off)/);
 });
 
 test("letterfit tracking applies letter-spacing yet lines stay flush", async ({ page }) => {

@@ -25,6 +25,24 @@ import { type FontSpec, isMonospace, measureInkBearings, measureWidth } from "./
 import type { ParagraphScan } from "./read.js";
 import { type RenderSegment, WRAP_SAFETY_PAD_PX } from "./write.js";
 
+/** Browsers commonly suppress common ligatures when letter-spacing is
+ * nonzero. Tracking introduces letter-spacing, so explicitly retain those
+ * defaults without overriding an author's own ligature choices or losing
+ * their other low-level feature settings. */
+function trackingFeatureSettings(spec: FontSpec, active: boolean): string | undefined {
+  if (!active || spec.letterSpacingPx !== 0) return undefined;
+  if (spec.ligatures === "none" || /\bno-common-ligatures\b/.test(spec.ligatures)) {
+    return undefined;
+  }
+
+  const settings = spec.featureSettings === "normal" ? [] : [spec.featureSettings];
+  const explicitlyOff = (tag: string): boolean =>
+    new RegExp(`["']${tag}["']\\s*(?:0|off)\\b`, "i").test(spec.featureSettings);
+  if (!explicitlyOff("liga")) settings.push('"liga" 1');
+  if (!explicitlyOff("clig")) settings.push('"clig" 1');
+  return settings.length > 0 ? settings.join(", ") : undefined;
+}
+
 /**
  * Rendered advance of the inter-word space in a run containing `runText`.
  * When the author's font stack lacks a script's glyphs the engine renders
@@ -252,7 +270,8 @@ export function buildRenderSegments(
         ancestors: scan.runs[run]!.ancestors,
         wordSpacingPx: wordSpacing - ls,
         letterSpacingPx: ls !== 0 ? spec.letterSpacingPx + ls : null,
-        forceLigatures: ls !== 0 && spec.letterSpacingPx === 0,
+        fontFeatureSettings: trackingFeatureSettings(spec, ls !== 0),
+        isolateShaping: spec.variantPosition !== "normal",
         fontStretchPct: line.fontStretch,
         marginStartPx: first ? -line.leftHang : 0,
         marginEndPx: 0, // the line's last segment is patched after the loop
@@ -301,6 +320,21 @@ export function buildRenderSegments(
           // no run-boundary handling is needed.
           cjkY += it.stretch;
           cjkZ += it.shrink;
+          continue;
+        }
+        const glueSpec = scan.specs[scan.runs[it.run]!.spec]!;
+        if (glueSpec.variantPosition !== "normal") {
+          // Firefox applies `font-variant-position` contextually across a
+          // multiword shaping run: the same word and space can have
+          // different advances when neighboring glyphs join that run.
+          // The item model measures words and spaces independently, so
+          // preserve those exact shaping boundaries in the rendered DOM.
+          // A whitespace-only segment is safe here: write.ts already models
+          // and excludes its edge space from corrective Range measurement.
+          flush();
+          run = it.run;
+          text = " ";
+          flush();
           continue;
         }
         // Mid-line spaces stay INSIDE a nowrap segment, in the segment of
