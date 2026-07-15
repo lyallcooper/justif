@@ -53,7 +53,9 @@ function expansionGainAt(
     if (it.type !== ItemType.Box) continue;
     const ratio = para.runs[it.run]?.expansionRatios?.get(key);
     if (ratio !== undefined) {
-      gain += it.width * (ratio - 1);
+      // Inline box decorations folded into the width don't respond to
+      // font-stretch; only the glyph run scales.
+      gain += (it.width - (it.padPx ?? 0)) * (ratio - 1);
     } else if (deltaPct >= 0) {
       gain += it.expStretch * (deltaPct / limitPct);
     } else {

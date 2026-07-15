@@ -7,6 +7,17 @@ export interface StyledRun {
   spec: number;
   /** Inline ancestor chain within the paragraph, outermost → innermost. */
   ancestors: readonly Element[];
+  /**
+   * Inline padding+border px opening before this run / closing after it
+   * (this run holds the first/last content of one or more padded inline
+   * elements). Real layout width the item model folds into the adjacent
+   * box — see RunText.
+   */
+  padStartPx?: number;
+  padEndPx?: number;
+  /** Innermost `white-space: nowrap` inline element containing this run
+   * (one id per element instance): no break opportunity inside. */
+  atomicKey?: number;
 }
 
 export interface ParagraphScan {
@@ -118,15 +129,11 @@ export function textSupported(text: string, direction: "ltr" | "rtl"): boolean {
   return true;
 }
 
-/** Inline box extras that add layout width the measurement model never sees. */
-const SIDE_BOX_PROPS = [
-  "paddingLeft",
-  "paddingRight",
-  "borderLeftWidth",
-  "borderRightWidth",
-  "marginLeft",
-  "marginRight",
-] as const;
+/** Inline box extras the model still can't place: margins add layout width
+ * OUTSIDE the border box, where neither the box widths nor the rendered
+ * clones would carry them. Padding and borders ARE modeled (folded into the
+ * element's first/last box). */
+const MARGIN_PROPS = ["marginLeft", "marginRight"] as const;
 
 /**
  * Reads a paragraph into styled runs plus its available measure. Returns
@@ -165,12 +172,18 @@ export function readParagraph(p: HTMLElement): ParagraphScan | null {
   const runs: StyledRun[] = [];
   let supported = true;
 
-  const walk = (node: Node, chain: readonly Element[], spec: number): void => {
+  let nextAtomicKey = 0;
+  const walk = (
+    node: Node,
+    chain: readonly Element[],
+    spec: number,
+    atomicKey: number | undefined,
+  ): void => {
     for (let child = node.firstChild; child !== null; child = child.nextSibling) {
       if (!supported) return;
       if (child.nodeType === 3 /* TEXT_NODE */) {
         const text = child.nodeValue ?? "";
-        if (text.length > 0) runs.push({ text, spec, ancestors: chain });
+        if (text.length > 0) runs.push({ text, spec, ancestors: chain, atomicKey });
       } else if (child.nodeType === 1 /* ELEMENT_NODE */) {
         const el = child as Element;
         // Foreign elements (SVG/MathML) keep case-preserved tagNames, so
@@ -188,11 +201,33 @@ export function readParagraph(p: HTMLElement): ParagraphScan | null {
           supported = false;
           return;
         }
-        // Horizontal box extras on inline elements would make every
-        // downstream width wrong by that amount. Bail; native rendering
-        // handles them fine. (Style backgrounds without layout impact via
-        // box-shadow halos.)
-        if (SIDE_BOX_PROPS.some((prop) => (parseFloat(elStyle[prop]) || 0) !== 0)) {
+        // Margins add layout width OUTSIDE the border box, where neither
+        // the box widths nor the rendered clones carry them. Bail; native
+        // rendering handles them fine.
+        if (MARGIN_PROPS.some((prop) => (parseFloat(elStyle[prop]) || 0) !== 0)) {
+          supported = false;
+          return;
+        }
+        // Padding and borders ARE modeled: they travel with the element's
+        // first/last fragment, which is `box-decoration-break: slice` —
+        // the initial value, and how the whole-element clones fragment.
+        // `clone` would repeat them at every line break the model can't
+        // see; bail.
+        const padStart =
+          (parseFloat(direction === "rtl" ? elStyle.paddingRight : elStyle.paddingLeft) || 0) +
+          (parseFloat(
+            direction === "rtl" ? elStyle.borderRightWidth : elStyle.borderLeftWidth,
+          ) || 0);
+        const padEnd =
+          (parseFloat(direction === "rtl" ? elStyle.paddingLeft : elStyle.paddingRight) || 0) +
+          (parseFloat(
+            direction === "rtl" ? elStyle.borderLeftWidth : elStyle.borderRightWidth,
+          ) || 0);
+        const padded = padStart > 0 || padEnd > 0;
+        const decorationBreak =
+          elStyle.getPropertyValue("box-decoration-break") ||
+          elStyle.getPropertyValue("-webkit-box-decoration-break");
+        if (padded && decorationBreak === "clone") {
           supported = false;
           return;
         }
@@ -212,12 +247,42 @@ export function readParagraph(p: HTMLElement): ParagraphScan | null {
           supported = false;
           return;
         }
-        walk(el, [...chain, el], indexSpec(elStyle));
+        // `white-space: nowrap` forbids breaks between this element's
+        // boxes — honored via an atomic scope (the innermost key wins;
+        // any nowrap ancestor already forbids everything inside).
+        // Preserved-whitespace values (pre*) change tokenization itself:
+        // out of scope, bail.
+        let childKey = atomicKey;
+        if (elStyle.whiteSpace === "nowrap") {
+          childKey = atomicKey ?? nextAtomicKey++;
+        } else if (elStyle.whiteSpace !== "normal") {
+          supported = false;
+          return;
+        }
+        const before = runs.length;
+        walk(el, [...chain, el], indexSpec(elStyle), childKey);
+        if (!supported) return;
+        if (padded) {
+          // The extras attach to the element's first/last runs. An element
+          // with no box-worthy content would strand them (nothing to widen;
+          // the writer would drop the empty element entirely) — bail.
+          // Soft hyphens count as empty: the item builder emits no box for
+          // them either.
+          const inside = runs.slice(before);
+          if (inside.every((r) => !/[^\s\u00AD]/.test(r.text))) {
+            supported = false;
+            return;
+          }
+          const first = runs[before]!;
+          const last = runs[runs.length - 1]!;
+          first.padStartPx = (first.padStartPx ?? 0) + padStart;
+          last.padEndPx = (last.padEndPx ?? 0) + padEnd;
+        }
       }
       // Comments and other node types are ignored.
     }
   };
-  walk(p, [], baseSpec);
+  walk(p, [], baseSpec, undefined);
 
   if (!supported || runs.length === 0) return null;
   if (!textSupported(runs.map((r) => r.text).join(""), direction)) return null;

@@ -49,6 +49,11 @@ export interface RenderSegment {
   /** Edge spaces excluded from corrective measurement (position-dependent
    * rendering) and re-added as exact model widths. */
   edgeTrim: { lead: number; trail: number; modelPx: number };
+  /** Inline padding/border px of cloned ancestors that open/close at this
+   * segment. Layout width the text rects can't see (it sits on the clone,
+   * outside the segment span) — added to the corrective model like the
+   * edge-trim widths. */
+  decorPx?: number;
   /** Contains CJK text: rendered with `font-kerning: none` (and Chromium's
    * text-spacing-trim disabled) so DOM advances equal the model's isolated
    * cluster advances. Engines disagree between canvas and DOM on kana
@@ -326,6 +331,7 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
           rectPx += range.getBoundingClientRect().width;
           modelPx += seg.edgeTrim.modelPx;
         }
+        if (seg !== null && seg.decorPx !== undefined) modelPx += seg.decorPx;
         modelPx += parseFloat(el.style.marginInlineStart) || 0;
         const me = parseFloat(el.style.marginInlineEnd) || 0;
         modelPx += me;

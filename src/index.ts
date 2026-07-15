@@ -100,9 +100,14 @@ export interface JustifyOptions {
    * (0–1, default 0.7) is the downward pressure on secondary-font spaces
    * wider than the paragraph base font's: 0 keeps each font's natural
    * space, 1 converges them fully to the base (risks dissolving word
-   * boundaries in loose-fitting fonts like monospace).
+   * boundaries in loose-fitting fonts like monospace). `boundaryShrink`
+   * (0–1, default 0) multiplies the shrink of spaces at font-FAMILY
+   * boundaries: chips and pills (inline code, <kbd>) live there, their
+   * insets occupy part of the adjacent gap, and native CSS justification
+   * never shrinks a space — so by default those gaps stretch but hold
+   * their natural width. 1 restores TeX semantics.
    */
-  spacing?: { stretch: number; shrink: number; pull?: number };
+  spacing?: { stretch: number; shrink: number; pull?: number; boundaryShrink?: number };
   /**
    * Letterfit tracking: lets inter-character space open or close each
    * line's set width, participating in break decisions like expansion.
@@ -179,7 +184,7 @@ interface ParaState {
 const states = new WeakMap<HTMLElement, ParaState>();
 
 const DEFAULT_EXPANSION: ExpansionOptions = { max: 0.02, shrink: 0.02, step: 0.005 };
-const DEFAULT_SPACING = { stretch: 0.5, shrink: 1 / 3, pull: 0.7 };
+const DEFAULT_SPACING = { stretch: 0.5, shrink: 1 / 3, pull: 0.7, boundaryShrink: 0 };
 /** Bringhurst's tolerance: letterspacing in justified text may vary ±3%. */
 const DEFAULT_TRACKING: TrackingOptions = { max: 0.03, shrink: 0.03 };
 
@@ -274,6 +279,7 @@ export function justify(
     protrusionFirst,
     expansion,
     tracking,
+    boundaryShrink: spacing.boundaryShrink ?? defaultBuildOptions.boundaryShrink,
   };
 
   /** Phase 1: DOM reads only — no measurement, no font dependence. */

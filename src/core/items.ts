@@ -106,6 +106,33 @@ export function buildItems(
   let pendingSpaceRun = -1;
   let hasBox = false;
 
+  // Inline box extras and no-break scopes (RunText.padStartPx/padEndPx/
+  // atomicKey). pendingPad accumulates until the element's first box exists
+  // (its own first piece may be whitespace-only); lastBox is patched
+  // retroactively when a piece marked padEndPx finishes. Boxes at a padded
+  // edge drop their protrusion: the visual boundary there is the box
+  // decoration, not the glyph.
+  let pendingPad = 0;
+  let lastBox: Box | null = null;
+  let lastBoxRun = -1;
+  let lastBoxKey: number | undefined;
+  let pieceKey: number | undefined;
+
+  const emitBox = (box: Box, runIndex: number): void => {
+    if (pendingPad > 0) {
+      box.width += pendingPad;
+      box.padPx = (box.padPx ?? 0) + pendingPad;
+      box.lp = 0;
+      box.lpFirst = 0;
+      pendingPad = 0;
+    }
+    items.push(box);
+    hasBox = true;
+    lastBox = box;
+    lastBoxRun = runIndex;
+    lastBoxKey = pieceKey;
+  };
+
   const hyphenRp = (run: RunMetrics): number =>
     protrusionHang(opts, measure, "-", run, run.hyphenWidth, "r");
 
@@ -214,17 +241,30 @@ export function buildItems(
     return { pieces: [chunk], fromHyphenator: false };
   };
 
-  /** Emit the word-space glue a previous whitespace run left pending. */
-  const flushPendingSpace = (): void => {
+  /**
+   * Emit the word-space glue a previous whitespace run left pending, knowing
+   * the run of the box that will follow it. Two space-position rules live
+   * here: a space between two boxes of one nowrap element is unbreakable
+   * (penalty ∞ in front — flex intact, break forbidden), and a space at a
+   * font-family boundary shrinks only by `boundaryShrink` (rigid by
+   * default; see BuildOptions.boundaryShrink).
+   */
+  const flushPendingSpace = (nextRun: number): void => {
     if (pendingSpaceRun >= 0 && hasBox) {
       const space = runs[pendingSpaceRun]!.space;
+      if (pieceKey !== undefined && pieceKey === lastBoxKey) {
+        pushPenalty({ penalty: INF_PENALTY, width: 0, flagged: false, hyphen: false, rp: 0, run: pendingSpaceRun });
+      }
+      const boundary =
+        lastBoxRun >= 0 && runs[lastBoxRun]!.familyKey !== runs[nextRun]!.familyKey;
       items.push({
         type: ItemType.Glue,
         width: space.width,
         stretch: space.stretch,
         stretchFil: 0,
-        shrink: space.shrink,
+        shrink: boundary ? space.shrink * opts.boundaryShrink : space.shrink,
         run: pendingSpaceRun,
+        rigid: boundary && opts.boundaryShrink < 1 ? true : undefined,
       } satisfies Glue);
     }
     pendingSpaceRun = -1;
@@ -234,11 +274,16 @@ export function buildItems(
     const run = runs[runIndex]!;
 
     // Plan all fragments: explicit hyphens ("self-made" → "self-" | "made"),
-    // then soft-hyphen/hyphenator splits within each chunk.
-    const chunks = token.split(/(?<=-)(?=[^-])/);
+    // then soft-hyphen/hyphenator splits within each chunk. Inside a nowrap
+    // element nothing may break, so the token stays one box (soft hyphens
+    // stripped like the noHyphens path).
+    const chunks = pieceKey !== undefined ? [token] : token.split(/(?<=-)(?=[^-])/);
     const plans: PiecePlan[] = [];
     for (let c = 0; c < chunks.length; c++) {
-      const { pieces, fromHyphenator } = chunkPieces(chunks[c]!, run.noHyphens === true);
+      const { pieces, fromHyphenator } = chunkPieces(
+        chunks[c]!,
+        run.noHyphens === true || pieceKey !== undefined,
+      );
       for (let i = 0; i < pieces.length; i++) {
         let after: PiecePenalty | null = null;
         if (i < pieces.length - 1) {
@@ -267,7 +312,7 @@ export function buildItems(
     // would get a doubled glue.
     if (plans.length === 0) return;
 
-    flushPendingSpace();
+    flushPendingSpace(runIndex);
 
     // Fragment widths are measured incrementally over token prefixes so they
     // sum exactly to the kerned whole-token width: adding break opportunities
@@ -280,8 +325,7 @@ export function buildItems(
       const prefixWidth = measure.width(acc, run);
       const box = makeBox(plan.text, runIndex, prefixWidth - accWidth);
       accWidth = prefixWidth;
-      items.push(box);
-      hasBox = true;
+      emitBox(box, runIndex);
       if (plan.after !== null) {
         pushPenalty({
           penalty: plan.after.penalty,
@@ -330,7 +374,7 @@ export function buildItems(
       else groups.push({ cjk, text: cluster });
     }
 
-    flushPendingSpace();
+    flushPendingSpace(runIndex);
 
     // Each group is measured in ISOLATION, deliberately unlike pushWord's
     // prefix-incremental scheme: engines disagree on kana kerning between
@@ -349,7 +393,10 @@ export function buildItems(
           : (graphemes(prev.group.text).pop() ?? "");
         const after = group.cjk ? group.text : (graphemes(group.text)[0] ?? "");
         pushPenalty({
-          penalty: cjkBreakAllowed(before, after) ? 0 : INF_PENALTY,
+          // Inside a nowrap element every inter-cluster boundary is
+          // break-prohibited; the glue still flexes for justification.
+          penalty:
+            pieceKey === undefined && cjkBreakAllowed(before, after) ? 0 : INF_PENALTY,
           width: 0,
           flagged: false,
           hyphen: false,
@@ -377,13 +424,15 @@ export function buildItems(
           cjk: true,
         } satisfies Glue);
       }
-      items.push(makeBox(group.text, runIndex, width));
-      hasBox = true;
+      emitBox(makeBox(group.text, runIndex, width), runIndex);
       prev = { group, width };
     }
   };
 
-  for (const { text, run } of texts) {
+  for (const piece of texts) {
+    const { text, run } = piece;
+    pieceKey = piece.atomicKey;
+    if (piece.padStartPx !== undefined) pendingPad += piece.padStartPx;
     const parts = text.split(BREAKABLE_SPLIT);
     for (const part of parts) {
       if (part.length === 0) continue;
@@ -395,7 +444,20 @@ export function buildItems(
         pushWord(part, run);
       }
     }
+    // The element's trailing extras ride its LAST box, wherever the last
+    // box-bearing piece was (this piece may end in whitespace, or be
+    // whitespace-only). The reader guarantees a padded element contains at
+    // least one box-worthy character, so lastBox is that element's. (The
+    // cast: lastBox is only ever assigned inside emitBox, which TS's
+    // narrowing can't see.)
+    const lb = lastBox as Box | null;
+    if (piece.padEndPx !== undefined && lb !== null) {
+      lb.width += piece.padEndPx;
+      lb.padPx = (lb.padPx ?? 0) + piece.padEndPx;
+      lb.rp = 0;
+    }
   }
+  pieceKey = undefined;
 
   if (opts.lastLineMinWords >= 2) {
     let gluesFromEnd = 0;
@@ -403,8 +465,15 @@ export function buildItems(
       // Only WORD gaps count: CJK inter-character glue is not a word
       // boundary, and a penalty spliced between a kinsoku penalty and its
       // glue would legalize a prohibited break (and render a phantom space).
+      // The same trap guards nowrap-internal spaces: their glue sits behind
+      // a penalty ∞, and splicing a finite penalty in between would create
+      // the very break opportunity the element forbids.
       if (items[i]!.type !== ItemType.Glue || (items[i] as Glue).cjk === true) continue;
       gluesFromEnd++;
+      const guard = items[i - 1];
+      if (guard !== undefined && guard.type === ItemType.Penalty && guard.penalty >= INF_PENALTY) {
+        continue; // still a word gap, but its break is already forbidden
+      }
       const run = (items[i] as Glue).run;
       items.splice(i, 0, {
         type: ItemType.Penalty,

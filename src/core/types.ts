@@ -60,12 +60,38 @@ export interface RunMetrics {
   protrusion?: ProtrusionTable;
   /** First-line variant of `protrusion` (see BuildOptions.protrusionFirst). */
   protrusionFirst?: ProtrusionTable;
+  /**
+   * Identity of this run's font family (stack), independent of style,
+   * weight, and size. Word spaces BETWEEN runs of different families lose
+   * their shrink (see BuildOptions.boundaryShrink): such boundaries are
+   * where chips and pills live, and a shrunken gap there reads as the chip
+   * fusing with its neighbors. Absent → boundaries are never detected.
+   */
+  familyKey?: string;
 }
 
 /** A piece of paragraph text in one run, in document order. */
 export interface RunText {
   text: string;
   run: number;
+  /**
+   * Inline padding+border px preceding this piece's first box / following
+   * its last box (an inline element's side extras, resolved by the reader).
+   * Folded into the adjacent box's width: the extras are layout width that
+   * travels with the element's first/last fragment — CSS
+   * `box-decoration-break: slice` semantics, which is also how the DOM
+   * writer's whole-element clones fragment across lines.
+   */
+  padStartPx?: number;
+  padEndPx?: number;
+  /**
+   * Set when this piece lives inside a `white-space: nowrap` inline
+   * element: no break opportunity may be created between two boxes that
+   * share a key (spaces stay justification-flexible, they just cannot
+   * break). Distinct elements get distinct keys, so the space BETWEEN two
+   * adjacent nowrap chips remains breakable.
+   */
+  atomicKey?: number;
 }
 
 export const ItemType = {
@@ -96,6 +122,10 @@ export interface Box {
    * ratio as glue. Rendered as per-segment letter-spacing. */
   trackStretch: number;
   trackShrink: number;
+  /** Inline padding/border px folded into `width` (RunText extras). The
+   * glyph run's own advance is width − padPx: expansion gain must scale
+   * only the glyphs, never the box decorations. */
+  padPx?: number;
 }
 
 export interface Glue {
@@ -115,6 +145,13 @@ export interface Glue {
    * fires).
    */
   cjk?: boolean;
+  /**
+   * A word space at a font-family boundary whose shrink was reduced (see
+   * BuildOptions.boundaryShrink). Renderers must give it its OWN
+   * word-spacing: it shares a run — and would otherwise share a rendered
+   * segment — with fully shrinkable interior spaces.
+   */
+  rigid?: boolean;
 }
 
 export interface Penalty {
@@ -192,6 +229,17 @@ export interface BuildOptions {
    * justified ending; the last line's letterfit stays natural.
    */
   lastLineFit: number;
+  /**
+   * Shrink multiplier for word spaces at font-FAMILY boundaries (runs with
+   * differing `familyKey`). 0 (default): such spaces stretch but never
+   * shrink — chips and pills (inline code, <kbd>) live at family
+   * boundaries, their visual insets occupy part of the adjacent gap, and a
+   * shrunken gap there fuses the chip with its neighbors. Native CSS
+   * justification never shrinks spaces, so this also keeps chip gaps at
+   * parity with the no-JS rendering. 1 restores TeX semantics (glue is
+   * glue, wherever it sits); deliberate deviation otherwise.
+   */
+  boundaryShrink: number;
 }
 
 export interface TrackingOptions {
@@ -231,6 +279,7 @@ export const defaultBuildOptions: BuildOptions = {
   expansion: false,
   tracking: false,
   lastLineFit: 0,
+  boundaryShrink: 0,
 };
 
 export const defaultBreakOptions: BreakOptions = {

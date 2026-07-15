@@ -165,7 +165,7 @@ These are the options most applications need:
 | `hangingPunctuation` | `"first-line"` | Fully hangs opening marks on the first line and stops or quotes at line ends; also accepts `"all-lines"` or `false` |
 | `expansion` | `{ max: 0.02, shrink: 0.02, step: 0.005 }` | Adjusts a usable variable-font `wdth` axis by up to 2 percent; silently disables itself for other fonts |
 | `tracking` | `{ max: 0.03, shrink: 0.03 }` | Allows small per-line letter-spacing adjustments; pass `false` to disable |
-| `spacing` | `{ stretch: 0.5, shrink: 1/3, pull: 0.7 }` | Controls inter-word spacing flexibility |
+| `spacing` | `{ stretch: 0.5, shrink: 1/3, pull: 0.7, boundaryShrink: 0 }` | Controls inter-word spacing flexibility; by default spaces at font-family boundaries (around inline code chips) stretch but never shrink |
 | `lastLineMinWidth` | off | Discourages endings shorter than this fraction of the measure; `0.33` is a useful starting point |
 | `lastLineMinWords` | `0` | Discourages a last line with fewer than this many words when set to `2` or more |
 | `lastLineFit` | `0` | Makes the last line adopt a fraction from `0` to `1` of the paragraph's average spacing adjustment |
@@ -184,13 +184,21 @@ across lines. Computed `font-variant-*` values and low-level
 `font-feature-settings` are preserved and measured with their actual glyph
 substitutions.
 
+Inline chips and pills work the normal way: horizontal padding and borders on
+inline elements (styled `code`, `kbd`, badges) are modeled as layout width,
+lines stay flush, and the word spaces beside them never shrink below their
+natural width. An element with `white-space: nowrap` never breaks inside.
+Padding follows `box-decoration-break: slice` (the initial value) when an
+element wraps.
+
 A paragraph stays on native browser layout when `justif` cannot reproduce it
 reliably. Important examples include:
 
 - mixed LTR and RTL text;
 - vertical writing, Thai, and Lao;
 - images, form controls, `<br>`, SVG, MathML, floats, or block descendants;
-- inline descendants with horizontal padding, borders, or margins;
+- inline descendants with horizontal margins, `box-decoration-break: clone`,
+  or preserved-whitespace `white-space` values;
 - content-editable paragraphs.
 
 Keep `text-align: justify` in your CSS so these paragraphs still have a useful

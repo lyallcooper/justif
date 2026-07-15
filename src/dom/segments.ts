@@ -80,7 +80,13 @@ export function measureFor(specByKey: Map<string, FontSpec>): Measure {
 
 /** The core's RunText input, aligned index-for-index with scan.runs. */
 export function runTexts(scan: ParagraphScan): RunText[] {
-  return scan.runs.map((r, i) => ({ text: r.text, run: i }));
+  return scan.runs.map((r, i) => ({
+    text: r.text,
+    run: i,
+    padStartPx: r.padStartPx,
+    padEndPx: r.padEndPx,
+    atomicKey: r.atomicKey,
+  }));
 }
 
 export function buildRunMetrics(
@@ -177,6 +183,11 @@ export function buildRunMetrics(
       // also strips soft hyphens and keeps the hyphenate callback from
       // ever being called for these runs.
       noHyphens: spec.hyphens === "none" || scan.direction === "rtl",
+      // Word spaces between different font FAMILIES lose their shrink
+      // (BuildOptions.boundaryShrink): chips and pills live at those
+      // boundaries. Style/weight/size changes within a family (<em>,
+      // <strong>) are not boundaries.
+      familyKey: spec.family,
       // Monospace cells carry huge side bearings; advance-relative protrusion
       // codes would hang the ink visibly past the margin — but only when the
       // mono run sits INSIDE another font's prose (inline code), where the
@@ -202,19 +213,31 @@ export function buildRenderSegments(
   // Joint preceding the NEXT line, decided by each line's breakpoint.
   let pendingJoint: RenderSegment["joint"] = "none";
 
+  // Inline padding/border (StyledRun.padStartPx/padEndPx) is layout width
+  // the corrective measurement can't see in the text rects — it renders on
+  // the clone around the run's first/last content. Attribute it to the
+  // run's first/last SEGMENT: those share a line with the decorated clone
+  // edge by construction (a break next to the element puts the joint
+  // outside the clone), and corrections only need per-line totals.
+  const decorStartSeen = new Set<number>();
+  const lastSegForRun = new Map<number, number>();
+
   for (const line of lines) {
     // Absolute word-spacing per run on this line: the author's own
     // word-spacing, the offset from the space glyph's advance to the glue
     // width the engine assigned (nonzero for pressured oversized spaces),
-    // plus this line's glue adjustment.
-    const desired = (runIndex: number): number => {
+    // plus this line's glue adjustment. `flexOf` overrides the flex basis
+    // for a rigid boundary glue rendered as its own segment: its shrink
+    // differs from its run's interior spaces.
+    const desired = (runIndex: number, flexOf?: { stretch: number; shrink: number }): number => {
       const metrics = runsMetrics[runIndex]!;
       const spec = scan.specs[scan.runs[runIndex]!.spec]!;
       // The rendered space advance (script-contextual — see spaceWidthIn)
       // is what CSS word-spacing adds to; the offset closes the gap from
       // that advance to the glue width the engine assigned.
       const widthOffset = metrics.space.width - spaceWidthIn(spec, scan.runs[runIndex]!.text);
-      const flex = line.glueRatio >= 0 ? metrics.space.stretch : metrics.space.shrink;
+      const pool = flexOf ?? metrics.space;
+      const flex = line.glueRatio >= 0 ? pool.stretch : pool.shrink;
       return spec.wordSpacingPx + widthOffset + line.glueRatio * flex;
     };
 
@@ -228,6 +251,8 @@ export function buildRenderSegments(
     let cjkZ = 0;
     let hasCJK = false;
     let boxChars = 0;
+    /** Set while flushing a rigid boundary glue's own segment. */
+    let rigidFlex: { stretch: number; shrink: number } | null = null;
     const flush = (): void => {
       if (run < 0 || text.length === 0) return;
       // Letterfit tracking: this segment's boxes budgeted glueRatio × track
@@ -263,11 +288,17 @@ export function buildRenderSegments(
       const table = runsMetrics[run]!.expansionRatios;
       const key = Math.round(line.fontStretch * 1000) / 1000;
       const ratio = table?.get(key) ?? 1;
-      const wordSpacing = desired(run);
+      const wordSpacing = desired(run, rigidFlex ?? undefined);
       const spacePx = spaceWidthIn(spec, scan.runs[run]!.text) * ratio + wordSpacing;
+      const srcRun = scan.runs[run]!;
+      let decorPx: number | undefined;
+      if (srcRun.padStartPx !== undefined && !decorStartSeen.has(run)) {
+        decorStartSeen.add(run);
+        decorPx = srcRun.padStartPx;
+      }
       segments.push({
         text,
-        ancestors: scan.runs[run]!.ancestors,
+        ancestors: srcRun.ancestors,
         wordSpacingPx: wordSpacing - ls,
         letterSpacingPx: ls !== 0 ? spec.letterSpacingPx + ls : null,
         fontFeatureSettings: trackingFeatureSettings(spec, ls !== 0),
@@ -276,9 +307,11 @@ export function buildRenderSegments(
         marginStartPx: first ? -line.leftHang : 0,
         marginEndPx: 0, // the line's last segment is patched after the loop
         edgeTrim: { lead, trail, modelPx: (lead + trail) * spacePx },
+        decorPx,
         cjk: hasCJK,
         joint,
       });
+      if (srcRun.padEndPx !== undefined) lastSegForRun.set(run, segments.length - 1);
       joint = "none";
       first = false;
       text = "";
@@ -337,6 +370,21 @@ export function buildRenderSegments(
           flush();
           continue;
         }
+        if (it.rigid === true && line.glueRatio < 0) {
+          // A rigid boundary space on a SHRUNKEN line: its assigned width
+          // differs from its run's interior spaces (shrink withheld), and
+          // word-spacing is per segment — so it renders as its own
+          // one-space segment with the glue's own flex. NBSP for the same
+          // reason as cross-run boundary spaces below. On stretched lines
+          // its width equals its neighbors' and the normal paths apply.
+          flush();
+          run = it.run;
+          text = "\u00A0";
+          rigidFlex = { stretch: it.stretch, shrink: it.shrink };
+          flush();
+          rigidFlex = null;
+          continue;
+        }
         // Mid-line spaces stay INSIDE a nowrap segment, in the segment of
         // THEIR OWN run (a prose space after a link must not render inside
         // the link). A space at a segment edge becomes U+00A0: NBSP is
@@ -387,6 +435,13 @@ export function buildRenderSegments(
       // Explicit-hyphen breaks are flagged and keep the <wbr> below.
       pendingJoint = brk.cjk === true ? "wbr" : "space";
     } else pendingJoint = "wbr"; // zero-width flagged penalty (explicit hyphen)
+  }
+
+  // Closing decorations attach to each padded run's LAST segment — known
+  // only now that every line is built.
+  for (const [runIndex, segIndex] of lastSegForRun) {
+    const seg = segments[segIndex]!;
+    seg.decorPx = (seg.decorPx ?? 0) + scan.runs[runIndex]!.padEndPx!;
   }
 
   return segments;

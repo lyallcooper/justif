@@ -148,22 +148,245 @@ test("justified lines end flush within 0.5px (no protrusion/expansion)", async (
   }
 });
 
-test("bails to native rendering on inline elements with horizontal box extras", async ({ page }) => {
-  const enhanced = await page.evaluate(async () => {
-    const p = document.createElement("p");
-    p.id = "padded";
-    p.innerHTML =
-      "Some prose with <code style=\"padding: 0 4px\">padded(code)</code> the model cannot measure, " +
-      "repeated long enough that the paragraph would certainly wrap across several lines.";
-    document.getElementById("host")!.append(p);
-    const ctl = window.__justif.justify(p);
-    await ctl.ready;
-    const took = p.hasAttribute("data-justif");
-    ctl.destroy();
-    p.remove();
-    return took;
+test("models inline padding (enhances); still bails on margins and box-decoration-break: clone", async ({ page }) => {
+  const results = await page.evaluate(async () => {
+    const attempt = async (style: string) => {
+      const p = document.createElement("p");
+      p.innerHTML =
+        `Some prose with <code style="${style}">padded(code)</code> in the model, ` +
+        "repeated long enough that the paragraph would certainly wrap across several lines.";
+      document.getElementById("host")!.append(p);
+      const ctl = window.__justif.justify(p);
+      await ctl.ready;
+      const took = p.hasAttribute("data-justif");
+      ctl.destroy();
+      p.remove();
+      return took;
+    };
+    return {
+      padding: await attempt("padding: 0 4px"),
+      border: await attempt("border: 1px solid"),
+      margin: await attempt("margin: 0 4px"),
+      clone: await attempt(
+        "padding: 0 4px; box-decoration-break: clone; -webkit-box-decoration-break: clone",
+      ),
+    };
   });
-  expect(enhanced).toBe(false);
+  expect(results.padding).toBe(true);
+  expect(results.border).toBe(true);
+  expect(results.margin).toBe(false);
+  expect(results.clone).toBe(false);
+});
+
+test("padded inline chips justify flush, and the padding actually renders", async ({ page }) => {
+  await page.evaluate(async () => {
+    const p = document.createElement("p");
+    p.id = "chipflush";
+    p.style.width = "260px";
+    p.innerHTML =
+      'Inside the <code style="font-family: \'Courier New\'; padding: 0 4px">.git/magritte</code> directory you will find the ' +
+      'state files, and the <code style="font-family: \'Courier New\'; padding: 0 6px">config.toml</code> file besides holds ' +
+      "every option the tool understands, written plainly for people.";
+    document.getElementById("host")!.append(p);
+    const ctl = window.__justif.justify(p, { protrusion: false, expansion: false });
+    await ctl.ready;
+  });
+  await waitForQuiescence(page, "#chipflush");
+  const r = await page.evaluate(() => {
+    const p = document.getElementById("chipflush")!;
+    const g = window.__justifLines(p);
+    const chips = [...p.querySelectorAll("code")].map((code) => {
+      const range = document.createRange();
+      range.selectNodeContents(code);
+      const box = code.getBoundingClientRect();
+      return {
+        boxTop: box.top,
+        boxRight: box.right,
+        boxWidth: box.width,
+        textWidth: range.getBoundingClientRect().width,
+        pad: parseFloat(getComputedStyle(code).paddingLeft) * 2,
+      };
+    });
+    return { enhanced: p.hasAttribute("data-justif"), g, chips };
+  });
+  expect(r.enhanced).toBe(true);
+  expect(r.g.lines.length).toBeGreaterThan(3);
+  for (let i = 0; i < r.g.lines.length - 1; i++) {
+    const line = r.g.lines[i]!;
+    // Text rects exclude a chip's trailing padding: a line ending in a chip
+    // is flush at the chip's BORDER box (within the corrective ~1px spare,
+    // realized inside the clone). Lines ending in plain text keep the
+    // standard sub-0.5px flushness.
+    const chipRights = r.chips
+      .filter((c) => Math.abs(c.boxTop - line.top) < 6)
+      .map((c) => c.boxRight);
+    const endsInChip = chipRights.some((cr) => cr > line.right);
+    const right = Math.max(line.right, ...chipRights);
+    const deficit = r.g.contentRight - right;
+    expect
+      .soft(deficit, `line ${i}: "${line.texts.join(" ").slice(0, 40)}"`)
+      .toBeLessThan(endsInChip ? 2.0 : 0.5);
+    expect.soft(deficit, `line ${i} overflow`).toBeGreaterThan(-0.5);
+  }
+  // Each chip's border box exceeds its glyph run by its horizontal padding
+  // (less the ≤~2px corrective end margin when the chip closes a line).
+  expect(r.chips.length).toBe(2);
+  for (const chip of r.chips) {
+    expect(chip.boxWidth - chip.textWidth).toBeGreaterThan(chip.pad - 2.5);
+    expect(chip.boxWidth - chip.textWidth).toBeLessThan(chip.pad + 0.5);
+  }
+});
+
+test("spaces at font-family boundaries never shrink below natural width", async ({ page }) => {
+  // Sweep measures so at least one chip line lands on a SHRUNKEN line
+  // (glueRatio < 0): plain gaps there compress, but the gaps flanking the
+  // chip must hold their natural width (boundaryShrink 0 default). The
+  // chip is styled halo-only (no padding), like sites that predate the
+  // padding support.
+  const out = await page.evaluate(async () => {
+    const results: Array<{
+      width: number;
+      natural: number;
+      shrunkPlainGaps: number;
+      minBoundaryGap: number;
+    }> = [];
+    const p = document.createElement("p");
+    p.id = "rigidgaps";
+    document.getElementById("host")!.append(p);
+    for (const width of [200, 215, 230, 245, 260, 275]) {
+      p.style.width = `${width}px`;
+      p.innerHTML =
+        "Something in the manner of the <code style=\"font-family: 'Courier New'\">.git/magritte</code> directory holds the whole " +
+        "recorded state of the machinery, and everything else follows from it plainly.";
+      const ctl = window.__justif.justify(p, {
+        protrusion: false,
+        expansion: false,
+        tracking: false,
+      });
+      await ctl.ready;
+      // Natural space width in the paragraph's own font context.
+      const probe = document.createElement("span");
+      probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre";
+      probe.textContent = "x x";
+      p.append(probe);
+      const t = probe.firstChild as Text;
+      const range = document.createRange();
+      range.setStart(t, 1);
+      range.setEnd(t, 2);
+      const natural = range.getBoundingClientRect().width;
+      probe.remove();
+
+      // Word rects, grouped into lines, with their source element noted.
+      const rects: Array<{ mono: boolean; top: number; left: number; right: number }> = [];
+      const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+      for (let n; (n = walker.nextNode()); ) {
+        const text = n.textContent ?? "";
+        const mono = (n.parentElement?.closest("code") ?? null) !== null;
+        for (const m of text.matchAll(/[^\s\u2060]+/g)) {
+          range.setStart(n, m.index);
+          range.setEnd(n, m.index + m[0].length);
+          const b = range.getBoundingClientRect();
+          if (b.width > 0) rects.push({ mono, top: b.top, left: b.left, right: b.right });
+        }
+      }
+      rects.sort((a, b) => (Math.abs(a.top - b.top) < 4 ? a.left - b.left : a.top - b.top));
+      let shrunkPlainGaps = 0;
+      let minBoundaryGap = Infinity;
+      for (let i = 1; i < rects.length; i++) {
+        const prev = rects[i - 1]!;
+        const cur = rects[i]!;
+        if (Math.abs(prev.top - cur.top) >= 4) continue;
+        const gap = cur.left - prev.right;
+        if (prev.mono !== cur.mono) minBoundaryGap = Math.min(minBoundaryGap, gap);
+        else if (gap < natural - 0.3) shrunkPlainGaps++;
+      }
+      results.push({ width, natural, shrunkPlainGaps, minBoundaryGap });
+      ctl.destroy();
+    }
+    p.remove();
+    return results;
+  });
+  // The sweep must actually exercise shrink somewhere, or this proves nothing.
+  expect(out.some((r) => r.shrunkPlainGaps > 0)).toBe(true);
+  for (const r of out) {
+    if (!Number.isFinite(r.minBoundaryGap)) continue; // chip sat at a line edge
+    expect
+      .soft(r.minBoundaryGap, `boundary gap at width ${r.width}`)
+      .toBeGreaterThan(r.natural - 0.3);
+  }
+});
+
+test("white-space: nowrap inline elements never break across lines", async ({ page }) => {
+  const out = await page.evaluate(async () => {
+    const results: number[] = [];
+    const p = document.createElement("p");
+    document.getElementById("host")!.append(p);
+    for (const width of [170, 200, 230, 260]) {
+      p.style.width = `${width}px`;
+      p.innerHTML =
+        'Press <kbd style="font-family: \'Courier New\'; white-space: nowrap; padding: 0 3px">ctrl shift comma</kbd> or else ' +
+        "choose from among the common options offered in the menu just below it.";
+      const ctl = window.__justif.justify(p, { protrusion: false, expansion: false });
+      await ctl.ready;
+      const kbd = p.querySelector("kbd")!;
+      const range = document.createRange();
+      range.selectNodeContents(kbd);
+      const tops = new Set(
+        [...range.getClientRects()].filter((r) => r.width > 0).map((r) => Math.round(r.top)),
+      );
+      results.push(tops.size);
+      ctl.destroy();
+    }
+    p.remove();
+    return results;
+  });
+  for (const lineCount of out) expect(lineCount).toBe(1);
+});
+
+test("a padded element breaking across lines keeps slice semantics and flush lines", async ({ page }) => {
+  await page.evaluate(async () => {
+    const p = document.createElement("p");
+    p.id = "slicepad";
+    p.style.width = "240px";
+    p.innerHTML =
+      'The phrase <span style="padding: 0 5px; background: #eee">wraps across several rendered ' +
+      "lines happily</span> while the paragraph itself keeps every full line flush at the margin.";
+    document.getElementById("host")!.append(p);
+    const ctl = window.__justif.justify(p, { protrusion: false, expansion: false });
+    await ctl.ready;
+  });
+  await waitForQuiescence(page, "#slicepad");
+  const r = await page.evaluate(() => {
+    const p = document.getElementById("slicepad")!;
+    // The padded source span is cloned ONCE and wraps whole; its segment
+    // children tell us which lines it fragments across. (getClientRects on
+    // the clone itself under-reports fragments in Chromium.)
+    const span = [...p.querySelectorAll("span")].find(
+      (s) => !s.classList.contains("justif-seg") && !s.classList.contains("justif-hyphen"),
+    )!;
+    const fragmentTops = new Set(
+      [...span.querySelectorAll(".justif-seg")].map((s) =>
+        Math.round(s.getBoundingClientRect().top),
+      ),
+    );
+    return {
+      enhanced: p.hasAttribute("data-justif"),
+      spanClones: [...p.querySelectorAll("span")].filter(
+        (s) => !s.classList.contains("justif-seg") && !s.classList.contains("justif-hyphen"),
+      ).length,
+      fragments: fragmentTops.size,
+      g: window.__justifLines(p),
+    };
+  });
+  expect(r.enhanced).toBe(true);
+  expect(r.spanClones).toBe(1); // one element, one tab stop — never duplicated
+  expect(r.fragments).toBeGreaterThan(1); // it really did break inside
+  for (let i = 0; i < r.g.lines.length - 1; i++) {
+    const line = r.g.lines[i]!;
+    expect
+      .soft(Math.abs(line.right - r.g.contentRight), `line ${i}: "${line.texts.join(" ").slice(0, 40)}"`)
+      .toBeLessThan(0.5);
+  }
 });
 
 test("tracking's letter-spacing does not cost ligatures", async ({ page }) => {

@@ -3,6 +3,7 @@ import { buildItems } from "../src/core/items.js";
 import {
   type BuildOptions,
   defaultBuildOptions,
+  type Glue,
   type Item,
   ItemType,
 } from "../src/core/types.js";
@@ -310,5 +311,240 @@ describe("buildItems", () => {
     expect(para.firstBoxAfter[0]).toBe(0);
     expect(para.firstBoxAfter[1]).toBe(2);
     expect(para.firstBoxAfter[n]).toBe(n);
+  });
+});
+
+describe("inline box extras (padding/border)", () => {
+  const protrusionOpts: Partial<BuildOptions> = { protrusion: latinProtrusion };
+
+  it("folds padStart/padEnd into the element's first/last box widths", () => {
+    const para = buildItems(
+      [
+        { text: "see ", run: 0 },
+        { text: "chip words", run: 1, padStartPx: 3, padEndPx: 5 },
+        { text: " after", run: 0 },
+      ],
+      [mockRun(), mockRun()],
+      defaultBuildOptions,
+      mockMeasure,
+    );
+    const boxes = para.items.filter((it) => it.type === ItemType.Box);
+    expect(boxes.map((b) => b.text)).toEqual(["see", "chip", "words", "after"]);
+    expect(boxes[1]!.width).toBeCloseTo(mockMeasure.width("chip", mockRun()) + 3);
+    expect(boxes[1]!.padPx).toBe(3);
+    expect(boxes[2]!.width).toBeCloseTo(mockMeasure.width("words", mockRun()) + 5);
+    expect(boxes[2]!.padPx).toBe(5);
+    // Neighbors untouched.
+    expect(boxes[0]!.width).toBeCloseTo(mockMeasure.width("see", mockRun()));
+    expect(boxes[3]!.width).toBeCloseTo(mockMeasure.width("after", mockRun()));
+  });
+
+  it("carries pending padStart across a whitespace-only first piece", () => {
+    const para = buildItems(
+      [
+        { text: " ", run: 1, padStartPx: 4 },
+        { text: "word", run: 2, padEndPx: 6 },
+      ],
+      [mockRun(), mockRun(), mockRun()],
+      defaultBuildOptions,
+      mockMeasure,
+    );
+    const boxes = para.items.filter((it) => it.type === ItemType.Box);
+    expect(boxes).toHaveLength(1);
+    expect(boxes[0]!.width).toBeCloseTo(mockMeasure.width("word", mockRun()) + 4 + 6);
+    expect(boxes[0]!.padPx).toBe(10);
+  });
+
+  it("zeroes protrusion at padded edges (the decoration is the boundary)", () => {
+    const bare = buildItems(
+      [{ text: '"quote."', run: 0 }],
+      [mockRun()],
+      { ...defaultBuildOptions, ...protrusionOpts },
+      mockMeasure,
+    );
+    const bareBox = bare.items.find((it) => it.type === ItemType.Box)!;
+    expect(bareBox.lp).toBeGreaterThan(0);
+    expect(bareBox.rp).toBeGreaterThan(0);
+
+    const padded = buildItems(
+      [{ text: '"quote."', run: 0, padStartPx: 2, padEndPx: 2 }],
+      [mockRun()],
+      { ...defaultBuildOptions, ...protrusionOpts },
+      mockMeasure,
+    );
+    const padBox = padded.items.find((it) => it.type === ItemType.Box)!;
+    expect(padBox.lp).toBe(0);
+    expect(padBox.lpFirst).toBe(0);
+    expect(padBox.rp).toBe(0);
+  });
+
+  it("computes expansion and tracking flex from the glyph width, not the padded width", () => {
+    const w = mockMeasure.width("chip", mockRun());
+    const para = buildItems(
+      [{ text: "chip", run: 0, padStartPx: 10, padEndPx: 10 }],
+      [mockRun()],
+      {
+        ...defaultBuildOptions,
+        expansion: { max: 0.02, shrink: 0.02, step: 0 },
+        tracking: { max: 0.03, shrink: 0.03 },
+      },
+      mockMeasure,
+    );
+    const box = para.items.find((it) => it.type === ItemType.Box)!;
+    expect(box.width).toBeCloseTo(w + 20);
+    expect(box.expStretch).toBeCloseTo(w * (mockRun().ratioAtMax - 1));
+    expect(box.trackStretch).toBeCloseTo(w * 0.03);
+  });
+});
+
+describe("atomic (nowrap) scopes", () => {
+  it("forbids breaks at spaces between boxes sharing an atomic key", () => {
+    const para = buildItems(
+      [
+        { text: "before ", run: 0 },
+        { text: "git status", run: 1, atomicKey: 7 },
+        { text: " after", run: 0 },
+      ],
+      [mockRun(), mockRun()],
+      defaultBuildOptions,
+      mockMeasure,
+    );
+    expect(shape(para.items)).toBe(
+      "box(before) glue box(git) pen(10000) glue box(status) glue box(after) " +
+        "pen(10000) fil pen(-10000)",
+    );
+  });
+
+  it("keeps the space between two DIFFERENT nowrap elements breakable", () => {
+    const para = buildItems(
+      [
+        { text: "a b", run: 0, atomicKey: 1 },
+        { text: " ", run: 1 },
+        { text: "c d", run: 2, atomicKey: 2 },
+      ],
+      [mockRun(), mockRun(), mockRun()],
+      defaultBuildOptions,
+      mockMeasure,
+    );
+    // Interior spaces guarded; the inter-element space is not.
+    expect(shape(para.items)).toBe(
+      "box(a) pen(10000) glue box(b) glue box(c) pen(10000) glue box(d) " +
+        "pen(10000) fil pen(-10000)",
+    );
+  });
+
+  it("suppresses hyphenation and explicit-hyphen breaks inside an atomic scope", () => {
+    const para = buildItems(
+      [{ text: "self-made beautiful", run: 0, atomicKey: 3 }],
+      [mockRun()],
+      { ...defaultBuildOptions, hyphenate: (w) => [w.slice(0, 4), w.slice(4)] },
+      mockMeasure,
+    );
+    expect(shape(para.items)).toBe(
+      "box(self-made) pen(10000) glue box(beautiful) pen(10000) fil pen(-10000)",
+    );
+  });
+
+  it("lastLineMinWords never splices a break into a forbidden gap", () => {
+    const para = buildItems(
+      [
+        { text: "words go ", run: 0 },
+        { text: "x y", run: 1, atomicKey: 9 },
+      ],
+      [mockRun(), mockRun()],
+      { ...defaultBuildOptions, lastLineMinWords: 2 },
+      mockMeasure,
+    );
+    // The final gap (inside the atomic element) counts as a word gap — a
+    // last line "x y" already satisfies minWords — but no finite penalty
+    // may be spliced between its ∞ guard and the glue (that would create
+    // the very break the element forbids). Here nothing needs splicing.
+    expect(shape(para.items)).toBe(
+      "box(words) glue box(go) glue box(x) pen(10000) glue box(y) " +
+        "pen(10000) fil pen(-10000)",
+    );
+  });
+});
+
+describe("boundary space rigidity", () => {
+  const serif = () => mockRun({ familyKey: "serif" });
+  const mono = () => mockRun({ familyKey: "mono" });
+
+  it("drops shrink (keeps stretch) on spaces between different font families", () => {
+    const para = buildItems(
+      [
+        { text: "the ", run: 0 },
+        { text: "chip", run: 1 },
+        { text: " after", run: 0 },
+      ],
+      [serif(), mono()],
+      defaultBuildOptions,
+      mockMeasure,
+    );
+    const glues = para.items.filter(
+      (it): it is Glue => it.type === ItemType.Glue && it.stretchFil === 0,
+    );
+    expect(glues).toHaveLength(2);
+    for (const glue of glues) {
+      expect(glue.shrink).toBe(0);
+      expect(glue.rigid).toBe(true);
+      expect(glue.stretch).toBeCloseTo(mockRun().space.stretch);
+      expect(glue.width).toBeCloseTo(mockRun().space.width);
+    }
+  });
+
+  it("same family (style/weight changes) is not a boundary", () => {
+    const para = buildItems(
+      [
+        { text: "some ", run: 0 },
+        { text: "emphasis", run: 1 },
+        { text: " text", run: 0 },
+      ],
+      [serif(), serif()],
+      defaultBuildOptions,
+      mockMeasure,
+    );
+    for (const it of para.items) {
+      if (it.type === ItemType.Glue && it.stretchFil === 0) {
+        expect(it.shrink).toBeCloseTo(mockRun().space.shrink);
+        expect(it.rigid).toBeUndefined();
+      }
+    }
+  });
+
+  it("boundaryShrink 1 restores TeX semantics (full shrink, no rigid flag)", () => {
+    const para = buildItems(
+      [
+        { text: "the ", run: 0 },
+        { text: "chip", run: 1 },
+        { text: " after", run: 0 },
+      ],
+      [serif(), mono()],
+      { ...defaultBuildOptions, boundaryShrink: 1 },
+      mockMeasure,
+    );
+    for (const it of para.items) {
+      if (it.type === ItemType.Glue && it.stretchFil === 0) {
+        expect(it.shrink).toBeCloseTo(mockRun().space.shrink);
+        expect(it.rigid).toBeUndefined();
+      }
+    }
+  });
+
+  it("undefined familyKey (headless core users) never creates boundaries", () => {
+    const para = buildItems(
+      [
+        { text: "one ", run: 0 },
+        { text: "two", run: 1 },
+      ],
+      [mockRun(), mockRun()],
+      defaultBuildOptions,
+      mockMeasure,
+    );
+    for (const it of para.items) {
+      if (it.type === ItemType.Glue && it.stretchFil === 0) {
+        expect(it.rigid).toBeUndefined();
+      }
+    }
   });
 });
