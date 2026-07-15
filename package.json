@@ -127,7 +127,7 @@
     }
   },
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && node tools/lower-dist.mjs",
     "build:demo": "npm run build && node tools/build-demo.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -146,6 +146,9 @@
     "hyphenation"
   ],
   "devDependencies": {
+    "@babel/core": "^8.0.1",
+    "@babel/plugin-transform-destructuring": "^8.0.1",
+    "@babel/plugin-transform-parameters": "^8.0.1",
     "@playwright/test": "^1.61.1",
     "pdfjs-dist": "^6.1.200",
     "tsup": "^8.0.0",
