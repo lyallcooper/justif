@@ -257,6 +257,7 @@
     justify-content: center;
     align-items: center;
     margin: 0;
+    position: relative;
   }
   .view-toggle button {
     font: inherit;
@@ -273,19 +274,41 @@
     background: var(--ink);
     color: var(--paper);
   }
-  /* The hold affordance: visible only in flicker view, separated from the
-     segments. Press-and-hold ANYWHERE works; this label announces it. It is
-     deliberately NOT a button — no focus ring, no click animation. */
-  #hold-browser { display: none; }
-  body.flicker-mode #hold-browser {
-    display: inline-block;
-    margin-left: 1.2rem;
-    font-size: 0.85rem;
-    padding: 0.18rem 0.9rem;
+  #flicker-hint {
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% + 0.65rem);
+    z-index: 1;
+    width: max-content;
+    max-width: calc(100vw - 2rem);
+    padding: 0.3rem 0.55rem;
+    transform: translateX(-50%);
+    color: var(--ink);
+    background: var(--paper);
     border: 1px solid var(--ink);
-    cursor: pointer;
-    user-select: none;
-    -webkit-user-select: none;
+    font-size: 0.8rem;
+    line-height: 1.25;
+    text-align: center;
+    pointer-events: none;
+    visibility: hidden;
+    opacity: 0;
+    transition: opacity 120ms ease;
+  }
+  #flicker-hint::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    bottom: -0.3rem;
+    width: 0.5rem;
+    height: 0.5rem;
+    transform: translateX(-50%) rotate(45deg);
+    background: var(--paper);
+    border-right: 1px solid var(--ink);
+    border-bottom: 1px solid var(--ink);
+  }
+  #flicker-hint[data-visible] {
+    visibility: visible;
+    opacity: 1;
   }
   body.flicker-mode .panes {
     -webkit-touch-callout: none;    /* no long-press link/text callouts */
@@ -655,12 +678,9 @@
       font-size: 0.78rem;
       padding: 0.15rem 0.35rem;
     }
-    #dock-bar { column-gap: 0.45rem; }
+    #dock-bar { gap: 0.55rem; }
     #dock-toggle { font-size: 0.8rem; }
-    body.flicker-mode #hold-browser {
-      padding: 0.15rem 0.55rem;
-      font-size: 0.78rem;
-    }
+    #flicker-hint { font-size: 0.78rem; }
     .panes { padding: 0 0.875rem 0.5rem; }
     #metrics { font-size: 0.85rem; }
     /* Single-column ledger: group headers above their rows, controls in a
@@ -735,16 +755,11 @@
     border-top: 1px solid var(--hairline);
   }
   #dock-bar {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    display: flex;
+    justify-content: center;
     align-items: center;
-    column-gap: 0.9rem;
+    gap: 0.8rem;
     min-height: 2.35rem;
-  }
-  #dock-bar .view-toggle { justify-self: end; }
-  #dock-bar #hold-browser {
-    justify-self: start;
-    margin-left: 0;
   }
   /* UI chrome text is never selectable — long-presses near the dock or
      toggles must not pop selection callouts (metrics stay copyable). */
@@ -813,10 +828,12 @@
 <div id="dock-bar">
   <div class="view-toggle" role="group" aria-label="Comparison view">
     <button id="view-side" type="button" aria-pressed="true">side-by-side</button>
-    <button id="view-flicker" type="button" aria-pressed="false">flicker</button>
+    <button id="view-flicker" type="button" aria-pressed="false"
+      aria-label="Flicker view. Hold the text to reveal the browser rendering"
+      aria-describedby="flicker-hint">flicker</button>
+    <span id="flicker-hint" role="tooltip" aria-hidden="true">Hold the text to reveal the browser rendering</span>
   </div>
   <button id="dock-toggle" type="button" aria-expanded="false">controls &amp; metrics ▴</button>
-  <span id="hold-browser">hold for browser</span>
 </div>
 <div id="dock-body" hidden>
 
@@ -3006,10 +3023,26 @@ justify(document.querySelectorAll("article p"), {
   $("blur").addEventListener("change", () => {
     document.body.classList.toggle("blur-mode", $("blur").checked);
   });
+  let flickerHintShown = false;
+  let flickerHintTimer = 0;
+  function hideFlickerHint() {
+    clearTimeout(flickerHintTimer);
+    $("flicker-hint").removeAttribute("data-visible");
+    $("flicker-hint").setAttribute("aria-hidden", "true");
+  }
+  function showFlickerHintOnce() {
+    if (flickerHintShown) return;
+    flickerHintShown = true;
+    $("flicker-hint").setAttribute("data-visible", "");
+    $("flicker-hint").setAttribute("aria-hidden", "false");
+    flickerHintTimer = window.setTimeout(hideFlickerHint, 2500);
+  }
   function setView(v) {
     $("view").value = v;
     document.body.classList.toggle("flicker-mode", v === "flicker");
     if (v !== "flicker") document.body.classList.remove("show-browser");
+    if (v === "flicker") showFlickerHintOnce();
+    else hideFlickerHint();
     $("view-side").setAttribute("aria-pressed", String(v === "side"));
     $("view-flicker").setAttribute("aria-pressed", String(v === "flicker"));
     // Synchronous: entering flicker paints aligned on the first frame
@@ -3023,9 +3056,8 @@ justify(document.querySelectorAll("article p"), {
       $("view").dispatchEvent(new Event("change", { bubbles: true })); // persist
     });
   }
-  // Press-and-hold (mouse or touch) anywhere shows the browser rendering;
-  // interactive elements keep their normal behavior. The #hold-browser
-  // button is the visible affordance and works like anywhere else.
+  // Press-and-hold (mouse or touch) anywhere on the comparison shows the
+  // browser rendering; interactive elements keep their normal behavior.
   let holdStartedAt = 0;
   let holdEndedAt = 0;
   let heldFor = 0;
@@ -3046,10 +3078,7 @@ justify(document.querySelectorAll("article p"), {
     // Links stay inside the hold region (a quick tap still navigates; see
     // the click guard below) — everything else interactive keeps its
     // normal behavior.
-    if (
-      t.closest("#hold-browser") === null &&
-      t.closest("#dock, select, input, textarea, button, [popover]") !== null
-    ) {
+    if (t.closest("#dock, select, input, textarea, button, [popover]") !== null) {
       return;
     }
     holdStartedAt = performance.now();

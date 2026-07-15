@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("comparison view controls live in the collapsed dock bar", async ({ page }) => {
+test("comparison controls stay stable and explain flicker once", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/demo/");
   await page.waitForFunction(
@@ -13,35 +13,46 @@ test("comparison view controls live in the collapsed dock bar", async ({ page })
     const rect = el.getBoundingClientRect();
     return rect.left + rect.width / 2;
   });
+  const viewsBefore = await page.locator(".view-toggle").evaluate((el) => {
+    const rect = el.getBoundingClientRect();
+    return { left: rect.left, right: rect.right };
+  });
   await page.click("#view-flicker");
   await expect(page.locator("body")).toHaveClass(/flicker-mode/);
-  await expect(page.locator("#hold-browser")).toBeVisible();
+  await expect(page.locator("#flicker-hint")).toBeVisible();
 
   const edges = await page.evaluate(() => {
     const views = document.querySelector(".view-toggle")!.getBoundingClientRect();
     const label = document.getElementById("dock-toggle")!.getBoundingClientRect();
-    const hold = document.getElementById("hold-browser")!.getBoundingClientRect();
+    const hint = document.getElementById("flicker-hint")!.getBoundingClientRect();
     return {
       left: views.left,
       viewsRight: views.right,
       labelLeft: label.left,
-      labelRight: label.right,
       labelCenter: label.left + label.width / 2,
-      holdLeft: hold.left,
-      right: hold.right,
+      hintLeft: hint.left,
+      hintRight: hint.right,
       viewport: document.documentElement.clientWidth,
     };
   });
   expect(edges.left).toBeGreaterThanOrEqual(0);
-  expect(edges.right).toBeLessThanOrEqual(edges.viewport);
   expect(edges.viewsRight).toBeLessThanOrEqual(edges.labelLeft);
-  expect(edges.holdLeft).toBeGreaterThanOrEqual(edges.labelRight);
+  expect(edges.hintLeft).toBeGreaterThanOrEqual(0);
+  expect(edges.hintRight).toBeLessThanOrEqual(edges.viewport);
+  expect(Math.abs(edges.left - viewsBefore.left)).toBeLessThan(0.01);
+  expect(Math.abs(edges.viewsRight - viewsBefore.right)).toBeLessThan(0.01);
   expect(Math.abs(edges.labelCenter - centerBefore)).toBeLessThan(0.01);
 
-  await page.locator("#hold-browser").dispatchEvent("pointerdown", { button: 0 });
+  const text = page.locator("#enhanced .justif-seg").first();
+  await text.dispatchEvent("pointerdown", { button: 0 });
   await expect(page.locator("body")).toHaveClass(/show-browser/);
-  await page.locator("#hold-browser").dispatchEvent("pointerup", { button: 0 });
+  await text.dispatchEvent("pointerup", { button: 0 });
   await expect(page.locator("body")).not.toHaveClass(/show-browser/);
+
+  await expect(page.locator("#flicker-hint")).toBeHidden({ timeout: 3500 });
+  await page.click("#view-side");
+  await page.click("#view-flicker");
+  await expect(page.locator("#flicker-hint")).toBeHidden();
 
   await page.click("#dock-toggle");
   await expect(page.locator("#dock-body")).toBeVisible();
