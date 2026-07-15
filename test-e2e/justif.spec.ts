@@ -535,7 +535,7 @@ test("handles arbitrary font variants and feature settings", async ({ page }) =>
     const j = window.__justif;
     const face = new FontFace("JunicodeVariants", 'url("/demo/fonts/Junicode-Roman.ttf")');
     document.fonts.add(await face.load());
-    const out: Array<{ css: string; enhanced: boolean; worst: number }> = [];
+    const out: Array<{ css: string; enhanced: boolean; worst: number; debug?: unknown[] }> = [];
     for (const css of [
       "font-variant-ligatures: none",
       'font-feature-settings: "smcp" 1, "ss01" 1',
@@ -556,20 +556,47 @@ test("handles arbitrary font variants and feature settings", async ({ page }) =>
       await ctl.ready;
       const enhanced = p.hasAttribute("data-justif");
       let worst = Infinity;
+      const debug: unknown[] = [];
       if (enhanced) {
         const g = window.__justifLines(p);
         worst = 0;
         for (const line of g.lines.slice(0, -1)) {
           worst = Math.max(worst, Math.abs(g.contentRight - line.right));
         }
+        // CI DEBUG: per-line geometry + per-segment rendered width vs a
+        // fresh style-cloned probe width, to localize the GTK-only 11px.
+        for (const line of g.lines) {
+          debug.push({ line: line.texts.join(" "), right: +line.right.toFixed(2), cr: +g.contentRight.toFixed(2) });
+        }
+        for (const seg of p.querySelectorAll<HTMLElement>(".justif-seg")) {
+          const probe = document.createElement("span");
+          const segCs = getComputedStyle(seg);
+          for (const prop of ["font-style","font-weight","font-size","font-family","letter-spacing","word-spacing","font-variant-alternates","font-variant-caps","font-variant-east-asian","font-variant-ligatures","font-variant-numeric","font-variant-position","font-feature-settings","font-stretch"]) {
+            probe.style.setProperty(prop, segCs.getPropertyValue(prop));
+          }
+          probe.style.cssText += ";position:absolute;visibility:hidden;white-space:pre;display:block;width:max-content";
+          probe.textContent = seg.textContent;
+          document.body.append(probe);
+          const probeW = probe.getBoundingClientRect().width;
+          probe.remove();
+          debug.push({
+            seg: (seg.textContent ?? "").slice(0, 24),
+            rendered: +seg.getBoundingClientRect().width.toFixed(2),
+            probe: +probeW.toFixed(2),
+            ws: segCs.wordSpacing,
+            caps: segCs.getPropertyValue("font-variant-caps"),
+            mie: seg.style.marginInlineEnd,
+          });
+        }
       }
-      out.push({ css, enhanced, worst });
+      out.push({ css, enhanced, worst, debug });
       ctl.destroy();
       p.remove();
     }
     return out;
   });
   for (const result of results) {
+    if (result.worst >= 1.5) console.log("CIDEBUG", JSON.stringify(result));
     expect.soft(result.enhanced, result.css).toBe(true);
     expect.soft(result.worst, result.css).toBeLessThan(1.5);
   }
