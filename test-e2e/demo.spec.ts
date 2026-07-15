@@ -57,6 +57,38 @@ test("appearance control supports system, light, and dark modes", async ({ page 
   expect(await background()).toBe("rgb(18, 18, 16)");
 });
 
+test("drawer controls form compact responsive rows", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/demo/");
+  await page.click("#dock-toggle");
+
+  const layout = await page.evaluate(() => {
+    const rect = (selector: string) => {
+      const element = document.querySelector(selector)!;
+      const label = element.closest("label") ?? element;
+      const { left, right, top, bottom } = label.getBoundingClientRect();
+      return { left, right, top, bottom };
+    };
+    return {
+      sample: rect("#sample"),
+      typeface: rect("#font"),
+      width: rect("#measure"),
+      hyphenation: rect("#hyphenate"),
+      protrusion: rect("#protrusion"),
+      pretty: rect("#pretty"),
+      blur: rect("#blur"),
+    };
+  });
+
+  expect(Math.abs(layout.sample.top - layout.typeface.top)).toBeLessThan(1);
+  expect(layout.sample.right).toBeLessThan(layout.typeface.left);
+  expect(layout.width.top).toBeGreaterThan(layout.sample.bottom);
+  expect(Math.abs(layout.width.left - layout.sample.left)).toBeLessThan(1);
+  expect(Math.abs(layout.width.right - layout.typeface.right)).toBeLessThan(1);
+  expect(Math.abs(layout.hyphenation.top - layout.protrusion.top)).toBeLessThan(1);
+  expect(Math.abs(layout.pretty.top - layout.blur.top)).toBeLessThan(1);
+});
+
 test("comparison controls stay stable and explain flicker once", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/demo/");

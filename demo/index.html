@@ -374,27 +374,82 @@
   .controls {
     display: grid;
     grid-template-columns: max-content 1fr;
-    align-items: baseline;
-    gap: 0.75rem 1.6rem;
-    max-width: 56rem;
+    align-items: start;
+    gap: 0.55rem 1.25rem;
+    max-width: 64rem;
     margin: 0 auto;
-    padding: 1.1rem 1.5rem;
+    padding: 0.8rem 1rem 0.9rem;
     border-bottom: 1px solid var(--hairline);
     font-size: 0.95rem;
     font-variant-numeric: oldstyle-nums;
   }
   .controls > b {
     justify-self: end;
+    padding-top: 0.1rem;
     font-weight: 500;
     font-variant: small-caps;
     letter-spacing: 0.08em;
     color: var(--muted);
   }
   .control-items {
+    width: 100%;
+    min-width: 0;
+  }
+  .display-controls {
     display: flex;
-    flex-wrap: wrap;
     align-items: center;
-    gap: 0.45rem 1.5rem;
+  }
+  .text-controls {
+    display: grid;
+    grid-template-columns: minmax(10rem, 1fr) minmax(10rem, 1fr) minmax(16rem, 1.35fr);
+    align-items: end;
+    gap: 0.45rem 0.8rem;
+  }
+  .controls .select-control,
+  .controls .measure-control {
+    display: grid;
+    align-items: end;
+    gap: 0.2rem;
+    min-width: 0;
+  }
+  .control-name {
+    color: var(--muted);
+    font-size: 0.78rem;
+    line-height: 1;
+  }
+  .controls .select-control select {
+    width: 100%;
+    max-width: none;
+  }
+  .measure-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    min-width: 0;
+  }
+  .measure-row input[type="range"] {
+    flex: 1;
+    min-width: 5rem;
+    width: auto;
+  }
+  .feature-controls {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(max-content, 1fr));
+    align-items: center;
+    gap: 0.45rem 1rem;
+  }
+  .controls .hang-control {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+  .compare-controls {
+    display: grid;
+    grid-template-columns: repeat(4, max-content) minmax(max-content, 1fr);
+    align-items: center;
+    gap: 0.45rem 1rem;
+  }
+  .compare-controls #reset {
+    justify-self: end;
   }
   .controls label {
     display: inline-flex;
@@ -724,8 +779,26 @@
   #metrics thead th:nth-child(1) { width: 14.2em; }
   #metrics thead th:nth-child(2) { width: 5.2em; }
   #metrics thead th:nth-child(3) { width: 5.2em; }
-  /* Phone-width windows: scale the em grid down with the type, stack the
-     controls ledger into one column, and let labels wrap. */
+  /* Compact drawers keep the paired choices together and move the width
+     control below them. Feature and comparison controls form predictable
+     two-column rows rather than wrapping wherever their text happens to fit. */
+  @media (max-width: 760px) {
+    .text-controls {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .controls .measure-control { grid-column: 1 / -1; }
+    .feature-controls,
+    .compare-controls {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .compare-controls #reset {
+      grid-column: 1 / -1;
+      justify-self: end;
+    }
+  }
+
+  /* Phone-width windows: scale the em grid down with the type and stack
+     the section ledger, while retaining the grids within each section. */
   @media (max-width: 480px) {
     body { padding: 1.6rem 1rem 4.5rem; }
     .masthead h1 { font-size: 2.2rem; }
@@ -739,43 +812,29 @@
     #flicker-hint { font-size: 0.78rem; }
     .panes { padding: 0 0.875rem 0.5rem; }
     #metrics { font-size: 0.85rem; }
-    /* Single-column ledger: group headers above their rows, controls in a
-       tidy two-column grid — short toggles pair up, anything with a
-       select/slider or a long label takes the full row. */
     .controls {
       grid-template-columns: 1fr;
-      gap: 0.55rem;
-      padding: 0.8rem 0.2rem;
+      gap: 0.4rem;
+      padding: 0.6rem 0;
     }
-    .controls > b { justify-self: start; }
-    .controls > b:not(:first-child) { margin-top: 0.5rem; }
-    .control-items {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 0.55rem 0.8rem;
-      width: 100%;
+    .controls > b {
+      justify-self: start;
+      padding-top: 0;
     }
+    .controls > b:not(:first-child) { margin-top: 0.35rem; }
     .controls label { white-space: normal; }
-    .control-items > label:has(select),
-    .control-items > label:has(input[type="range"]),
-    .control-items > label:has(#lastline),
-    .control-items > label:has(#deviation) {
-      grid-column: 1 / -1;
-      display: flex;
+    .text-controls,
+    .feature-controls,
+    .compare-controls { gap: 0.45rem 0.7rem; }
+    .controls .hang-control {
+      display: grid;
+      grid-template-columns: max-content minmax(0, 1fr);
     }
-    .control-items > label:has(select) select,
-    .controls input[type="range"] {
-      flex: 1;
+    .controls .hang-control select {
       min-width: 0;
-      width: auto;
       max-width: none;
     }
-    #reset {
-      grid-column: 1 / -1;
-      justify-self: end;
-    }
-    .theme-control { grid-column: 1 / -1; }
-    #dock-body { padding: 0.5rem 0.75rem 0.9rem; }
+    #dock-body { padding: 0.45rem 0.75rem 0.8rem; }
   }
   #metrics th, #metrics td {
     padding: 0.18rem 0 0.18rem 0.9rem;
@@ -897,7 +956,7 @@
 
 <div class="controls">
   <b>display</b>
-  <div class="control-items">
+  <div class="control-items display-controls">
     <span class="theme-control">
       <span>appearance</span>
       <span class="theme-toggle" role="group" aria-label="Appearance">
@@ -908,8 +967,9 @@
     </span>
   </div>
   <b>text</b>
-  <div class="control-items">
-    <label>
+  <div class="control-items text-controls">
+    <label class="select-control">
+      <span class="control-name">sample</span>
       <select id="sample">
         <option value="tale" selected>Frog Prince</option>
         <option value="tech">Technical post</option>
@@ -919,7 +979,8 @@
         <option value="alice">Alice in Wonderland (long)</option>
       </select>
     </label>
-    <label>
+    <label class="select-control">
+      <span class="control-name">typeface</span>
       <select id="font">
         <optgroup label="Serif">
           <option value="'Junicode'" selected>Junicode</option>
@@ -947,14 +1008,19 @@
         </optgroup>
       </select>
     </label>
-    <label>width <input id="measure" type="range" min="10" max="36" step="0.5" value="26" />
-      <span id="measure-out"></span>
-      <button id="width-info" class="info" type="button" popovertarget="width-note"
-        aria-label="Why is the width limited?" hidden>i</button></label>
+    <label class="measure-control">
+      <span class="control-name">width</span>
+      <span class="measure-row">
+        <input id="measure" type="range" min="10" max="36" step="0.5" value="26" />
+        <span id="measure-out"></span>
+        <button id="width-info" class="info" type="button" popovertarget="width-note"
+          aria-label="Why is the width limited?" hidden>i</button>
+      </span>
+    </label>
     <div id="width-note" popover></div>
   </div>
   <b>features</b>
-  <div class="control-items">
+  <div class="control-items feature-controls">
     <label><input id="hyphenate" type="checkbox" checked /> hyphenation</label>
     <label><input id="protrusion" type="checkbox" checked /> protrusion</label>
     <label><input id="expansion" type="checkbox" checked /> expansion
@@ -964,7 +1030,7 @@
     <label><input id="tracking" type="checkbox" checked /> tracking</label>
     <label><input id="lastline" type="checkbox" checked /> avoid short last lines</label>
     <label><input id="lastlinefit" type="checkbox" /> match last-line spacing</label>
-    <label>hang punctuation
+    <label class="hang-control">hang punctuation
       <button id="hangpunct-info" class="info" type="button" popovertarget="hangpunct-note"
         aria-label="Why is hanging punctuation disabled?" hidden>i</button>
       <select id="hangpunct">
@@ -975,7 +1041,7 @@
     <div id="hangpunct-note" popover></div>
   </div>
   <b>compare</b>
-  <div class="control-items">
+  <div class="control-items compare-controls">
     <label><input id="pretty" type="checkbox" /> text-wrap: pretty</label>
     <label><input id="blur" type="checkbox" /> <span>blur (squint test)</span></label>
     <label><input id="rulers" type="checkbox" /> margin rulers</label>
