@@ -22,6 +22,10 @@
     "./hyphenate/en-us": {
       "types": "./dist/hyphenate/en-us.d.ts",
       "import": "./dist/hyphenate/en-us.js"
+    },
+    "./hyphenate/liang": {
+      "types": "./dist/hyphenate/liang.d.ts",
+      "import": "./dist/hyphenate/liang.js"
     }
   },
   "scripts": {

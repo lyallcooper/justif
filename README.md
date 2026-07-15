@@ -118,6 +118,49 @@ The headless core is available separately for canvas/SSR/custom renderers:
 import { buildItems, breakParagraph, layoutLines } from "justif/core";
 ```
 
+## Hyphenating other languages
+
+The `hyphenate` option takes any `(word) => string[]` splitter — it receives
+a lowercased word (case is restored positionally afterwards, so capitalized
+German nouns are fine) and must return fragments whose lengths sum to the
+input's. Three routes, in increasing order of effort:
+
+1. **Soft hyphens, no callback.** `&shy;` entities in your HTML are always
+   honored as break opportunities. If your pipeline can hyphenate at build
+   or server time (any tool, any language), you need nothing else.
+2. **TeX patterns via the built-in engine.** The en-US module is Liang's
+   TeX algorithm plus pattern data; the engine itself is exported. Feed it
+   any of the ~80 language patterns from CTAN's
+   [hyph-utf8](https://ctan.org/pkg/hyph-utf8) (extract the
+   `\patterns{…}`/`\hyphenation{…}` contents into strings — they are
+   plain space-separated lists):
+
+   ```js
+   import { createHyphenator } from "justif/hyphenate/liang";
+   import { patterns, exceptions } from "./hyph-de-1996.js"; // your data
+
+   const hyphenateDe = createHyphenator({
+     patterns,
+     exceptions,
+     leftmin: 2,  // \lefthyphenmin — see the pattern file's docs
+     rightmin: 2, // \righthyphenmin
+   });
+   justify(document.querySelectorAll("article p"), { hyphenate: hyphenateDe });
+   ```
+
+   Patterns compile lazily into a trie on first use, so shipping several
+   languages costs nothing until one hyphenates.
+3. **An existing hyphenation library.** Anything word-in/fragments-out
+   plugs in directly (e.g. Hypher: `(w) => new Hypher(de).hyphenate(w)`);
+   libraries that return soft-hyphenated strings need only
+   `.split("\u00AD")`.
+
+One hyphenator applies per `justify()` call, so multilingual pages group
+paragraphs by language: `justify(document.querySelectorAll('p:lang(de)'),
+{ hyphenate: hyphenateDe })`, and so on. RTL paragraphs never hyphenate
+(Arabic joining makes fragment measurement invalid) and CJK does not need
+to — both are handled automatically.
+
 ## CJK (Japanese) support
 
 CJK paragraphs (Han ideographs, kana, Hangul, fullwidth forms — mixed with

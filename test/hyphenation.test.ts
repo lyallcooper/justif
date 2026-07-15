@@ -78,3 +78,28 @@ describe("en-US patterns (TeX's classic results)", () => {
     }
   });
 });
+
+describe("createHyphenator (public engine for other languages)", () => {
+  it("drives arbitrary TeX pattern data", () => {
+    const h = createHyphenator({ patterns: "s1t", leftmin: 2, rightmin: 3 });
+    expect(h("hostel")).toEqual(["hos", "tel"]);
+  });
+
+  it("handles non-ASCII letters in patterns and words", () => {
+    const h = createHyphenator({ patterns: "u1s", leftmin: 2, rightmin: 3 });
+    expect(h("häuser")).toEqual(["häu", "ser"]);
+  });
+
+  it("honors exceptions and hyphenmins", () => {
+    const h = createHyphenator({
+      patterns: "s1t",
+      exceptions: "host-el",
+      leftmin: 2,
+      rightmin: 3,
+    });
+    expect(h("hostel")).toEqual(["host", "el"]);
+    // rightmin 3 forbids the s|t break in a 5-letter word ending "tel"? no:
+    // "as" + "tel" — leftmin 2 allows it; a 4-letter word is too short.
+    expect(h("stst")).toEqual(["stst"]);
+  });
+});
