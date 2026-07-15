@@ -266,6 +266,7 @@
     background: transparent;
     border: 1px solid var(--ink);
     cursor: pointer;
+    white-space: nowrap;
   }
   .view-toggle button + button { border-left: none; }
   .view-toggle button[aria-pressed="true"] {
@@ -611,12 +612,11 @@
     .masthead .subtitle { font-size: 1rem; }
     .view-toggle button {
       font-size: 0.78rem;
-      padding: 0.15rem 0.55rem;
+      padding: 0.15rem 0.35rem;
     }
-    #dock-bar { gap: 0.45rem; }
+    #dock-bar { column-gap: 0.45rem; }
     #dock-toggle { font-size: 0.8rem; }
     body.flicker-mode #hold-browser {
-      margin-left: 0.35rem;
       padding: 0.15rem 0.55rem;
       font-size: 0.78rem;
     }
@@ -694,11 +694,16 @@
     border-top: 1px solid var(--hairline);
   }
   #dock-bar {
-    display: flex;
-    justify-content: center;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
     align-items: center;
-    gap: 0.9rem;
+    column-gap: 0.9rem;
     min-height: 2.35rem;
+  }
+  #dock-bar .view-toggle { justify-self: end; }
+  #dock-bar #hold-browser {
+    justify-self: start;
+    margin-left: 0;
   }
   /* UI chrome text is never selectable — long-presses near the dock or
      toggles must not pop selection callouts (metrics stay copyable). */
@@ -765,12 +770,12 @@
 
 <div id="dock">
 <div id="dock-bar">
-  <button id="dock-toggle" type="button" aria-expanded="false">controls &amp; metrics ▴</button>
   <div class="view-toggle" role="group" aria-label="Comparison view">
     <button id="view-side" type="button" aria-pressed="true">side-by-side</button>
     <button id="view-flicker" type="button" aria-pressed="false">flicker</button>
-    <span id="hold-browser">hold for browser</span>
   </div>
+  <button id="dock-toggle" type="button" aria-expanded="false">controls &amp; metrics ▴</button>
+  <span id="hold-browser">hold for browser</span>
 </div>
 <div id="dock-body" hidden>
 
