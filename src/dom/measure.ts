@@ -28,6 +28,17 @@ export interface FontSpec {
   /** Computed font-variant-numeric; oldstyle/tabular overrides change digit
    * advances canvas cannot reproduce — same constraint as ligatures. */
   numeric: string;
+  /**
+   * Computed direction, applied as canvas context state so RTL words are
+   * shaped under the same base direction the DOM renders them with.
+   * Deliberately NOT part of the cache key: measureText advances are
+   * direction-independent in every engine — words are measured whole, so
+   * Arabic joining and bidi-neutral reordering are internal to the string
+   * and cannot change its total advance (verified empirically across
+   * chromium/firefox/webkit for pointed Hebrew, joined Arabic, digits and
+   * mirrored brackets; enforced by an e2e guard test).
+   */
+  direction: "ltr" | "rtl";
   /** Canonical cache key. */
   key: string;
 }
@@ -52,6 +63,7 @@ export function fontSpecOf(style: CSSStyleDeclaration): FontSpec {
     ligatures: style.fontVariantLigatures || "normal",
     featureSettings: style.fontFeatureSettings || "normal",
     numeric: style.fontVariantNumeric || "normal",
+    direction: style.direction === "rtl" ? "rtl" : "ltr",
     key: "",
   };
   spec.key = [
@@ -79,6 +91,8 @@ type MeasureCtx = CanvasRenderingContext2D;
 
 let sharedCtx: MeasureCtx | null = null;
 let currentKey = "";
+/** Tracked separately from the key (direction is not in it — see FontSpec). */
+let currentDirection: "ltr" | "rtl" = "ltr";
 
 function getCtx(): MeasureCtx {
   if (sharedCtx === null) {
@@ -99,7 +113,11 @@ function getCtx(): MeasureCtx {
 }
 
 function setFont(ctx: MeasureCtx, spec: FontSpec): void {
-  if (currentKey === spec.key) return;
+  if (currentKey === spec.key && currentDirection === spec.direction) return;
+  // Base direction for shaping; the default "inherit" would follow the
+  // (detached) canvas element rather than the run being measured.
+  if ("direction" in ctx) ctx.direction = spec.direction;
+  currentDirection = spec.direction;
   ctx.font = ctxFontOf(spec);
   if ("letterSpacing" in ctx) ctx.letterSpacing = spec.letterSpacingPx + "px";
   if ("wordSpacing" in ctx) ctx.wordSpacing = spec.wordSpacingPx + "px";

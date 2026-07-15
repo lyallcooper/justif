@@ -125,7 +125,10 @@ export interface Penalty {
 
 export type Item = Box | Glue | Penalty;
 
-/** Protrusion codes in thousandths of the glyph's own advance (pdfTeX). */
+/** Protrusion codes in thousandths of the glyph's own advance (pdfTeX).
+ * `l`/`r` are LOGICAL line-start/line-end sides: the renderer maps them to
+ * physical margins via inline-start/end, so in an RTL paragraph an `l`
+ * code hangs at the right edge and an `r` code at the left. */
 export interface ProtrusionCodes {
   l?: number;
   r?: number;
@@ -301,9 +304,11 @@ export interface Line {
    * glue-only pool for such lines so the line still fills exactly.
    */
   trackRatio: number;
-  /** Px the first glyph protrudes into the left margin. */
+  /** Px the first glyph protrudes into the line-START margin (left in
+   * LTR, right in RTL). */
   leftHang: number;
-  /** Px the last glyph (or hyphen) protrudes past the right edge. */
+  /** Px the last glyph (or hyphen) protrudes past the line-END edge
+   * (right in LTR, left in RTL). */
   rightHang: number;
   overfull: boolean;
   /**

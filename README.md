@@ -144,11 +144,28 @@ reflow with large variable fonts. Two things help:
   Chrome), so verify scroll and find behavior in WebKit before shipping
   it on layout-critical pages.
 
+## RTL
+
+Pure-RTL paragraphs (`direction: rtl` / `dir="rtl"`) are supported: Hebrew
+and Arabic text — digits and punctuation included — justifies with the
+full pipeline, lines mirrored end to end (protrusion hangs line-start
+marks past the *right* edge, line-end stops past the left). Hyphenation
+and letterfit tracking are never applied to RTL paragraphs (Arabic
+cursive joining forbids both).
+
+**Scope is pure-RTL only.** Mixed-bidi content bails to native rendering:
+an RTL paragraph containing any strong-LTR letters (Latin, Greek,
+Cyrillic, …), an LTR paragraph containing any RTL characters, nested
+`dir` changes, `unicode-bidi` overrides, or explicit bidi control
+characters — the browser's visual reordering of opposite-direction runs
+is out of scope for the line model, so your CSS fallback applies.
+
 ## Limitations (v1)
 
-- Latin-script, left-to-right text only; paragraphs containing CJK, RTL
-  scripts, images, `<br>`, floats, or non-`inline` elements are left
-  untouched (native rendering, your CSS fallback applies).
+- Latin-script LTR and pure-RTL (Hebrew/Arabic) text only; paragraphs
+  containing CJK, mixed-direction content, images, `<br>`, floats, or
+  non-`inline` elements are left untouched (native rendering, your CSS
+  fallback applies).
 - Floats / `shape-outside` intruding on the paragraph are ignored.
 
 ## Development
