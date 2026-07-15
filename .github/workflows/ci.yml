@@ -19,6 +19,19 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      # The fixtures assume fonts Linux runners don't ship: Georgia
+      # (mscorefonts) for the Latin suites, Noto CJK for the Japanese
+      # fixture's font stack, Noto core for Hebrew/Arabic fallback. The
+      # geometry tests derive their expectations from live measurement, but
+      # only when the same font actually renders — a substituted serif has
+      # different advances than the ones canvas measured.
+      - name: Install test fonts
+        run: |
+          echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" | sudo debconf-set-selections
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ttf-mscorefonts-installer fonts-noto-cjk fonts-noto-core
+          fc-cache -f
+          fc-match Georgia
       # e2e runs against the freshly built dist across all three engines
       # (the suite includes sub-0.5px flushness geometry and a perf budget).
       - run: npx playwright install --with-deps chromium firefox webkit
