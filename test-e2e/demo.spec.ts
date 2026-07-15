@@ -89,6 +89,44 @@ test("drawer controls form compact responsive rows", async ({ page }) => {
   expect(Math.abs(layout.pretty.top - layout.blur.top)).toBeLessThan(1);
 });
 
+test("gap highlights use a grayscale extended ramp", async ({ page }) => {
+  await page.goto("/demo/");
+  await page.click("#dock-toggle");
+
+  const palette = () => page.evaluate(() => {
+    const color = (direction: "loose" | "tight") => {
+      const swatch = document.createElement("span");
+      swatch.className = `gapmark ${direction}`;
+      document.body.append(swatch);
+      const background = getComputedStyle(swatch).backgroundColor;
+      swatch.remove();
+      return background;
+    };
+    return { loose: color("loose"), tight: color("tight") };
+  });
+
+  await page.click("#theme-light");
+  expect(await palette()).toEqual({
+    loose: "rgb(17, 17, 17)",
+    tight: "rgb(102, 102, 102)",
+  });
+
+  await page.check("#deviation");
+  await page.locator(".gapmark").first().waitFor();
+  const ramp = await page.locator(".gapmark").first().evaluate((mark: HTMLElement) => ({
+    opacity: Number(mark.style.opacity),
+    deviation: Number(mark.title.match(/([+-]?\d+)%/)![1]) / 100,
+  }));
+  const expectedOpacity = Math.min(1, (Math.abs(ramp.deviation) - 0.3) * 0.9);
+  expect(Math.abs(ramp.opacity - expectedOpacity)).toBeLessThan(0.006);
+
+  await page.click("#theme-dark");
+  expect(await palette()).toEqual({
+    loose: "rgb(240, 240, 240)",
+    tight: "rgb(170, 170, 170)",
+  });
+});
+
 test("comparison controls stay stable and explain flicker once", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/demo/");

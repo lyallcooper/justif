@@ -213,6 +213,8 @@
     --hairline: #000;
     --accent: #a23b2e; /* madder red: loose spaces, worse metrics — NOT general UI */
     --tight: #2e5f8a;  /* tight spaces */
+    --gap-loose: #111;
+    --gap-tight: #666;
     --good: #2a6b46;
     --float-shadow: rgb(0 0 0 / 0.16);
     --scroll-shadow: rgb(0 0 0 / 0.28);
@@ -225,6 +227,8 @@
     --hairline: #817d75;
     --accent: #e17a6d;
     --tight: #73aee0;
+    --gap-loose: #f0f0f0;
+    --gap-tight: #aaa;
     --good: #72bd8b;
     --float-shadow: rgb(0 0 0 / 0.55);
     --scroll-shadow: rgb(255 255 255 / 0.2);
@@ -238,6 +242,8 @@
       --hairline: #817d75;
       --accent: #e17a6d;
       --tight: #73aee0;
+      --gap-loose: #f0f0f0;
+      --gap-tight: #aaa;
       --good: #72bd8b;
       --float-shadow: rgb(0 0 0 / 0.55);
       --scroll-shadow: rgb(255 255 255 / 0.2);
@@ -758,8 +764,8 @@
     position: absolute;
     border-radius: 2px;
   }
-  .gapmark.loose { background: var(--accent); }
-  .gapmark.tight { background: var(--tight); }
+  .gapmark.loose { background: var(--gap-loose); }
+  .gapmark.tight { background: var(--gap-tight); }
 
   /* ── Measurements table ───────────────────────────────────── */
   #metrics {
@@ -1046,7 +1052,7 @@
     <label><input id="blur" type="checkbox" /> <span>blur (squint test)</span></label>
     <label><input id="rulers" type="checkbox" /> margin rulers</label>
     <label><input id="deviation" type="checkbox" />
-      <span>uneven spaces (<span style="color:var(--accent)">loose</span>/<span style="color:var(--tight)">tight</span>)</span></label>
+      <span>uneven spaces (<span style="color:var(--gap-loose)">loose</span>/<span style="color:var(--gap-tight)">tight</span>)</span></label>
     <button id="reset" type="button">reset</button>
   </div>
 </div>
@@ -2778,15 +2784,16 @@ justify(document.querySelectorAll("article p"), {
 
   // ------------------------------------------------------------------
   // Deviation overlay: every space that strays too far from the natural
-  // space width gets tinted — red when loose, blue when tight, opacity
-  // proportional to the deviation. Paragraph-final lines are skipped
-  // (ragged by design).
+  // space width gets tinted in grayscale, with loose and tight spaces using
+  // different neutral tones. Opacity tracks the deviation. Paragraph-final
+  // lines are skipped (ragged by design).
   // ------------------------------------------------------------------
 
   // Soft threshold: opacity ramps from 0 at ±30% deviation, so mild
-  // (inevitable) justification looseness stays invisible and only spaces a
-  // reader would notice light up, brighter the worse they are.
+  // (inevitable) justification looseness stays invisible. The gentle scale
+  // reserves maximum contrast for deviations of roughly 140%.
   const DEVIATION_TOLERANCE = 0.3;
+  const DEVIATION_OPACITY_SCALE = 0.9;
 
   // `origin` is read in the same batch as the gap rects (before any DOM
   // write), so both live in one coordinate space even if writes shift layout.
@@ -2804,7 +2811,7 @@ justify(document.querySelectorAll("article p"), {
         for (const gap of line.gaps) {
           const rel = (gap.width - gap.natural) / gap.natural;
           const excess = Math.abs(rel) - DEVIATION_TOLERANCE;
-          const alpha = Math.min(0.85, excess * 1.2);
+          const alpha = Math.min(1, excess * DEVIATION_OPACITY_SCALE);
           if (alpha < 0.05) continue;
           const el = document.createElement("div");
           el.className = "gapmark " + (rel > 0 ? "loose" : "tight");
