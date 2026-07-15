@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link
-  href="https://fonts.googleapis.com/css2?family=Roboto+Flex:opsz,wdth,wght@8..144,25..151,100..1000&family=EB+Garamond:ital,wght@0,400..800;1,400..800&family=IM+Fell+English:ital@0;1&family=IM+Fell+English+SC&family=Vollkorn:ital,wght@0,400..900;1,400..900&family=Vollkorn+SC&family=IBM+Plex+Mono:ital,wght@0,400;1,400&family=Courier+Prime:ital,wght@0,400;0,700;1,400&display=swap"
+  href="https://fonts.googleapis.com/css2?family=Alegreya:ital,wght@0,400..900;1,400..900&family=Alegreya+SC&family=Roboto+Flex:opsz,wdth,wght@8..144,25..151,100..1000&family=EB+Garamond:ital,wght@0,400..800;1,400..800&family=IM+Fell+English:ital@0;1&family=IM+Fell+English+SC&family=Vollkorn:ital,wght@0,400..900;1,400..900&family=Vollkorn+SC&family=IBM+Plex+Mono:ital,wght@0,400;1,400&family=Courier+Prime:ital,wght@0,400;0,700;1,400&display=swap"
   rel="stylesheet"
 />
 <style>
@@ -611,6 +611,7 @@
         <option value="tale" selected>Frog Prince</option>
         <option value="tech">Technical post</option>
         <option value="specimen">Type specimen</option>
+        <option value="rtl">Hebrew &amp; Arabic (RTL)</option>
         <option value="alice">Alice in Wonderland (long)</option>
       </select>
     </label>
@@ -619,6 +620,7 @@
         <optgroup label="Serif">
           <option value="'Junicode'" selected>Junicode</option>
           <option value="'EB Garamond'">EB Garamond</option>
+          <option value="'Alegreya'">Alegreya</option>
           <option value="'IM Fell English'">IM Fell English</option>
           <option value="'Vollkorn'">Vollkorn</option>
           <option value="'Amstelvar'">Amstelvar</option>
@@ -799,6 +801,27 @@ justify(document.querySelectorAll("article p"), {
       “incomprehensibilities”, the narrow column that pries them apart
       syllable by syllable, and Fig.&nbsp;7, which must never, under any
       widening of the measure, drift away from its number.</p>`,
+
+    rtl: `
+      <p dir="rtl" lang="he">בראשית ברא אלהים את השמים ואת הארץ. והארץ
+      היתה תהו ובהו וחשך על פני תהום, ורוח אלהים מרחפת על פני המים. ויאמר
+      אלהים: יהי אור, ויהי אור. וירא אלהים את האור כי טוב, ויבדל אלהים בין
+      האור ובין החשך. ויקרא אלהים לאור יום ולחשך קרא לילה, ויהי ערב ויהי
+      בקר, יום אחד.</p>
+      <p dir="rtl" lang="he">ויאמר אלהים: יהי רקיע בתוך המים, ויהי מבדיל
+      בין מים למים. ויעש אלהים את הרקיע, ויבדל בין המים אשר מתחת לרקיע
+      ובין המים אשר מעל לרקיע, ויהי כן. ויקרא אלהים לרקיע שמים, ויהי ערב
+      ויהי בקר, יום שני.</p>
+      <p dir="rtl" lang="ar">اعلم أن فن التاريخ فن عزيز المذهب، جم
+      الفوائد، شريف الغاية؛ إذ هو يوقفنا على أحوال الماضين من الأمم في
+      أخلاقهم، والأنبياء في سيرهم، والملوك في دولهم وسياستهم؛ حتى تتم
+      فائدة الاقتداء في ذلك لمن يرومه في أحوال الدين والدنيا.</p>
+      <p dir="rtl" lang="ar">فهو محتاج إلى مآخذ متعددة ومعارف متنوعة،
+      وحسن نظر وتثبت، يفضيان بصاحبهما إلى الحق وينكبان به عن المزلات
+      والمغالط؛ لأن الأخبار إذا اعتمد فيها على مجرد النقل، ولم تحكم أصول
+      العادة وقواعد السياسة وطبيعة العمران والأحوال في الاجتماع الإنساني،
+      ولا قيس الغائب منها بالشاهد والحاضر بالذاهب، فربما لم يؤمن فيها من
+      العثور ومزلة القدم والحيد عن جادة الصدق.</p>`,
 
     alice: `
       <p><span class="smcp">Chapter I.</span> Down the Rabbit-Hole</p>
@@ -2582,6 +2605,7 @@ justify(document.querySelectorAll("article p"), {
     // Companion small-caps families: these designs ship true small caps as
     // a separate font rather than an smcp feature.
     const SC_FAMILIES = {
+      "'Alegreya'": '"Alegreya SC"',
       "'IM Fell English'": '"IM Fell English SC"',
       "'Vollkorn'": '"Vollkorn SC"',
     };
