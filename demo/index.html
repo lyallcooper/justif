@@ -538,27 +538,32 @@
     -webkit-hyphens: none;
     hyphens: none;
     /* The one exception to the black-and-white rule: a gray chip marks
-       code. No halo/padding: the chip covers exactly the glyph run
-       (horizontal padding would add width the justification model never
-       measured), and Courier Prime's generous cell bearings provide the
-       visual inset on their own. */
+       code. The side padding is REAL layout width — justif models inline
+       padding/border by folding it into the chip's first/last box — and
+       box-decoration-break stays slice (the initial value; clone would
+       bail the paragraph to native), so a chip wrapped across lines
+       opens at the break like any sliced inline box. */
     background: var(--code-chip);
     border-radius: 4px;
-    /* Code wrapped across lines: each fragment gets its own rounded box. */
-    -webkit-box-decoration-break: clone;
-    box-decoration-break: clone;
+    padding: 0 0.3em;
   }
   /* Protrusion uses a negative margin on the final generated segment. That
      shortens the parent code fragment's decoration box while its glyph still
      paints into the margin. Repaint the same opaque chip on the segment so
-     the background follows the glyph without changing layout width. */
+     the background follows the glyph without changing layout width. Kept
+     SQUARE: it only ever shows where it extends past the sliced clone edge
+     (a chip wrapped mid-element, its hyphen hanging into the margin), and
+     box-decoration-break: slice keeps those break edges square — a rounded
+     corner there would disagree with the flush square edge that starts the
+     chip's next fragment. */
   .article p code .justif-seg {
     background: var(--code-chip);
-    border-radius: inherit;
   }
-  /* The block container already provides the chip; don't double-tint. */
+  /* The block container already provides the chip; don't double-tint
+     (or double-indent). */
   .article pre code {
     background: none;
+    padding: 0;
   }
   /* When the main font is itself monospace, inline code just inherits
      (the chip background still marks it). */
