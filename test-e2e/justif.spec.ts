@@ -178,6 +178,80 @@ test("models inline padding (enhances); still bails on margins and box-decoratio
   expect(results.clone).toBe(false);
 });
 
+test("onSkip reports one reason per declined paragraph", async ({ page }) => {
+  const reasons = await page.evaluate(async () => {
+    const cases: Array<[string, () => HTMLElement]> = [
+      [
+        "margin",
+        () => {
+          const p = document.createElement("p");
+          p.innerHTML = 'Text with a <code style="margin: 0 4px">chip</code> that has margins.';
+          return p;
+        },
+      ],
+      [
+        "transform",
+        () => {
+          const p = document.createElement("p");
+          p.style.textTransform = "uppercase";
+          p.textContent = "Transformed paragraph text renders different glyphs.";
+          return p;
+        },
+      ],
+      [
+        "stretch",
+        () => {
+          const p = document.createElement("p");
+          p.style.fontStretch = "75%";
+          p.textContent = "A condensed paragraph is outside the expansion model.";
+          return p;
+        },
+      ],
+      [
+        "br",
+        () => {
+          const p = document.createElement("p");
+          p.innerHTML = "Line one<br>line two.";
+          return p;
+        },
+      ],
+      [
+        "fine",
+        () => {
+          const p = document.createElement("p");
+          p.textContent = "A perfectly ordinary paragraph of justified prose.";
+          return p;
+        },
+      ],
+    ];
+    const host = document.getElementById("host")!;
+    const byId = new Map<string, HTMLElement>();
+    for (const [id, make] of cases) {
+      const el = make();
+      el.style.width = "300px";
+      host.append(el);
+      byId.set(id, el);
+    }
+    const skips: Record<string, string> = {};
+    const ctl = window.__justif.justify([...byId.values()], {
+      onSkip: (el: HTMLElement, reason: string) => {
+        for (const [id, candidate] of byId) if (candidate === el) skips[id] = reason;
+      },
+    } as object);
+    await ctl.ready;
+    const enhancedFine = byId.get("fine")!.hasAttribute("data-justif");
+    ctl.destroy();
+    for (const el of byId.values()) el.remove();
+    return { skips, enhancedFine };
+  });
+  expect(reasons.enhancedFine).toBe(true);
+  expect(reasons.skips["fine"]).toBeUndefined();
+  expect(reasons.skips["margin"]).toContain("margin");
+  expect(reasons.skips["transform"]).toContain("text-transform");
+  expect(reasons.skips["stretch"]).toContain("font-stretch");
+  expect(reasons.skips["br"]).toContain("<br>");
+});
+
 test("padded inline chips justify flush, and the padding actually renders", async ({ page }) => {
   await page.evaluate(async () => {
     const p = document.createElement("p");

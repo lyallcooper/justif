@@ -148,6 +148,15 @@ export interface JustifyOptions {
    * layout-advance margins and never move a glyph.
    */
   onRelayout?: (paragraph: HTMLElement) => void;
+  /**
+   * Called once per paragraph that justif declines to manage, with a short
+   * human-readable reason ("inline <kbd> has a horizontal margin",
+   * "font-variation-settings on a run", "threw while rendering: …").
+   * Declines are otherwise silent by design — the paragraph keeps its
+   * native CSS rendering — which makes "skipped" indistinguishable from
+   * "broken" while integrating; this is the diagnosis channel.
+   */
+  onSkip?: (paragraph: HTMLElement, reason: string) => void;
 }
 
 export interface JustifyController {
@@ -292,15 +301,24 @@ export function justify(
     // an unexpected exception on one paragraph (a bug, hostile content)
     // must downgrade THAT paragraph to native rendering, never abort the
     // controller or poison its siblings.
-    let scan: ParagraphScan | null;
+    let scan: ParagraphScan | string;
     try {
       scan = readParagraph(p);
-      if (scan !== null && scan.specs.some((sp) => !supportsSpec(sp))) scan = null;
-    } catch {
-      scan = null;
+      if (typeof scan !== "string") {
+        const bad = scan.specs.find((sp) => !supportsSpec(sp));
+        if (bad !== undefined) {
+          scan =
+            bad.stretch !== "100%" && bad.stretch !== "normal"
+              ? `author font-stretch: ${bad.stretch} on a run`
+              : "font-variation-settings on a run";
+        }
+      }
+    } catch (error) {
+      scan = `threw while scanning: ${error instanceof Error ? error.message : String(error)}`;
     }
-    if (scan === null) {
+    if (typeof scan === "string") {
       bailed.add(p);
+      emitSkip(p, scan);
       return false;
     }
     scanned.set(p, scan);
@@ -347,9 +365,10 @@ export function justify(
         lastPatch: "",
         enhanced: false,
       });
-    } catch {
+    } catch (error) {
       // Same fail-safe as the scan: this paragraph stays native.
       bailed.add(p);
+      emitSkip(p, `threw while measuring: ${error instanceof Error ? error.message : String(error)}`);
       return false;
     }
     return true;
@@ -373,10 +392,21 @@ export function justify(
   const safePatch = (p: HTMLElement): PendingParagraph | null => {
     try {
       return patchOne(p);
-    } catch {
+    } catch (error) {
       restore(p);
       bailed.add(p);
+      emitSkip(p, `threw while rendering: ${error instanceof Error ? error.message : String(error)}`);
       return null;
+    }
+  };
+
+  /** Isolated like emitRelayout: a throwing onSkip must never disturb the
+   * fail-safe path that is busy leaving a paragraph native. */
+  const emitSkip = (p: HTMLElement, reason: string): void => {
+    try {
+      options.onSkip?.(p, reason);
+    } catch (err) {
+      console.error("justif: onSkip callback threw", err);
     }
   };
 

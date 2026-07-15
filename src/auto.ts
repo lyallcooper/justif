@@ -96,6 +96,14 @@ async function boot(): Promise<void> {
     document
       .querySelector("script[data-justif-selector]")
       ?.getAttribute("data-justif-selector") ?? DEFAULT_SELECTOR;
+  // <script data-justif-debug …>: log one line per paragraph justif
+  // declines, with the failing check. Declines are invisible by design —
+  // the paragraph keeps its native rendering — which is correct behavior
+  // and a terrible debugging experience without this.
+  const debug = document.querySelector("script[data-justif-debug]") !== null;
+  const onSkip = debug
+    ? (p: HTMLElement, reason: string): void => console.info("justif: skipped", p, "—", reason)
+    : undefined;
 
   const groups = new Map<string | null, Element[]>();
   for (const el of document.querySelectorAll(selector)) {
@@ -110,7 +118,7 @@ async function boot(): Promise<void> {
   const controllers: ReturnType<typeof justify>[] = [];
   await Promise.all(
     [...groups].map(async ([id, els]) => {
-      controllers.push(justify(els, { hyphenate: await hyphenatorFor(id) }));
+      controllers.push(justify(els, { hyphenate: await hyphenatorFor(id), onSkip }));
     }),
   );
   window.justif = { justify, unjustify, controllers };

@@ -137,25 +137,27 @@ const MARGIN_PROPS = ["marginLeft", "marginRight"] as const;
 
 /**
  * Reads a paragraph into styled runs plus its available measure. Returns
- * null when the content or styling is out of scope — the caller leaves the
- * paragraph untouched (author CSS `text-align: justify` remains the
- * fallback rendering).
+ * a human-readable skip reason (string) when the content or styling is out
+ * of scope — the caller leaves the paragraph untouched (author CSS
+ * `text-align: justify` remains the fallback rendering) and can surface
+ * the reason through JustifyOptions.onSkip.
  */
-export function readParagraph(p: HTMLElement): ParagraphScan | null {
+export function readParagraph(p: HTMLElement): ParagraphScan | string {
   const view = p.ownerDocument.defaultView;
-  if (view === null) return null;
+  if (view === null) return "detached from its document";
   const cs = view.getComputedStyle(p);
 
-  if (cs.display === "none" || cs.whiteSpace !== "normal") return null;
+  if (cs.display === "none") return "display: none";
+  if (cs.whiteSpace !== "normal") return `white-space: ${cs.whiteSpace} on the paragraph`;
   // Canvas measures the RAW text; transformed text renders different
   // glyphs entirely (uppercase widths etc.) — bail to native rendering.
-  if (cs.textTransform !== "none") return null;
-  if (cs.writingMode !== "horizontal-tb") return null;
+  if (cs.textTransform !== "none") return `text-transform: ${cs.textTransform}`;
+  if (cs.writingMode !== "horizontal-tb") return `writing-mode: ${cs.writingMode}`;
   // RTL is supported for PURE-RTL paragraphs only (checked against the
   // collected text below); mixed-direction content bails to native.
   const direction: "ltr" | "rtl" = cs.direction === "rtl" ? "rtl" : "ltr";
-  if (p.isContentEditable) return null;
-  if (p.shadowRoot !== null) return null;
+  if (p.isContentEditable) return "content-editable";
+  if (p.shadowRoot !== null) return "element hosts a shadow root";
 
   const specs: FontSpec[] = [];
   const keyToIndex = new Map<string, number>();
@@ -170,7 +172,7 @@ export function readParagraph(p: HTMLElement): ParagraphScan | null {
 
   const baseSpec = indexSpec(cs);
   const runs: StyledRun[] = [];
-  let supported = true;
+  let skip: string | null = null;
 
   let nextAtomicKey = 0;
   const walk = (
@@ -180,7 +182,7 @@ export function readParagraph(p: HTMLElement): ParagraphScan | null {
     atomicKey: number | undefined,
   ): void => {
     for (let child = node.firstChild; child !== null; child = child.nextSibling) {
-      if (!supported) return;
+      if (skip !== null) return;
       if (child.nodeType === 3 /* TEXT_NODE */) {
         const text = child.nodeValue ?? "";
         if (text.length > 0) runs.push({ text, spec, ancestors: chain, atomicKey });
@@ -189,7 +191,7 @@ export function readParagraph(p: HTMLElement): ParagraphScan | null {
         // Foreign elements (SVG/MathML) keep case-preserved tagNames, so
         // match case-insensitively.
         if (REJECT_TAGS.has(el.tagName.toUpperCase())) {
-          supported = false;
+          skip = `<${el.tagName.toLowerCase()}> content`;
           return;
         }
         const elStyle = view.getComputedStyle(el);
@@ -198,14 +200,14 @@ export function readParagraph(p: HTMLElement): ParagraphScan | null {
           elStyle.float !== "none" ||
           (elStyle.position !== "static" && elStyle.position !== "relative")
         ) {
-          supported = false;
+          skip = `non-inline-flow <${el.tagName.toLowerCase()}> (display/float/position)`;
           return;
         }
         // Margins add layout width OUTSIDE the border box, where neither
         // the box widths nor the rendered clones carry them. Bail; native
         // rendering handles them fine.
         if (MARGIN_PROPS.some((prop) => (parseFloat(elStyle[prop]) || 0) !== 0)) {
-          supported = false;
+          skip = `inline <${el.tagName.toLowerCase()}> has a horizontal margin`;
           return;
         }
         // Padding and borders ARE modeled: they travel with the element's
@@ -228,11 +230,11 @@ export function readParagraph(p: HTMLElement): ParagraphScan | null {
           elStyle.getPropertyValue("box-decoration-break") ||
           elStyle.getPropertyValue("-webkit-box-decoration-break");
         if (padded && decorationBreak === "clone") {
-          supported = false;
+          skip = `box-decoration-break: clone on padded <${el.tagName.toLowerCase()}>`;
           return;
         }
         if (elStyle.textTransform !== "none") {
-          supported = false;
+          skip = `text-transform: ${elStyle.textTransform} on <${el.tagName.toLowerCase()}>`;
           return;
         }
         // A nested direction change or any non-default unicode-bidi
@@ -244,7 +246,7 @@ export function readParagraph(p: HTMLElement): ParagraphScan | null {
           elStyle.direction !== cs.direction ||
           (elStyle.unicodeBidi !== "normal" && elStyle.unicodeBidi !== "isolate")
         ) {
-          supported = false;
+          skip = `direction/unicode-bidi override on <${el.tagName.toLowerCase()}>`;
           return;
         }
         // `white-space: nowrap` forbids breaks between this element's
@@ -256,12 +258,12 @@ export function readParagraph(p: HTMLElement): ParagraphScan | null {
         if (elStyle.whiteSpace === "nowrap") {
           childKey = atomicKey ?? nextAtomicKey++;
         } else if (elStyle.whiteSpace !== "normal") {
-          supported = false;
+          skip = `white-space: ${elStyle.whiteSpace} on <${el.tagName.toLowerCase()}>`;
           return;
         }
         const before = runs.length;
         walk(el, [...chain, el], indexSpec(elStyle), childKey);
-        if (!supported) return;
+        if (skip !== null) return;
         if (padded) {
           // The extras attach to the element's first/last runs. An element
           // with no box-worthy content would strand them (nothing to widen;
@@ -270,7 +272,7 @@ export function readParagraph(p: HTMLElement): ParagraphScan | null {
           // them either.
           const inside = runs.slice(before);
           if (inside.every((r) => !/[^\s\u00AD]/.test(r.text))) {
-            supported = false;
+            skip = `padded <${el.tagName.toLowerCase()}> with no text content`;
             return;
           }
           const first = runs[before]!;
@@ -284,11 +286,14 @@ export function readParagraph(p: HTMLElement): ParagraphScan | null {
   };
   walk(p, [], baseSpec, undefined);
 
-  if (!supported || runs.length === 0) return null;
-  if (!textSupported(runs.map((r) => r.text).join(""), direction)) return null;
+  if (skip !== null) return skip;
+  if (runs.length === 0) return "no text content";
+  if (!textSupported(runs.map((r) => r.text).join(""), direction)) {
+    return "unsupported text (bidi controls, mixed direction, or a script without break support)";
+  }
 
   const contentWidth = contentWidthOf(p);
-  if (contentWidth <= 0) return null;
+  if (contentWidth <= 0) return "zero content width";
 
   let textIndent = parseFloat(cs.textIndent) || 0;
   const textIndentPct = cs.textIndent.endsWith("%") ? textIndent / 100 : null;
