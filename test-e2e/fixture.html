@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>justif e2e fixture</title>
+<style>
+  #host { width: 440px; }
+  #host p {
+    font-family: Georgia, serif;
+    font-size: 17px;
+    line-height: 1.45;
+    text-align: justify;
+    margin: 0 0 1em;
+    padding: 0;
+    border: 0;
+  }
+</style>
+</head>
+<body>
+<div id="host">
+  <p id="p1">In olden times when wishing still helped one, there lived a king
+  whose daughters were all beautiful; and the youngest was so beautiful that
+  the sun itself, which has seen so much, was astonished whenever it shone in
+  her face. Close by the king's castle lay a great dark forest, and under an
+  old lime-tree in the forest was a well, and when the day was very warm, the
+  king's child went out into the forest and sat down by the side of the cool
+  fountain.</p>
+  <p id="p2">Now it so happened that on one occasion the <em>princess's golden
+  ball</em> did not fall into the little hand which she was holding up for it,
+  but on to the ground beyond, and <a id="link1" href="#target">rolled straight into the
+  water</a>. The king's daughter followed it with her eyes, but it vanished,
+  and <a id="link2" href="#well">the deep well</a> swallowed it, so deep that the bottom could not be seen.</p>
+</div>
+<script type="module">
+  import { hangingPunctuation, justify, unjustify } from "/dist/index.js";
+  import { hyphenateEnUS } from "/dist/hyphenate/en-us.js";
+  window.__justif = { justify, unjustify, hyphenateEnUS, hangingPunctuation, controller: null };
+
+  /**
+   * Reconstruct the visual lines of `root` from rendered word rects (the
+   * enhanced DOM is inline flow, so lines are a geometric fact, not
+   * elements). Word rects come from the text nodes; .justif-hyphen element
+   * rects are added explicitly because pseudo-content hyphens are invisible
+   * to text-node walkers yet shape a line's right edge.
+   *
+   * Boxes are clustered into lines by top proximity (new line when
+   * top - refTop >= 10), then each line's entries are ordered by LEFT
+   * position: rect tops within one line can differ by sub-pixel noise
+   * (WebKit reports a line's first word ~0.006px lower than its siblings),
+   * so top order is not reading order.
+   *
+   * `contentRight` is the true content edge — border-box right minus
+   * computed padding-right and border-right — the target that justified
+   * lines end flush against. Hyphen entries appear in `texts` as "-".
+   */
+  window.__justifLines = (root) => {
+    const cs = getComputedStyle(root);
+    const contentRight =
+      root.getBoundingClientRect().right -
+      parseFloat(cs.paddingRight) -
+      parseFloat(cs.borderRightWidth);
+    const boxes = [];
+    const range = document.createRange();
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
+      const re = /\S+/g;
+      let m;
+      while ((m = re.exec(n.nodeValue ?? "")) !== null) {
+        range.setStart(n, m.index);
+        range.setEnd(n, m.index + m[0].length);
+        const r = range.getClientRects()[0];
+        if (r !== undefined && r.width > 0) {
+          boxes.push({ top: r.top, left: r.left, right: r.right, text: m[0] });
+        }
+      }
+    }
+    for (const h of root.querySelectorAll(".justif-hyphen")) {
+      const r = h.getBoundingClientRect();
+      if (r.width > 0) boxes.push({ top: r.top, left: r.left, right: r.right, text: "-" });
+    }
+    boxes.sort((a, b) => a.top - b.top || a.left - b.left);
+    const clusters = [];
+    for (const b of boxes) {
+      const line = clusters[clusters.length - 1];
+      if (line !== undefined && b.top - line.refTop < 10) line.boxes.push(b);
+      else clusters.push({ refTop: b.top, boxes: [b] });
+    }
+    return {
+      contentRight,
+      lines: clusters.map((l) => {
+        const ordered = [...l.boxes].sort((a, b) => a.left - b.left);
+        return {
+          top: l.refTop,
+          left: Math.min(...ordered.map((b) => b.left)),
+          right: Math.max(...ordered.map((b) => b.right)),
+          texts: ordered.map((b) => b.text),
+        };
+      }),
+    };
+  };
+
+  window.__ready = true;
+</script>
+</body>
+</html>

@@ -1,0 +1,51 @@
+{
+  "name": "justif",
+  "version": "0.1.0",
+  "description": "Perfect justified text for the web: Knuth-Plass line breaking + microtypography (character protrusion, font expansion via the wdth axis).",
+  "type": "module",
+  "sideEffects": false,
+  "license": "MIT",
+  "author": "Lyall Cooper",
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./core": {
+      "types": "./dist/core.d.ts",
+      "import": "./dist/core.js"
+    },
+    "./hyphenate/en-us": {
+      "types": "./dist/hyphenate/en-us.d.ts",
+      "import": "./dist/hyphenate/en-us.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.core.json --noEmit",
+    "compare:tex": "node tools/tex-compare.mjs",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "keywords": [
+    "typography",
+    "justification",
+    "knuth-plass",
+    "microtype",
+    "line-breaking",
+    "hyphenation"
+  ],
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "pdfjs-dist": "^6.1.200",
+    "tsup": "^8.0.0",
+    "typescript": "^5.5.0",
+    "vitest": "^3.0.0"
+  }
+}
