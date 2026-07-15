@@ -1,25 +1,29 @@
 import { expect, test } from "@playwright/test";
 
-test("favicon selects an explicit color-scheme variant", async ({ page }) => {
-  const matchingIcon = () => page.locator('link[rel="icon"]').evaluateAll((links) =>
-    links
-      .map((link) => link as HTMLLinkElement)
-      .filter((link) => matchMedia(link.media).matches)
-      .map((link) => new URL(link.href).pathname),
-  );
-
-  await page.emulateMedia({ colorScheme: "light" });
+test("favicon SVG adapts to the preferred color scheme", async ({ page }) => {
   await page.goto("/demo/");
-  await expect.poll(matchingIcon).toEqual(["/demo/favicon.svg"]);
+  const icon = page.locator('link[rel="icon"]');
+  await expect(icon).toHaveCount(1);
+  await expect(icon).toHaveAttribute("href", "./favicon.svg?v=2");
 
-  await page.emulateMedia({ colorScheme: "dark" });
-  await expect.poll(matchingIcon).toEqual(["/demo/favicon-dark.svg"]);
-
-  await page.goto("/demo/favicon-dark.svg");
-  expect(await page.evaluate(() => ({
+  const renderedColors = () => page.evaluate(() => ({
     background: getComputedStyle(document.getElementById("Rounded-Rectangle")!).fill,
     mark: getComputedStyle(document.getElementById("J")!).fill,
-  }))).toEqual({ background: "rgb(0, 0, 0)", mark: "rgb(255, 255, 255)" });
+  }));
+
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.goto("/demo/favicon.svg?v=2");
+  expect(await renderedColors()).toEqual({
+    background: "rgb(255, 255, 255)",
+    mark: "rgb(0, 0, 0)",
+  });
+
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.reload();
+  expect(await renderedColors()).toEqual({
+    background: "rgb(0, 0, 0)",
+    mark: "rgb(255, 255, 255)",
+  });
 });
 
 test("comparison controls stay stable and explain flicker once", async ({ page }) => {
