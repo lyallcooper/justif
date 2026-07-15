@@ -26,6 +26,94 @@
     "./hyphenate/liang": {
       "types": "./dist/hyphenate/liang.d.ts",
       "import": "./dist/hyphenate/liang.js"
+    },
+    "./hyphenate/ca": {
+      "types": "./dist/hyphenate/ca.d.ts",
+      "import": "./dist/hyphenate/ca.js"
+    },
+    "./hyphenate/da": {
+      "types": "./dist/hyphenate/da.d.ts",
+      "import": "./dist/hyphenate/da.js"
+    },
+    "./hyphenate/de": {
+      "types": "./dist/hyphenate/de.d.ts",
+      "import": "./dist/hyphenate/de.js"
+    },
+    "./hyphenate/el": {
+      "types": "./dist/hyphenate/el.d.ts",
+      "import": "./dist/hyphenate/el.js"
+    },
+    "./hyphenate/en-gb": {
+      "types": "./dist/hyphenate/en-gb.d.ts",
+      "import": "./dist/hyphenate/en-gb.js"
+    },
+    "./hyphenate/es": {
+      "types": "./dist/hyphenate/es.d.ts",
+      "import": "./dist/hyphenate/es.js"
+    },
+    "./hyphenate/fi": {
+      "types": "./dist/hyphenate/fi.d.ts",
+      "import": "./dist/hyphenate/fi.js"
+    },
+    "./hyphenate/fr": {
+      "types": "./dist/hyphenate/fr.d.ts",
+      "import": "./dist/hyphenate/fr.js"
+    },
+    "./hyphenate/hr": {
+      "types": "./dist/hyphenate/hr.d.ts",
+      "import": "./dist/hyphenate/hr.js"
+    },
+    "./hyphenate/hu": {
+      "types": "./dist/hyphenate/hu.d.ts",
+      "import": "./dist/hyphenate/hu.js"
+    },
+    "./hyphenate/it": {
+      "types": "./dist/hyphenate/it.d.ts",
+      "import": "./dist/hyphenate/it.js"
+    },
+    "./hyphenate/nb": {
+      "types": "./dist/hyphenate/nb.d.ts",
+      "import": "./dist/hyphenate/nb.js"
+    },
+    "./hyphenate/nl": {
+      "types": "./dist/hyphenate/nl.d.ts",
+      "import": "./dist/hyphenate/nl.js"
+    },
+    "./hyphenate/nn": {
+      "types": "./dist/hyphenate/nn.d.ts",
+      "import": "./dist/hyphenate/nn.js"
+    },
+    "./hyphenate/pl": {
+      "types": "./dist/hyphenate/pl.d.ts",
+      "import": "./dist/hyphenate/pl.js"
+    },
+    "./hyphenate/pt": {
+      "types": "./dist/hyphenate/pt.d.ts",
+      "import": "./dist/hyphenate/pt.js"
+    },
+    "./hyphenate/ru": {
+      "types": "./dist/hyphenate/ru.d.ts",
+      "import": "./dist/hyphenate/ru.js"
+    },
+    "./hyphenate/sk": {
+      "types": "./dist/hyphenate/sk.d.ts",
+      "import": "./dist/hyphenate/sk.js"
+    },
+    "./hyphenate/sl": {
+      "types": "./dist/hyphenate/sl.d.ts",
+      "import": "./dist/hyphenate/sl.js"
+    },
+    "./hyphenate/sv": {
+      "types": "./dist/hyphenate/sv.d.ts",
+      "import": "./dist/hyphenate/sv.js"
+    },
+    "./hyphenate/tr": {
+      "types": "./dist/hyphenate/tr.d.ts",
+      "import": "./dist/hyphenate/tr.js"
+    },
+    "./hyphenate/uk": {
+      "types": "./dist/hyphenate/uk.d.ts",
+      "import": "./dist/hyphenate/uk.js"
     }
   },
   "scripts": {

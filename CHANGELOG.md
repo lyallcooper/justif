@@ -10,7 +10,10 @@ Initial release.
   (pdfTeX-style, per-font tables), font expansion via the variable-font
   `wdth` axis (script-aware calibration), letterfit tracking (±3%),
   full hanging punctuation presets.
-- Pluggable hyphenation; en-US module with Knuth/Liang's TeX patterns.
+- Pluggable hyphenation; 23 bundled languages from CTAN hyph-utf8 (each
+  its own entry, lazy-compiled), en-US from Knuth/Liang's original
+  hyphen.tex, and the Liang engine itself (`justif/hyphenate/liang`) for
+  any other TeX pattern set.
 - CJK (Japanese-first): per-cluster breaking, kinsoku shori, burasage.
 - RTL: pure-RTL Hebrew/Arabic paragraphs with mirrored protrusion;
   mixed-direction content bails to native rendering.

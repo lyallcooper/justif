@@ -120,20 +120,42 @@ import { buildItems, breakParagraph, layoutLines } from "justif/core";
 
 ## Hyphenating other languages
 
-The `hyphenate` option takes any `(word) => string[]` splitter — it receives
-a lowercased word (case is restored positionally afterwards, so capitalized
-German nouns are fine) and must return fragments whose lengths sum to the
-input's. Three routes, in increasing order of effort:
+23 languages ship with the package, each as its own zero-cost entry
+(pattern data from CTAN's [hyph-utf8](https://ctan.org/pkg/hyph-utf8) —
+the same patterns TeX uses — compiled lazily on first use):
+
+```js
+import { hyphenateDe } from "justif/hyphenate/de";
+justify(document.querySelectorAll("p:lang(de)"), { hyphenate: hyphenateDe });
+```
+
+| | | | |
+| --- | --- | --- | --- |
+| `ca` Catalan | `da` Danish | `de` German | `el` Greek |
+| `en-gb` British English | `en-us` American English | `es` Spanish | `fi` Finnish |
+| `fr` French | `hr` Croatian | `hu` Hungarian | `it` Italian |
+| `nb`/`nn` Norwegian | `nl` Dutch | `pl` Polish | `pt` Portuguese |
+| `ru` Russian | `sk` Slovak | `sl` Slovenian | `sv` Swedish |
+| `tr` Turkish | `uk` Ukrainian | | |
+
+Pattern data is redistributed under each language's own permissive license,
+reproduced verbatim in the module headers (the package's MIT covers the
+code). Czech and Romanian are omitted (GPL-only / unstated license) — use
+route 2 or 3 below for those.
+
+For anything else, the `hyphenate` option takes any `(word) => string[]`
+splitter — it receives a lowercased word (case is restored positionally
+afterwards, so capitalized German nouns are fine) and must return fragments
+whose lengths sum to the input's:
 
 1. **Soft hyphens, no callback.** `&shy;` entities in your HTML are always
    honored as break opportunities. If your pipeline can hyphenate at build
    or server time (any tool, any language), you need nothing else.
-2. **TeX patterns via the built-in engine.** The en-US module is Liang's
-   TeX algorithm plus pattern data; the engine itself is exported. Feed it
-   any of the ~80 language patterns from CTAN's
-   [hyph-utf8](https://ctan.org/pkg/hyph-utf8) (extract the
+2. **TeX patterns via the built-in engine.** Feed `createHyphenator` any of
+   hyph-utf8's ~80 pattern files (extract the
    `\patterns{…}`/`\hyphenation{…}` contents into strings — they are
-   plain space-separated lists):
+   plain space-separated lists; `tools/gen-hyphenation.mjs` in the repo
+   automates exactly this):
 
    ```js
    import { createHyphenator } from "justif/hyphenate/liang";
