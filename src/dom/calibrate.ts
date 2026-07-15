@@ -30,6 +30,40 @@ const CALIBRATION_STRING =
 /** Below this width delta (px) the axis is considered unresponsive. */
 const RESPONSE_EPSILON = 0.05;
 
+/**
+ * Script-representative calibration texts. Expansion must be calibrated
+ * against the glyphs that will actually render: under font fallback the
+ * primary font's Latin response says nothing about the fallback font's
+ * (typically zero) response, and a Latin-calibrated ratio applied to
+ * fallback-rendered Hebrew/Arabic makes every expanded line ragged by the
+ * full expansion delta. Calibrating with the run's own script makes the
+ * existing responsiveness detection work per script: an unresponsive
+ * fallback calibrates to ratio 1 and expansion disables for exactly those
+ * runs, while a genuinely variable RTL font keeps it.
+ */
+// Letters only, no spaces: the SPACE glyph comes from the primary font
+// (fallback only covers missing glyphs), so a space in the sample would
+// leak the primary font's response into the fallback's calibration —
+// enough (~0.1%) to clear RESPONSE_EPSILON and keep useless expansion on.
+const HEBREW_SAMPLE = "אבגדהוזחטיכלמנסעפצקרשת";
+const ARABIC_SAMPLE = "الحمدللهربالعالمينوبهنستعين";
+
+function calibrationTextFor(runText: string | undefined): { text: string; tag: string } {
+  let text = "";
+  let tag = "";
+  if (runText !== undefined) {
+    if (/\p{Script=Hebrew}/u.test(runText)) {
+      text = HEBREW_SAMPLE;
+      tag = "he";
+    }
+    if (/\p{Script=Arabic}/u.test(runText)) {
+      text += ARABIC_SAMPLE;
+      tag += "ar";
+    }
+  }
+  return text === "" ? { text: CALIBRATION_STRING, tag: "" } : { text, tag };
+}
+
 const cache = new Map<string, StretchCalibration>();
 
 export function calibrateStretch(
@@ -37,8 +71,10 @@ export function calibrateStretch(
   maxPct: number,
   minPct: number,
   samplePcts: readonly number[] = [],
+  runText?: string,
 ): StretchCalibration {
-  const cacheKey = `${spec.key}|${maxPct}|${minPct}|${samplePcts.join(",")}`;
+  const { text: calibrationText, tag } = calibrationTextFor(runText);
+  const cacheKey = `${spec.key}|${maxPct}|${minPct}|${samplePcts.join(",")}|${tag}`;
   const hit = cache.get(cacheKey);
   if (hit !== undefined) return hit;
 
@@ -66,7 +102,7 @@ export function calibrateStretch(
   span.style.wordSpacing = spec.wordSpacingPx + "px";
   // Small-caps runs must calibrate against small-caps advances.
   span.style.fontVariantCaps = spec.variantCaps;
-  span.textContent = CALIBRATION_STRING;
+  span.textContent = calibrationText;
   host.append(span);
   document.body.append(host);
 

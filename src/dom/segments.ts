@@ -138,6 +138,7 @@ export function buildRunMetrics(
             100 + 100 * expansion.max,
             100 - 100 * expansion.shrink,
             samplePcts,
+            run.text,
           );
     return {
       fontKey: spec.key,

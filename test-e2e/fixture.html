@@ -4,7 +4,18 @@
 <meta charset="utf-8" />
 <title>justif e2e fixture</title>
 <style>
+  /* A wdth-variable Latin font whose fallback renders the RTL scripts:
+     the expansion-calibration regression fixture (script-aware
+     calibration must self-disable expansion for fallback glyphs). */
+  @font-face {
+    font-family: "Junicode";
+    src: url("../demo/fonts/Junicode-Roman.ttf") format("truetype-variations");
+    font-weight: 300 700;
+    font-stretch: 75% 125%;
+  }
+  #rtl-vf { width: 440px; }
   #host, #rtl-host { width: 440px; }
+  #rtl-vf p,
   #rtl-host p,
   #host p {
     font-family: Georgia, serif;
@@ -15,6 +26,7 @@
     padding: 0;
     border: 0;
   }
+  #rtl-vf p { font-family: "Junicode", Georgia, serif; }
 </style>
 </head>
 <body>
@@ -37,6 +49,12 @@
      paragraphs each carry European digits and native punctuation so the
      line-flush test also proves digit/neutral bidi reordering stays
      compatible with the measured wrap guarantee. -->
+<div id="rtl-vf" dir="rtl">
+  <p id="rtl-vf-he">ויאמר אלהים יהי רקיע בתוך המים ויהי מבדיל בין מים למים.
+  ויעש אלהים את הרקיע ויבדל בין המים אשר מתחת לרקיע ובין המים אשר מעל
+  לרקיע ויהי כן. ויקרא אלהים לרקיע שמים ויהי ערב ויהי בקר יום שני. ויאמר
+  אלהים יקוו המים מתחת השמים אל מקום אחד ותראה היבשה ויהי כן.</p>
+</div>
 <div id="rtl-host" dir="rtl">
   <p id="rtl-he">בראשית ברא אלהים את השמים ואת הארץ. והארץ היתה תהו ובהו,
   וחשך על פני תהום; ורוח אלהים מרחפת על פני המים. ויאמר אלהים: יהי אור,

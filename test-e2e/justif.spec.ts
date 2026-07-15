@@ -908,6 +908,38 @@ test("RTL paragraphs justify with lines flush at both edges", async ({ page }) =
   expect(he.lines[0]!.texts.at(-1)).toBe("בראשית");
 });
 
+test("expansion self-disables on RTL fallback glyphs (script-aware calibration)", async ({ page }) => {
+  // #rtl-vf's primary font is Junicode — a wdth-variable Latin font with
+  // no Hebrew glyphs, so the text renders in a fallback that ignores
+  // font-stretch. Latin-calibrated expansion would make every expanded
+  // line ragged by the expansion delta; script-aware calibration must
+  // measure ~zero response on the Hebrew sample and disable expansion
+  // for these runs (regression: found on the demo's RTL sample, ±2.6px
+  // raggedness at the line end with expansion on).
+  await page.evaluate(async () => {
+    await document.fonts.load("17px Junicode");
+    await document.fonts.ready;
+  });
+  await enhance(page, { protrusion: false }, "#rtl-vf p"); // expansion: library default (ON)
+  const g = await readRtlGeometry(page, "rtl-vf-he");
+  expect(g.enhanced).toBe(true);
+  expect(g.lines.length).toBeGreaterThan(3);
+  for (const [i, line] of g.lines.entries()) {
+    expect.soft(Math.abs(line.right - g.contentRight), `line ${i} start`).toBeLessThan(1);
+    if (i < g.lines.length - 1) {
+      expect.soft(Math.abs(line.left - g.contentLeft), `line ${i} end`).toBeLessThan(1);
+    }
+  }
+  // The sharp assertion: no segment carries font-stretch at all.
+  const stretched = await page.evaluate(
+    () =>
+      [...document.querySelectorAll("#rtl-vf .justif-seg")].filter(
+        (s) => (s as HTMLElement).style.fontStretch !== "",
+      ).length,
+  );
+  expect(stretched).toBe(0);
+});
+
 test("RTL protrusion hangs line-end punctuation past the LEFT edge", async ({ page }) => {
   // Full hangs make the check unambiguous (~a full comma advance).
   await enhance(page, { protrusion: "hanging", expansion: false }, "#rtl-host p");
