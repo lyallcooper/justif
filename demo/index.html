@@ -256,7 +256,7 @@
     display: flex;
     justify-content: center;
     align-items: center;
-    margin: 0 0 1.6rem;
+    margin: 0;
   }
   .view-toggle button {
     font: inherit;
@@ -612,9 +612,14 @@
     .view-toggle button {
       font-size: 0.78rem;
       padding: 0.15rem 0.55rem;
-      letter-spacing: 0.05em;
     }
-    body.flicker-mode #hold-browser { margin-left: 0.7rem; }
+    #dock-bar { gap: 0.45rem; }
+    #dock-toggle { font-size: 0.8rem; }
+    body.flicker-mode #hold-browser {
+      margin-left: 0.35rem;
+      padding: 0.15rem 0.55rem;
+      font-size: 0.78rem;
+    }
     .panes { padding: 0 0.875rem 0.5rem; }
     #metrics { font-size: 0.85rem; }
     /* Single-column ledger: group headers above their rows, controls in a
@@ -688,6 +693,13 @@
     background: var(--paper);
     border-top: 1px solid var(--hairline);
   }
+  #dock-bar {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 0.9rem;
+    min-height: 2.35rem;
+  }
   /* UI chrome text is never selectable — long-presses near the dock or
      toggles must not pop selection callouts (metrics stay copyable). */
   #dock-toggle,
@@ -698,8 +710,7 @@
   }
   #dock-toggle {
     display: block;
-    width: 100%;
-    padding: 0.45rem;
+    padding: 0.45rem 0;
     font: inherit;
     font-size: 0.9rem;
     font-weight: 500;
@@ -737,11 +748,6 @@
   <p class="gh-link"><a href="https://github.com/lyallcooper/justif">view on github</a></p>
 </header>
 
-<div class="view-toggle" role="group" aria-label="Comparison view">
-  <button id="view-side" type="button" aria-pressed="true">side-by-side</button>
-  <button id="view-flicker" type="button" aria-pressed="false">flicker</button>
-  <span id="hold-browser">hold for browser</span>
-</div>
 <input type="hidden" id="view" value="side" />
 
 <div class="panes">
@@ -758,7 +764,14 @@
 <p class="ornament" aria-hidden="true">❧</p>
 
 <div id="dock">
-<button id="dock-toggle" type="button" aria-expanded="false">controls &amp; metrics ▴</button>
+<div id="dock-bar">
+  <button id="dock-toggle" type="button" aria-expanded="false">controls &amp; metrics ▴</button>
+  <div class="view-toggle" role="group" aria-label="Comparison view">
+    <button id="view-side" type="button" aria-pressed="true">side-by-side</button>
+    <button id="view-flicker" type="button" aria-pressed="false">flicker</button>
+    <span id="hold-browser">hold for browser</span>
+  </div>
+</div>
 <div id="dock-body" hidden>
 
 <div class="controls">
@@ -2984,6 +2997,7 @@ justify(document.querySelectorAll("article p"), {
     // the click guard below) — everything else interactive keeps its
     // normal behavior.
     if (
+      t.closest("#hold-browser") === null &&
       t.closest("#dock, select, input, textarea, button, [popover]") !== null
     ) {
       return;
