@@ -7,7 +7,12 @@ const output = join(root, "build", "pages");
 
 await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
-await cp(join(root, "demo"), output, { recursive: true });
+await cp(join(root, "demo"), output, {
+  recursive: true,
+  // Keep the original variable TTFs as source/test fixtures, but deploy only
+  // the much smaller WOFF2 web builds referenced by the demo.
+  filter: (source) => extname(source) !== ".ttf",
+});
 await cp(join(root, "dist"), join(output, "dist"), {
   recursive: true,
   filter: (source) => extname(source) === "" || extname(source) === ".js",

@@ -4,49 +4,195 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>justif — publication-grade text justification for the web</title>
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link
-  href="https://fonts.googleapis.com/css2?family=Alegreya:ital,wght@0,400..900;1,400..900&family=Alegreya+SC&family=Roboto+Flex:opsz,wdth,wght@8..144,25..151,100..1000&family=EB+Garamond:ital,wght@0,400..800;1,400..800&family=IM+Fell+English:ital@0;1&family=IM+Fell+English+SC&family=Vollkorn:ital,wght@0,400..900;1,400..900&family=Vollkorn+SC&family=IBM+Plex+Mono:ital,wght@0,400;1,400&family=Courier+Prime:ital,wght@0,400;0,700;1,400&display=swap"
-  rel="stylesheet"
-/>
+<script>
+  // Keep the first paint on final font metrics. The timeout is only a
+  // fail-safe for a broken asset or disabled module script.
+  document.documentElement.classList.add("fonts-loading");
+  window.fontGateTimeout = setTimeout(() => {
+    document.documentElement.classList.remove("fonts-loading");
+  }, 3000);
+</script>
+<link rel="preload" href="./fonts/Junicode-Roman.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="./fonts/Junicode-Italic.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="modulepreload" href="../dist/index.js" />
+<link rel="modulepreload" href="../dist/hyphenate/en-us.js" />
 <style>
-  /* Junicode 2 (OFL, see fonts/OFL-Junicode.txt) — old-style Garalde serif
-     (modeled on the 17th-century Fell types, the same family as Garamond)
-     with a true two-sided wdth axis (75–125%). It sets the page itself, too. */
+  /* All demo fonts are served locally. Optional faces load only when chosen;
+     Junicode is preloaded because it also sets the page UI. */
   @font-face {
     font-family: "Junicode";
-    src: url("./fonts/Junicode-Roman.ttf") format("truetype-variations");
+    src: url("./fonts/Junicode-Roman.woff2") format("woff2");
     font-weight: 300 700;
     font-stretch: 75% 125%;
     font-style: normal;
-    font-display: swap;
+    font-display: block;
   }
   @font-face {
     font-family: "Junicode";
-    src: url("./fonts/Junicode-Italic.ttf") format("truetype-variations");
+    src: url("./fonts/Junicode-Italic.woff2") format("woff2");
     font-weight: 300 700;
     font-stretch: 75% 125%;
     font-style: italic;
-    font-display: swap;
+    font-display: block;
   }
   @font-face {
     font-family: "Amstelvar";
-    src: url("./fonts/Amstelvar-Roman.ttf") format("truetype-variations");
+    src: url("./fonts/Amstelvar-Roman.woff2") format("woff2");
     font-weight: 100 900;
     /* Without the descriptor range the browser pins the wdth axis and
        font-stretch percentages silently no-op — no expansion. */
     font-stretch: 50% 125%;
     font-style: normal;
-    font-display: swap;
+    font-display: block;
   }
   @font-face {
     font-family: "Amstelvar";
-    src: url("./fonts/Amstelvar-Italic.ttf") format("truetype-variations");
+    src: url("./fonts/Amstelvar-Italic.woff2") format("woff2");
     font-weight: 100 900;
     font-stretch: 50% 125%;
     font-style: italic;
-    font-display: swap;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "Alegreya";
+    src: url("./fonts/Alegreya-Roman.woff2") format("woff2");
+    font-weight: 400 900;
+    font-style: normal;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "Alegreya";
+    src: url("./fonts/Alegreya-Italic.woff2") format("woff2");
+    font-weight: 400 900;
+    font-style: italic;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "Alegreya SC";
+    src: url("./fonts/AlegreyaSC-Regular.woff2") format("woff2");
+    font-weight: 400;
+    font-style: normal;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "EB Garamond";
+    src: url("./fonts/EBGaramond-Roman.woff2") format("woff2");
+    font-weight: 400 800;
+    font-style: normal;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "EB Garamond";
+    src: url("./fonts/EBGaramond-Italic.woff2") format("woff2");
+    font-weight: 400 800;
+    font-style: italic;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "IM Fell English";
+    src: url("./fonts/IMFellEnglish-Regular.woff2") format("woff2");
+    font-weight: 400;
+    font-style: normal;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "IM Fell English";
+    src: url("./fonts/IMFellEnglish-Italic.woff2") format("woff2");
+    font-weight: 400;
+    font-style: italic;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "IM Fell English SC";
+    src: url("./fonts/IMFellEnglishSC-Regular.woff2") format("woff2");
+    font-weight: 400;
+    font-style: normal;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "Vollkorn";
+    src: url("./fonts/Vollkorn-Roman.woff2") format("woff2");
+    font-weight: 400 900;
+    font-style: normal;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "Vollkorn";
+    src: url("./fonts/Vollkorn-Italic.woff2") format("woff2");
+    font-weight: 400 900;
+    font-style: italic;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "Vollkorn SC";
+    src: url("./fonts/VollkornSC-Regular.woff2") format("woff2");
+    font-weight: 400;
+    font-style: normal;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "Roboto Flex";
+    src: url("./fonts/RobotoFlex-Roman.woff2") format("woff2");
+    font-weight: 100 1000;
+    font-stretch: 25% 151%;
+    font-style: normal;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "Courier Prime";
+    src: url("./fonts/CourierPrime-Regular.woff2") format("woff2");
+    font-weight: 400;
+    font-style: normal;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "Courier Prime";
+    src: url("./fonts/CourierPrime-Italic.woff2") format("woff2");
+    font-weight: 400;
+    font-style: italic;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "Courier Prime";
+    src: url("./fonts/CourierPrime-Bold.woff2") format("woff2");
+    font-weight: 700;
+    font-style: normal;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "IBM Plex Mono";
+    src: url("./fonts/IBMPlexMono-Regular.woff2") format("woff2");
+    font-weight: 400;
+    font-style: normal;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "IBM Plex Mono";
+    src: url("./fonts/IBMPlexMono-Italic.woff2") format("woff2");
+    font-weight: 400;
+    font-style: italic;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "Latin Modern Roman";
+    src: url("./fonts/LatinModernRoman-Regular.woff2") format("woff2");
+    font-weight: 400;
+    font-style: normal;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "Latin Modern Roman";
+    src: url("./fonts/LatinModernRoman-Italic.woff2") format("woff2");
+    font-weight: 400;
+    font-style: italic;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "Latin Modern Roman Caps";
+    src: url("./fonts/LatinModernRomanCaps-Regular.woff2") format("woff2");
+    font-weight: 400;
+    font-style: normal;
+    font-display: block;
   }
 
   :root {
@@ -70,6 +216,7 @@
        whichever column the engine didn't pick). */
     overflow-anchor: none;
   }
+  html.fonts-loading body { visibility: hidden; }
   body {
     margin: 0 auto;
     padding: 3.5rem 1.5rem 4.5rem;
@@ -625,6 +772,7 @@
           <option value="'IM Fell English'">IM Fell English</option>
           <option value="'Vollkorn'">Vollkorn</option>
           <option value="'Amstelvar'">Amstelvar</option>
+          <option value="'Latin Modern Roman'">Latin Modern (TeX)</option>
           <option value="Georgia">Georgia</option>
           <option value="ui-serif">System serif</option>
         </optgroup>
@@ -2100,9 +2248,49 @@ justify(document.querySelectorAll("article p"), {
     const html = SAMPLES[document.getElementById("sample").value];
     for (const host of [native, enhanced]) host.innerHTML = html;
   }
-  setSample();
 
   const $ = (id) => document.getElementById(id);
+  const SC_FAMILIES = {
+    "'Alegreya'": '"Alegreya SC"',
+    "'IM Fell English'": '"IM Fell English SC"',
+    "'Vollkorn'": '"Vollkorn SC"',
+    "'Latin Modern Roman'": '"Latin Modern Roman Caps"',
+  };
+  const SYSTEM_FAMILIES = new Set(["Georgia", "ui-serif", "system-ui", "ui-monospace"]);
+  const fontLoads = new Map();
+
+  // A font is fetched before it can replace the current article face. This
+  // keeps both columns on one set of metrics and prevents a second layout
+  // when a local font finishes decoding.
+  function loadFontFamily(family) {
+    if (SYSTEM_FAMILIES.has(family)) return Promise.resolve();
+    let pending = fontLoads.get(family);
+    if (pending !== undefined) return pending;
+
+    const specimen = "Sphinx of black quartz, judge my vow";
+    const requests = [
+      document.fonts.load(`normal 400 16px ${family}`, specimen),
+      document.fonts.load(`italic 400 16px ${family}`, specimen),
+    ];
+    const scFamily = SC_FAMILIES[family];
+    if (scFamily !== undefined) {
+      requests.push(document.fonts.load(`normal 400 16px ${scFamily}`, specimen));
+    }
+    pending = Promise.all(requests).catch((error) => {
+      // A failed local asset should leave one stable fallback face, rather
+      // than prevent the demo from becoming usable.
+      console.warn(`Could not load demo font ${family}`, error);
+    });
+    fontLoads.set(family, pending);
+    return pending;
+  }
+
+  function loadFontsForState() {
+    const families = [$("font").value];
+    if ($("sample").value === "tech") families.push("'Courier Prime'");
+    return Promise.all(families.map(loadFontFamily));
+  }
+
   let controller = null;
   /** Headless hook: ?pull=0 pins mixed-font space semantics for tooling. */
   const PULL_OVERRIDE = new URLSearchParams(location.search).get("pull");
@@ -2611,22 +2799,23 @@ justify(document.querySelectorAll("article p"), {
     $("measure-out").textContent = $("measure").value + "em";
   }
 
+  let applyGeneration = 0;
   async function apply() {
+    const generation = ++applyGeneration;
+    const family = $("font").value;
+    await loadFontFamily(family);
+    if (generation !== applyGeneration || family !== $("font").value) return;
+
     syncHangPunct();
     applyMeasure();
-    document.body.style.setProperty("--demo-family", $("font").value);
+    document.body.style.setProperty("--demo-family", family);
     // Monospace main fonts: inline code has nothing to contrast with — inherit.
     const MONO_BODY = new Set(["'Courier Prime'", "'IBM Plex Mono'", "ui-monospace"]);
     syncExpansionAvailability();
-    document.body.classList.toggle("mono-body", MONO_BODY.has($("font").value));
+    document.body.classList.toggle("mono-body", MONO_BODY.has(family));
     // Companion small-caps families: these designs ship true small caps as
     // a separate font rather than an smcp feature.
-    const SC_FAMILIES = {
-      "'Alegreya'": '"Alegreya SC"',
-      "'IM Fell English'": '"IM Fell English SC"',
-      "'Vollkorn'": '"Vollkorn SC"',
-    };
-    const scFamily = SC_FAMILIES[$("font").value];
+    const scFamily = SC_FAMILIES[family];
     document.body.classList.toggle("sc-family", scFamily !== undefined);
     if (scFamily !== undefined) document.body.style.setProperty("--sc-family", scFamily);
 
@@ -2697,11 +2886,15 @@ justify(document.querySelectorAll("article p"), {
     );
   }
   $("protrusion").addEventListener("change", syncHangPunct);
-  $("sample").addEventListener("change", () => {
+  let sampleGeneration = 0;
+  $("sample").addEventListener("change", async () => {
+    const generation = ++sampleGeneration;
+    await loadFontsForState();
+    if (generation !== sampleGeneration) return;
     controller?.destroy();
     controller = null;
     setSample();
-    apply();
+    await apply();
   });
   function syncBrowserLabel() {
     $("browser-label").textContent = $("pretty").checked ? "Browser (+ pretty)" : "Browser";
@@ -2936,7 +3129,18 @@ justify(document.querySelectorAll("article p"), {
     if (expanded) scheduleUpdate();
   });
 
-  apply();
+  async function initialize() {
+    await Promise.all([loadFontFamily("'Junicode'"), loadFontsForState()]);
+    setSample();
+    await apply();
+    clearTimeout(window.fontGateTimeout);
+    document.documentElement.classList.remove("fonts-loading");
+  }
+  initialize().catch((error) => {
+    clearTimeout(window.fontGateTimeout);
+    document.documentElement.classList.remove("fonts-loading");
+    console.error(error);
+  });
 </script>
 </body>
 </html>
