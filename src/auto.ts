@@ -76,18 +76,17 @@ async function hyphenatorFor(id: string | null): Promise<((w: string) => string[
   // wherever the whole package is served (npm CDNs, node_modules). The
   // specifier is built as a plain variable so bundlers (esbuild included)
   // keep the import dynamic instead of trying to glob-resolve it.
-  const sibling = await tryImport("./hyphenate/" + id + ".js");
-  if (sibling !== undefined) return sibling;
   // Bare package CDN URLs (https://cdn.jsdelivr.net/npm/justif) serve this
-  // module in place WITHOUT redirecting to its file path, so the sibling-
-  // relative import resolves a directory too high (/npm/hyphenate/…, 404).
-  // In that case the module's own URL *is* the package root — retry
-  // against it. (Detect by the URL not looking like a .js file.)
+  // module in place WITHOUT redirecting to its file path, so a sibling-
+  // relative import would resolve a directory too high (/npm/hyphenate/…).
+  // There the module's own URL *is* the package root — checked FIRST (by
+  // the URL not looking like a .js file) so the common case never logs a
+  // 404 in the adopter's console.
   const base = import.meta.url.replace(/[?#].*$/, "");
   if (!/\.[cm]?js$/.test(base)) {
     return tryImport(base + "/dist/hyphenate/" + id + ".js");
   }
-  return undefined; // single-file hosting: justify with spacing only
+  return tryImport("./hyphenate/" + id + ".js"); // undefined → spacing only
 }
 
 async function boot(): Promise<void> {
