@@ -89,7 +89,7 @@ test("drawer controls form compact responsive rows", async ({ page }) => {
   expect(Math.abs(layout.pretty.top - layout.blur.top)).toBeLessThan(1);
 });
 
-test("gap highlights use a grayscale extended ramp", async ({ page }) => {
+test("gap highlights use a symmetric grayscale ramp", async ({ page }) => {
   await page.goto("/demo/");
   await page.click("#dock-toggle");
 
@@ -117,8 +117,16 @@ test("gap highlights use a grayscale extended ramp", async ({ page }) => {
     opacity: Number(mark.style.opacity),
     deviation: Number(mark.title.match(/([+-]?\d+)%/)![1]) / 100,
   }));
-  const expectedOpacity = Math.min(1, (Math.abs(ramp.deviation) - 0.3) * 0.9);
-  expect(Math.abs(ramp.opacity - expectedOpacity)).toBeLessThan(0.006);
+  const ratio = 1 + ramp.deviation;
+  const magnitude = ratio > 0 ? Math.max(ratio, 1 / ratio) : Infinity;
+  const expectedOpacity = Math.min(1, (magnitude - 1.3) / (3 - 1.3));
+  expect(Math.abs(ramp.opacity - expectedOpacity)).toBeLessThan(0.02);
+
+  const intensity = (widthRatio: number) =>
+    Math.min(1, (Math.max(widthRatio, 1 / widthRatio) - 1.3) / (3 - 1.3));
+  expect(intensity(3)).toBe(1);
+  expect(intensity(1 / 3)).toBe(1);
+  expect(intensity(2.41)).toBeLessThan(1);
 
   await page.click("#theme-dark");
   expect(await palette()).toEqual({

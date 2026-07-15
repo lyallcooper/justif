@@ -2786,11 +2786,11 @@ justify(document.querySelectorAll("article p"), {
   // (ragged by design).
   // ------------------------------------------------------------------
 
-  // Soft threshold: opacity ramps from 0 at ±30% deviation, so mild
-  // (inevitable) justification looseness stays invisible. The gentle scale
-  // reserves maximum contrast for deviations of roughly 140%.
-  const DEVIATION_TOLERANCE = 0.3;
-  const DEVIATION_OPACITY_SCALE = 0.9;
+  // A multiplicative scale treats reciprocal changes equally: 3× natural
+  // width and ⅓× natural width both reach maximum contrast. Changes within
+  // a factor of 1.3 remain invisible so ordinary variation does not light up.
+  const GAP_FACTOR_TOLERANCE = 1.3;
+  const GAP_FACTOR_FULL_INTENSITY = 3;
 
   // `origin` is read in the same batch as the gap rects (before any DOM
   // write), so both live in one coordinate space even if writes shift layout.
@@ -2806,9 +2806,12 @@ justify(document.querySelectorAll("article p"), {
     for (const para of analysis.paragraphs) {
       for (const line of para.lines.slice(0, -1)) {
         for (const gap of line.gaps) {
-          const rel = (gap.width - gap.natural) / gap.natural;
-          const excess = Math.abs(rel) - DEVIATION_TOLERANCE;
-          const alpha = Math.min(1, excess * DEVIATION_OPACITY_SCALE);
+          const ratio = gap.width / gap.natural;
+          const rel = ratio - 1;
+          const magnitude = ratio > 0 ? Math.max(ratio, 1 / ratio) : Infinity;
+          const alpha = Math.min(1,
+            (magnitude - GAP_FACTOR_TOLERANCE) /
+            (GAP_FACTOR_FULL_INTENSITY - GAP_FACTOR_TOLERANCE));
           if (alpha < 0.05) continue;
           const el = document.createElement("div");
           el.className = "gapmark " + (rel > 0 ? "loose" : "tight");
