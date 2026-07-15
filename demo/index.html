@@ -523,6 +523,7 @@
   /* Nothing inside the columns is colored: the sample hyperlink inherits. */
   .article a { color: inherit; text-decoration: underline; }
   .article code {
+    --code-chip: color-mix(in srgb, var(--ink) 4.5%, var(--paper));
     font-family: "Courier Prime", ui-monospace, monospace;
     /* Courier Prime's small typewriter body sits at 95% so inline code
        matches the serif's optical size and weight. */
@@ -535,11 +536,19 @@
        (horizontal padding would add width the justification model never
        measured), and Courier Prime's generous cell bearings provide the
        visual inset on their own. */
-    background: color-mix(in srgb, var(--ink) 4.5%, transparent);
+    background: var(--code-chip);
     border-radius: 4px;
     /* Code wrapped across lines: each fragment gets its own rounded box. */
     -webkit-box-decoration-break: clone;
     box-decoration-break: clone;
+  }
+  /* Protrusion uses a negative margin on the final generated segment. That
+     shortens the parent code fragment's decoration box while its glyph still
+     paints into the margin. Repaint the same opaque chip on the segment so
+     the background follows the glyph without changing layout width. */
+  .article p code .justif-seg {
+    background: var(--code-chip);
+    border-radius: inherit;
   }
   /* The block container already provides the chip; don't double-tint. */
   .article pre code {
