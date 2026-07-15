@@ -17,13 +17,14 @@ Browsers normally justify one line at a time. A locally acceptable break can
 make the next line too loose, create visible rivers of whitespace, or force a
 poor break near the end of the paragraph.
 
-<figure>
+<p align="center">
   <img
     src="docs/images/browser-vs-justif.png"
     alt="Native browser justification with uneven spacing compared with justif's more balanced line breaks"
-  >
-  <figcaption align="center"><em>Native browser and justif rendering in Google Chrome.</em></figcaption>
-</figure>
+    width="760"
+  ><br>
+  <em>Native browser and justif rendering in Google Chrome.</em>
+</p>
 
 `justif` uses the [Knuth-Plass line-breaking
 algorithm](https://en.wikipedia.org/wiki/Knuth%E2%80%93Plass_line-breaking_algorithm)
