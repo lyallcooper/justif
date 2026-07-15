@@ -547,6 +547,41 @@
     border-radius: 4px;
     padding: 0 0.3em;
   }
+  .article kbd {
+    font-family: "Courier Prime", ui-monospace, Menlo, Consolas, "DejaVu Sans Mono", monospace;
+    font-size: 0.85em;
+    font-weight: normal;
+    background: var(--paper);
+    border: 1px solid color-mix(in srgb, var(--ink) 35%, var(--paper));
+    /* The keycap look: a slightly heavier bottom edge. Vertical borders
+       and padding don't affect inline layout, so only the 1px sides are
+       modeled. The top padding recenters the glyphs: caps leave the
+       font's descent space empty below them, so the bare content box
+       read bottom-heavy (ink 3.3px from the top, 6.9px from the bottom);
+       with it, the leftover difference is exactly the heavier bottom
+       edge. */
+    border-bottom-width: 2.5px;
+    border-radius: 4px;
+    padding: 0.15em 0.35em 0;
+    /* A keycap never splits across lines; justif honors inline nowrap
+       (no break opportunity inside, spaces keep their justification
+       flex). The 1px borders are modeled like the code chip's padding. */
+    white-space: nowrap;
+    -webkit-hyphens: none;
+    hyphens: none;
+  }
+  /* Mac key symbols (⌘ ⌥ ⇧ …) inside keycaps: Courier Prime lacks them,
+     and the engines' Menlo/Monaco fallback draws ⌘ floating well above the
+     baseline. An explicit run in Helvetica Neue/Arial seats the symbol —
+     and, as an ordinary inline font change, justif measures it in exactly
+     the font it renders with (a unicode-range face would not reach the
+     measuring canvas in every engine). */
+  .article kbd .key-sym {
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    /* Helvetica Neue draws ⌘ to ~0.74em where Courier Prime's caps reach
+       ~0.58em; scale the symbol to the keycap letters' cap height. */
+    font-size: 0.78em;
+  }
   /* Protrusion uses a negative margin on the final generated segment. That
      shortens the parent code fragment's decoration box while its glyph still
      paints into the margin. Repaint the same opaque chip on the segment so
@@ -565,9 +600,10 @@
     background: none;
     padding: 0;
   }
-  /* When the main font is itself monospace, inline code just inherits
-     (the chip background still marks it). */
-  body.mono-body .article code {
+  /* When the main font is itself monospace, inline code and keycaps just
+     inherit (the chip background still marks them). */
+  body.mono-body .article code,
+  body.mono-body .article kbd {
     font-family: inherit;
     font-size: inherit;
     font-weight: inherit;
@@ -953,7 +989,11 @@ justify(document.querySelectorAll("article p"), {
       <code>npm install justif</code> or a declaration like
       <code>const ctl = justify(paragraphs)</code>, inline code keeps its
       word boundaries readable—and the block above stays untouched,
-      because justif enhances only the paragraphs you give it.</p>`,
+      because justif enhances only the paragraphs you give it. The page
+      stays honest to the browser, too: press <kbd>Ctrl-F</kbd>—or
+      <kbd><span class="key-sym">⌘</span>F</kbd> on a Mac—and find-in-page
+      matches phrases straight across the justified line breaks, keycaps
+      and all.</p>`,
 
     specimen: `
       <p><span class="smcp">In the beginning</span>
