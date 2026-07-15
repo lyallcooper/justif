@@ -2,6 +2,12 @@
   "name": "justif",
   "version": "0.1.0",
   "description": "Publication-grade text justification for the web",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lyallcooper/justif.git"
+  },
+  "homepage": "https://github.com/lyallcooper/justif#readme",
+  "bugs": "https://github.com/lyallcooper/justif/issues",
   "type": "module",
   "sideEffects": false,
   "license": "MIT",
