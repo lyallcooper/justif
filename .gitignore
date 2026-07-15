@@ -5,3 +5,4 @@ playwright-report/
 build/
 *.log
 .DS_Store
+.claude/

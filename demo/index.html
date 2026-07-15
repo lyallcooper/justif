@@ -652,6 +652,7 @@
     <div id="expansion-note" popover></div>
     <label><input id="tracking" type="checkbox" checked /> tracking</label>
     <label><input id="lastline" type="checkbox" checked /> avoid short last lines</label>
+    <label><input id="lastlinefit" type="checkbox" /> match last-line spacing</label>
     <label>hang punctuation
       <button id="hangpunct-info" class="info" type="button" popovertarget="hangpunct-note"
         aria-label="Why is hanging punctuation disabled?" hidden>i</button>
@@ -2028,7 +2029,7 @@ justify(document.querySelectorAll("article p"), {
   // setSample()/apply() so the initial render already uses them.
   const PARAM_STORE = "justif-demo-params";
   const PARAM_IDS = ["sample", "font", "measure", "hyphenate", "protrusion", "hangpunct",
-                     "expansion", "tracking", "lastline", "pretty", "blur", "view", "rulers", "deviation"];
+                     "expansion", "tracking", "lastline", "lastlinefit", "pretty", "blur", "view", "rulers", "deviation"];
   try {
     const saved = JSON.parse(localStorage.getItem(PARAM_STORE) ?? "null");
     if (saved !== null) {
@@ -2600,6 +2601,11 @@ justify(document.querySelectorAll("article p"), {
       // pass a single long word).
       lastLineMinWidth: $("lastline").checked ? 0.33 : undefined,
       lastLineMinWords: $("lastline").checked ? 2 : undefined,
+      // eTeX \lastlinefit at full strength: the ending's word spaces adopt
+      // the paragraph's mean stretch. Subtle at these measures (hyphenation
+      // and expansion keep the body's mean near zero) — most visible with
+      // hyphenation off at narrow measures.
+      lastLineFit: $("lastlinefit").checked ? 1 : undefined,
       // Library-default spacing; ?pull= is a headless hook for tools
       // (tex-compare pins pull=0 for TeX space semantics).
       spacing:
@@ -2631,7 +2637,7 @@ justify(document.querySelectorAll("article p"), {
     scheduleUpdate();
   }
 
-  for (const id of ["font", "hyphenate", "protrusion", "hangpunct", "expansion", "tracking", "lastline"]) {
+  for (const id of ["font", "hyphenate", "protrusion", "hangpunct", "expansion", "tracking", "lastline", "lastlinefit"]) {
     $(id).addEventListener("change", apply);
   }
   // Full hangs are a protrusion style: without protrusion there is nothing
