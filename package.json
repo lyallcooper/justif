@@ -11,6 +11,10 @@
     "LICENSE"
   ],
   "exports": {
+    "./auto": {
+      "types": "./dist/auto.d.ts",
+      "import": "./dist/auto.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
@@ -139,5 +143,7 @@
     "tsup": "^8.0.0",
     "typescript": "^5.5.0",
     "vitest": "^3.0.0"
-  }
+  },
+  "unpkg": "./dist/auto.js",
+  "jsdelivr": "./dist/auto.js"
 }

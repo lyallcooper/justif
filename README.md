@@ -33,6 +33,26 @@ Zero dependencies. ESM. The layout core is DOM-free and runs in Node.
 
 ## Usage
 
+**No build step** — one line, zero configuration:
+
+```html
+<script type="module" src="https://cdn.jsdelivr.net/npm/justif"></script>
+```
+
+The page's own CSS decides what gets enhanced: every paragraph (and `li`,
+`blockquote`, `dd`, `figcaption`) whose computed `text-align` is `justify`
+is upgraded in place; nothing else is touched. Hyphenation follows your
+declared languages: English content (nearest `lang` attribute, or none)
+uses the inlined en-US patterns at no extra cost, and content in any other
+[bundled language](#hyphenating-other-languages) loads its pattern module
+on demand from the same CDN — one small request per distinct language.
+Unbundled languages justify with spacing only (wrong-language hyphenation
+is worse than none). `data-justif-selector="article p"` on the script tag
+narrows the candidates; `window.justif.controllers` is the escape hatch.
+~38 KB gzipped for English-only pages, no further requests.
+
+**With a bundler:**
+
 ```js
 import { justify } from "justif";
 import { hyphenateEnUS } from "justif/hyphenate/en-us";

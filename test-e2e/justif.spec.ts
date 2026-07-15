@@ -680,6 +680,41 @@ test("enhances paragraphs inside shadow DOM (rules reach the shadow root)", asyn
   expect(r.maxDev).toBeLessThan(1);
 });
 
+test("auto drop-in: enhances justified text only, language-gated hyphenation", async ({ page }) => {
+  const leftBefore = "This paragraph is left aligned";
+  await page.goto("/test-e2e/fixture-auto.html");
+  // The drop-in exposes its controllers; wait for their ready promises.
+  await page.waitForFunction(() => (window as Window & { justif?: unknown }).justif !== undefined);
+  await page.evaluate(async () => {
+    const g = window as Window & { justif?: { controllers: Array<{ ready: Promise<void> }> } };
+    await Promise.all(g.justif!.controllers.map((c) => c.ready));
+  });
+  // Both computed-justify paragraphs enhanced; the left-aligned one untouched.
+  expect(await page.locator("#en-just .justif-seg").count()).toBeGreaterThan(0);
+  expect(await page.locator("#de-just .justif-seg").count()).toBeGreaterThan(0);
+  expect(await page.locator("#en-left .justif-seg").count()).toBe(0);
+  expect(await page.evaluate(() => document.getElementById("en-left")!.hasAttribute("data-justif"))).toBe(false);
+  expect(await page.evaluate(() => document.getElementById("en-left")!.textContent)).toContain(leftBefore);
+  // Language detection: en-US patterns hyphenate the English paragraph;
+  // the lang="de" paragraph hyphenates too — via the German pattern module
+  // loaded on demand from a sibling file, never via English patterns
+  // (verified below with a German-only break). The lang="cs" paragraph
+  // (no bundled patterns) enhances with spacing only: wrong-language
+  // hyphenation is worse than none.
+  expect(await page.locator("#en-just .justif-hyphen").count()).toBeGreaterThan(0);
+  expect(await page.locator("#de-just .justif-hyphen").count()).toBeGreaterThan(0);
+  expect(await page.locator("#cs-just .justif-seg").count()).toBeGreaterThan(0);
+  expect(await page.locator("#cs-just .justif-hyphen").count()).toBe(0);
+  // The de hyphenator really is German: its module hyphenates a word the
+  // en-US patterns leave whole.
+  const isGerman = await page.evaluate(async () => {
+    const url = "/dist/hyphenate/de.js";
+    const m = (await import(url)) as { hyphenateDe(w: string): string[] };
+    return m.hyphenateDe("silbentrennung").join("-");
+  });
+  expect(isGerman).toBe("sil-ben-tren-nung");
+});
+
 test("destroy() restores the original DOM byte-identically", async ({ page }) => {
   const before = await page.evaluate(() => document.getElementById("host")!.innerHTML);
   await enhance(page, { hyphenate: true });

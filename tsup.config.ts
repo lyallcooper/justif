@@ -19,6 +19,15 @@ export default defineConfig([
     clean: true,
   },
   {
+    // The drop-in script: fully self-contained (own config block, single
+    // entry, so nothing chunk-splits — one file works from any CDN/static
+    // host with zero companion requests).
+    ...shared,
+    entry: { auto: "src/auto.ts" },
+    sourcemap: false,
+    clean: false,
+  },
+  {
     // Language pattern modules: generated data (tools/gen-hyphenation.mjs)
     // — sourcemaps would double the package size for nothing.
     ...shared,

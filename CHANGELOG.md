@@ -4,6 +4,11 @@
 
 Initial release.
 
+- Zero-config drop-in: `<script type="module"
+  src="https://cdn.jsdelivr.net/npm/justif"></script>` enhances everything
+  the page's CSS justifies; hyphenation auto-follows declared `lang`
+  attributes (en-US inlined, other bundled languages loaded on demand).
+
 - Knuth-Plass total-fit line breaking (TeX's exact badness/demerits model,
   three-pass tolerance escalation, emergency stretch).
 - Microtypography: character protrusion / optical margin alignment

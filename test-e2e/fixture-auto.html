@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>justif auto drop-in fixture</title>
+<style>
+  .col { width: 230px; }
+  .col p {
+    font-family: Georgia, serif;
+    font-size: 17px;
+    line-height: 1.45;
+    margin: 0 0 1em;
+  }
+  .just p { text-align: justify; }
+  .left p { text-align: left; }
+</style>
+</head>
+<body>
+  <div class="col just">
+    <p id="en-just">The extraordinarily complicated development of unquestionably
+    international typographical conventions demonstrates considerable
+    responsibility throughout contemporary civilization.</p>
+    <p id="de-just" lang="de">Die Silbentrennungsverantwortlichkeiten der
+    Buchdruckerkunstgeschichte demonstrieren außerordentliche
+    Aufmerksamkeitsanforderungen zeitgenössischer Universitätsbibliotheken.</p>
+    <p id="cs-just" lang="cs">Nejneobhospodařovávatelnějšími pozoruhodnostmi
+    středoevropských knihtiskařských univerzitních společenství zůstávají
+    dlouhodobé odpovědnosti.</p>
+  </div>
+  <div class="col left">
+    <p id="en-left">This paragraph is left aligned, so the drop-in must leave
+    it completely untouched whatever else it enhances on the page.</p>
+  </div>
+  <!-- The one-liner under test. -->
+  <script type="module" src="../dist/auto.js"></script>
+</body>
+</html>
