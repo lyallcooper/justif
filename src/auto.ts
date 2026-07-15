@@ -59,21 +59,35 @@ function moduleFor(lang: string): string | null {
   return BUNDLED.has(primary) ? primary : null;
 }
 
-async function hyphenatorFor(id: string | null): Promise<((w: string) => string[]) | undefined> {
-  if (id === null) return undefined;
-  if (id === "en-us") return hyphenateEnUS;
+async function tryImport(specifier: string): Promise<((w: string) => string[]) | undefined> {
   try {
-    // Resolved relative to THIS file: dist/hyphenate/<id>.js — present
-    // wherever the whole package is served (npm CDNs, node_modules). The
-    // specifier is built as a plain variable so bundlers (esbuild included)
-    // keep the import dynamic instead of trying to glob-resolve it.
-    const specifier = "./hyphenate/" + id + ".js";
     const m = (await import(specifier)) as Record<string, (w: string) => string[]>;
     // Each language module has exactly one export: its hyphenate function.
     return Object.values(m)[0];
   } catch {
-    return undefined; // single-file hosting: justify with spacing only
+    return undefined;
   }
+}
+
+async function hyphenatorFor(id: string | null): Promise<((w: string) => string[]) | undefined> {
+  if (id === null) return undefined;
+  if (id === "en-us") return hyphenateEnUS;
+  // Resolved relative to THIS file: dist/hyphenate/<id>.js — present
+  // wherever the whole package is served (npm CDNs, node_modules). The
+  // specifier is built as a plain variable so bundlers (esbuild included)
+  // keep the import dynamic instead of trying to glob-resolve it.
+  const sibling = await tryImport("./hyphenate/" + id + ".js");
+  if (sibling !== undefined) return sibling;
+  // Bare package CDN URLs (https://cdn.jsdelivr.net/npm/justif) serve this
+  // module in place WITHOUT redirecting to its file path, so the sibling-
+  // relative import resolves a directory too high (/npm/hyphenate/…, 404).
+  // In that case the module's own URL *is* the package root — retry
+  // against it. (Detect by the URL not looking like a .js file.)
+  const base = import.meta.url.replace(/[?#].*$/, "");
+  if (!/\.[cm]?js$/.test(base)) {
+    return tryImport(base + "/dist/hyphenate/" + id + ".js");
+  }
+  return undefined; // single-file hosting: justify with spacing only
 }
 
 async function boot(): Promise<void> {

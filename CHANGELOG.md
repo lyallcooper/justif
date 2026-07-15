@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.1 (2026-07-15)
+
+- Drop-in: on-demand language modules now load correctly from bare
+  package CDN URLs (`https://cdn.jsdelivr.net/npm/justif`), which serve
+  `auto.js` without redirecting to its file path — sibling-relative
+  imports resolved a directory too high and non-English content silently
+  fell back to spacing-only justification. The loader now retries against
+  the module's own URL as the package root.
+
 ## 0.1.0 (2026-07-15)
 
 Initial release.
