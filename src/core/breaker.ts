@@ -156,7 +156,7 @@ function attempt(
 
     candidates.clear();
     let bestDead: Node | null = null;
-    let bestDeadRatio = 0;
+    let bestDeadOver = Infinity;
     let prevLink: Node | null = null;
     let node: Node | null = active;
 
@@ -221,13 +221,23 @@ function attempt(
         // Deactivate: unlink from the active list.
         if (prevLink === null) active = next;
         else prevLink.next = next;
+        // Rescue-seeding origin: least overflow past all shrink (L − W − Z)
+        // wins, not cheapest history. The artificial line is free, so the
+        // min-demerits node is usually the paragraph start (0 demerits) —
+        // seeding from it would sweep every word since the last affordable
+        // break onto the overfull line. The origin nearest the unbreakable
+        // token overflows by only that token's own excess, the way a
+        // browser sets an unbreakable word on a line of its own. (Ratio is
+        // the wrong metric here: extra words add shrinkable glue, so a
+        // longer overfull line can have the less-negative ratio.)
+        const over = L - W - Z;
         if (
           bestDead === null ||
-          node.totalDemerits < bestDead.totalDemerits ||
-          (node.totalDemerits === bestDead.totalDemerits && r > bestDeadRatio)
+          over < bestDeadOver ||
+          (over === bestDeadOver && node.totalDemerits < bestDead.totalDemerits)
         ) {
           bestDead = node;
-          bestDeadRatio = r;
+          bestDeadOver = over;
         }
       } else {
         prevLink = node;
@@ -242,7 +252,7 @@ function attempt(
         from: bestDead,
         fitness: Fitness.Decent,
         totalDemerits: bestDead.totalDemerits,
-        overfull: bestDeadRatio < -1,
+        overfull: bestDeadOver > 0,
       });
     }
 

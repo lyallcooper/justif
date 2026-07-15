@@ -224,6 +224,32 @@ describe("three-pass behavior", () => {
       "supercalifragilistic expialidocious",
     );
   });
+
+  it("sets an unbreakable over-measure word on its own line, not with its neighbors", () => {
+    // "Wwwwwwwwwwwwwwww" = 12 + 15·9 = 147 > W = 100; everything around it
+    // fits. The rescue seeding must originate at the break nearest the
+    // giant word — preceding words go on a loose line and the overfull
+    // line overflows by only the word's own excess (147 − 100 = 47), like
+    // a browser. Seeding from the cheapest history instead swept "aa bb"
+    // onto the overfull line (overflow 82+, spaces crushed to ratio −1).
+    for (const text of [
+      "aa bb Wwwwwwwwwwwwwwww cc dd",
+      "aa bb cc Wwwwwwwwwwwwwwww",
+      "Wwwwwwwwwwwwwwww aa bb cc",
+    ]) {
+      const para = build(text);
+      const result = breakParagraph(para, 100, defaultBreakOptions);
+      const lines = layoutLines(para, result, 100, defaultBuildOptions);
+      const overfull = lines.filter((l) => l.overfull);
+      expect(overfull).toHaveLength(1);
+      expect(lineText(para, overfull[0]!).trim()).toBe("Wwwwwwwwwwwwwwww");
+      expect(overfull[0]!.overflowPx).toBeCloseTo(47, 6);
+      for (const line of lines) {
+        if (!line.overfull) expect(line.overflowPx).toBe(0);
+        expect(line.glueRatio).toBeGreaterThanOrEqual(-1 - 1e-9);
+      }
+    }
+  });
 });
 
 function fakeHyphenator(w: string): string[] {
