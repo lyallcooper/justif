@@ -865,7 +865,11 @@ test("text-indent paragraphs: indented first line, all lines flush", async ({ pa
   // line against the full paragraph measure — positive indents left first
   // lines unprotected, and negative ones were "corrected" by roughly the
   // indent amount, so the browser re-wrapped them mid-line.
-  // Body-level paragraph (not #host): default 16px font, so 2em = 32px.
+  // Body-level paragraph (not #host): default 16px font-SIZE, so 2em =
+  // 32px — but the font FACE is pinned: on Linux WebKit the generic
+  // `serif` resolves differently in canvas than in DOM rendering, which
+  // sets every line a few px short (CI-only failure; macOS agrees with
+  // itself). A deterministic face keeps this a text-indent test.
   const text =
     "the quick brown fox jumps over the lazy dog while the small grey cat " +
     "watches from the garden wall and the old man walks slowly down the long " +
@@ -874,10 +878,10 @@ test("text-indent paragraphs: indented first line, all lines flush", async ({ pa
     "far hills and the fields grow dark and still and the last light fades " +
     "from the evening sky.";
   for (const c of [
-    { name: "positive indent", style: "width:416px; text-indent: 2em", delta: 32 },
+    { name: "positive indent", style: "width:416px; text-indent: 2em; font-family: Georgia, serif", delta: 32 },
     // The classic hanging-indent idiom — padding-left gives the negative
     // indent room to start left of the other lines' edge.
-    { name: "hanging indent", style: "width:416px; text-indent: -24px; padding-left: 24px", delta: -24 },
+    { name: "hanging indent", style: "width:416px; text-indent: -24px; padding-left: 24px; font-family: Georgia, serif", delta: -24 },
   ]) {
     await page.evaluate(
       async ([style, content]) => {
