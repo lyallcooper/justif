@@ -142,13 +142,11 @@ function setFont(ctx: MeasureCtx, spec: FontSpec): void {
   if ("wordSpacing" in ctx) ctx.wordSpacing = spec.wordSpacingPx + "px";
   // Always reset caps state: it is independent canvas state, not part of
   // the font shorthand, and a stale small-caps value would poison every
-  // later measurement (surviving even clearMeasureCache).
+  // later measurement (surviving even clearMeasureCache). Canvas never
+  // MEASURES caps variants — those runs take the DOM path (see
+  // requiresDomMeasurement) — so the reset is constant.
   if ("fontVariantCaps" in ctx) {
-    try {
-      ctx.fontVariantCaps = spec.variantCaps as CanvasFontVariantCaps;
-    } catch {
-      ctx.fontVariantCaps = "normal";
-    }
+    (ctx as { fontVariantCaps: string }).fontVariantCaps = "normal";
   }
   currentKey = spec.key;
 }
@@ -178,12 +176,15 @@ export function applyFontSpec(el: HTMLElement, spec: FontSpec): void {
 }
 
 /** True when the run needs the DOM shaper rather than canvas measureText.
- * Canvas exposes only caps variants, and even that property is absent in
- * WebKit. All other variant/feature values are measured in a styled DOM
- * probe so their actual substitutions and advances are honored. */
+ * Caps variants ALWAYS take the DOM probe: canvas fontVariantCaps support
+ * is port-dependent — absent in Mac WebKit, present-but-divergent from DOM
+ * shaping in GTK WebKit (Playwright's Linux build measured all-small-caps
+ * ~11px/line apart), and Firefox's OffscreenCanvas has desynced its caps
+ * state before. A styled DOM probe shapes with exactly the engine that
+ * renders. Every other variant/feature value likewise. */
 export function requiresDomMeasurement(spec: FontSpec): boolean {
-  if (spec.variantCaps !== "normal" && !("fontVariantCaps" in getCtx())) return true;
   return (
+    spec.variantCaps !== "normal" ||
     spec.variantAlternates !== "normal" ||
     spec.variantEastAsian !== "normal" ||
     spec.variantEmoji !== "normal" ||
