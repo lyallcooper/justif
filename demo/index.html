@@ -2607,17 +2607,17 @@ await controller.ready;</code></pre>
     }
   } catch { /* corrupt or unavailable storage: fall through to defaults */ }
 
-  // Fresh loads target the widths that make the comparison clearest: 14em
-  // side-by-side and 26em in flicker. Narrow windows still clamp each view
+  // Fresh loads target the widths that make the comparison clearest: 13em
+  // side-by-side and 19em in flicker. Narrow windows still clamp each view
   // to the space it can actually display, while saved preferences win.
   function defaultMeasureForWindow() {
     const gap = window.innerWidth <= 1100 ? 24 : 48; // .panes gap (1.5/3rem)
     const padding = 48; // .panes horizontal padding (2 × 1.5rem)
     const perColumnEm = (window.innerWidth - padding - gap) / 2 / 16;
-    return Math.max(10, Math.min(14, Math.floor(perColumnEm / 0.5) * 0.5));
+    return Math.max(10, Math.min(13, Math.floor(perColumnEm / 0.5) * 0.5));
   }
   function defaultFlickerMeasure() {
-    return 26;
+    return 19;
   }
   function storedMeasure(value) {
     if (value === null || value === undefined || value === "") return null;
