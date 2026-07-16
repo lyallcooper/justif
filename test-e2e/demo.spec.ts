@@ -98,7 +98,7 @@ test("gap highlights use a symmetric grayscale ramp", async ({ page }) => {
       const swatch = document.createElement("span");
       swatch.className = `gapmark ${direction}`;
       document.body.append(swatch);
-      const background = getComputedStyle(swatch).backgroundColor;
+      const background = getComputedStyle(swatch, "::after").backgroundColor;
       swatch.remove();
       return background;
     };
@@ -116,6 +116,9 @@ test("gap highlights use a symmetric grayscale ramp", async ({ page }) => {
   const ramp = await page.locator(".gapmark").first().evaluate((mark: HTMLElement) => ({
     opacity: Number(mark.style.opacity),
     deviation: Number(mark.title.match(/([+-]?\d+)%/)![1]) / 100,
+    hostHeight: mark.getBoundingClientRect().height,
+    boxHeight: parseFloat(getComputedStyle(mark, "::after").height),
+    boxTop: parseFloat(getComputedStyle(mark, "::after").top),
   }));
   const ratio = 1 + ramp.deviation;
   const magnitude = ratio > 0 ? Math.max(ratio, 1 / ratio) : Infinity;
@@ -127,6 +130,8 @@ test("gap highlights use a symmetric grayscale ramp", async ({ page }) => {
   expect(intensity(3)).toBe(1);
   expect(intensity(1 / 3)).toBe(1);
   expect(intensity(2.41)).toBeLessThan(1);
+  expect(ramp.boxHeight / ramp.hostHeight).toBeCloseTo(0.7, 2);
+  expect(ramp.boxTop / ramp.hostHeight).toBeCloseTo(0.5, 2);
 
   await page.click("#theme-dark");
   expect(await palette()).toEqual({

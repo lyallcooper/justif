@@ -759,10 +759,18 @@
 
   .gapmark {
     position: absolute;
-    border-radius: 2px;
+    background: transparent;
   }
-  .gapmark.loose,
-  .gapmark.tight { background: var(--gap-highlight); }
+  .gapmark::after {
+    content: "";
+    position: absolute;
+    inset-inline: 0;
+    top: 50%;
+    height: 70%;
+    background: var(--gap-highlight);
+    border-radius: 2px;
+    transform: translateY(-50%);
+  }
 
   /* ── Measurements table ───────────────────────────────────── */
   #metrics {
