@@ -446,7 +446,7 @@ export function buildRenderSegments(
       !brk.flagged
     ) {
       // Unflagged zero-width penalties come in two kinds, told apart by
-      // the `cjk` discriminator. lastLineMinWords penalties sit BEFORE a
+      // the `cjk` discriminator. Hand-built zero-width penalties sit BEFORE a
       // glue at a real space: the break consumes that space, which must
       // still appear in the DOM text — a <wbr> there would silently delete
       // it from copies and find-in-page. CJK inter-character penalties

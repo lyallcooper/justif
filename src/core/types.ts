@@ -139,8 +139,8 @@ export interface Glue {
   /**
    * CJK inter-character glue: no source space exists here. Renderers must
    * not emit a space character for it — its flex renders as inter-character
-   * spacing (letter-spacing) instead of word-spacing — and lastLineMinWords
-   * must not count it as a word gap. Never breakable on its own (buildItems
+   * spacing (letter-spacing) instead of word-spacing. Never breakable on
+   * its own (buildItems
    * always puts a penalty in front of it, so the glue-after-box rule never
    * fires).
    */
@@ -170,9 +170,9 @@ export interface Penalty {
   /**
    * CJK inter-character break: the break site has NO source space, so a
    * line broken here must render a bare <wbr> joint, never a space. This is
-   * what distinguishes it from the other unflagged zero-width penalties
-   * (lastLineMinWords), which sit at real spaces and must keep rendering
-   * the space they consumed.
+   * what distinguishes it from other unflagged zero-width penalties (from
+   * hand-built withSums streams), which sit at real spaces and must keep
+   * rendering the space they consumed.
    */
   cjk?: boolean;
 }
@@ -205,9 +205,6 @@ export interface BuildOptions {
   hyphenPenalty: number;
   /** Penalty for breaking after an explicit "-" already in the text. */
   exHyphenPenalty: number;
-  /** ≥ 2 discourages last lines with fewer words than this. */
-  lastLineMinWords: number;
-  lastLinePenalty: number;
   protrusion: ProtrusionTable | false;
   /** Table for boxes starting the paragraph's FIRST line (full hanging
    * punctuation on opening quotes/brackets). undefined → same as
@@ -229,6 +226,18 @@ export interface BuildOptions {
    * justified ending; the last line's letterfit stays natural.
    */
   lastLineFit: number;
+  /**
+   * Rendering floor for the paragraph ending, as a fraction of the
+   * measure: a last line shorter than this stretches its word glue up to
+   * the threshold (letterfit stays natural, as with `lastLineFit`) — but
+   * only when the threshold is reachable within maxEndingStretch(v), the
+   * v-scaled underfull bound. An ending that cannot reach it reverts to
+   * natural spacing entirely: all or nothing, never stretched AND still
+   * short. 1 sets every paragraph as a rectangle. Set
+   * `BreakOptions.lastLineMinWidth` to the same value for the matching
+   * render-aware break pressure (the public API does). 0 disables.
+   */
+  lastLineMinWidth: number;
   /**
    * Shrink multiplier for word spaces at font-FAMILY boundaries (runs with
    * differing `familyKey`). 0 (default): such spaces stretch but never
@@ -261,24 +270,35 @@ export interface BreakOptions {
    * space width (≈ TeX's 3em \emergencystretch). */
   emergencyStretch: number | "auto";
   /**
-   * Finite last-line fill stretch as a fraction of the measure (TeX's
-   * `\parfillskip=0pt plus f\hsize` trick): last lines shorter than
-   * (1 − f)·measure cost badness, so the breaker avoids orphan-ish paragraph
-   * endings when it can. Rendering is unchanged (last lines stay natural).
-   * Infinity (default) = classic TeX behavior, any last-line length is free.
+   * Break-choice pressure toward paragraph endings at least this fraction
+   * of the measure (0 = off, classic TeX: any ending length is free). The
+   * cost model is RENDER-AWARE — it prices exactly what layoutLines will
+   * do with the same value in `BuildOptions.lastLineMinWidth`: an ending
+   * at or past the threshold is free; below it, the cost is the badness
+   * of the word-glue stretch the render floor would apply (100·r³ with
+   * r = shortfall / the ending's own glue stretch), one continuous curve
+   * that automatically prices reachable endings below unreachable ones.
+   * Two-phase, paragraph-level all-or-nothing: a strict RECTANGLE HUNT
+   * first (the ending must be render-reachable or tolerance-cheap; body
+   * lines bind at the normal tolerances), then — when no rectangle exists
+   * without a worse-than-tolerance line — a compare-and-pick fallback:
+   * a bounded-preference ladder (ending exempt, cost capped at INF_BAD)
+   * races the exact option-off ladder, and its solution is kept only if
+   * it renders a strictly longer ending, so the option can never yield a
+   * shorter ending than off. Set both options to the same value; the
+   * public API does.
    */
-  lastLineStretch: number;
+  lastLineMinWidth: number;
 }
 
 export const defaultBuildOptions: BuildOptions = {
   hyphenPenalty: 50,
   exHyphenPenalty: 50,
-  lastLineMinWords: 0,
-  lastLinePenalty: 500,
   protrusion: false,
   expansion: false,
   tracking: false,
   lastLineFit: 0,
+  lastLineMinWidth: 0,
   boundaryShrink: 0,
 };
 
@@ -290,7 +310,7 @@ export const defaultBreakOptions: BreakOptions = {
   doubleHyphenDemerits: 10000,
   finalHyphenDemerits: 5000,
   emergencyStretch: "auto",
-  lastLineStretch: Infinity,
+  lastLineMinWidth: 0,
 };
 
 export interface Measure {

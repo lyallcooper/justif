@@ -7,6 +7,29 @@
 export const INF_BAD = 10000;
 
 /**
+ * The stretch-to-flex ratio at which a line becomes underfull by TeX's
+ * default standards: \hbadness=1000 is the badness above which TeX reports
+ * an underfull hbox, and 100·r³ = 1000 at r = ∛10 ≈ 2.15 (spaces at about
+ * twice their natural width under default spacing).
+ */
+export const UNDERFULL_RATIO = Math.cbrt(10);
+
+/**
+ * How far a lastLineMinWidth ending is willing to stretch its word glue to
+ * reach the threshold, as a stretch-to-flex ratio: the willingness scales
+ * with the setting, so demanding rectangles (1) works the spaces up to the
+ * underfull bound (~2× natural) while a gentle floor (0.33) barely opens
+ * them (~1.35×). Endings that would need more revert to natural spacing
+ * entirely — all or nothing: a line both stretched and still short reads
+ * worse than a ragged one. Shared by the breaker's ending cost and the
+ * layout floor so pricing and rendering can never disagree about
+ * reachability.
+ */
+export function maxEndingStretch(minWidth: number): number {
+  return minWidth * UNDERFULL_RATIO;
+}
+
+/**
  * Penalties at or above this value forbid a break; at or below its negation,
  * force one.
  */
@@ -57,6 +80,20 @@ export function fitness(shrinking: boolean, b: number): Fitness {
 export function demerits(linePenalty: number, b: number, p: number): number {
   const base = linePenalty + b;
   let d = Math.abs(base) >= 10000 ? 100_000_000 : base * base;
+  if (p > 0) d += p * p;
+  else if (p > -INF_PENALTY) d -= p * p;
+  return d;
+}
+
+/**
+ * demerits() without the 10⁸ cap on the squared term, for paragraph-final
+ * fil lines whose badness is deliberately uncapped (see the breaker's fil
+ * branch): the cap would re-flatten the short-ending pressure one level up.
+ * Identical to demerits() whenever |linePenalty + b| < 10000.
+ */
+export function demeritsUncapped(linePenalty: number, b: number, p: number): number {
+  const base = linePenalty + b;
+  let d = base * base;
   if (p > 0) d += p * p;
   else if (p > -INF_PENALTY) d -= p * p;
   return d;

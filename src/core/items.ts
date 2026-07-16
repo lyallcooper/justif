@@ -459,34 +459,6 @@ export function buildItems(
   }
   pieceKey = undefined;
 
-  if (opts.lastLineMinWords >= 2) {
-    let gluesFromEnd = 0;
-    for (let i = items.length - 1; i >= 0 && gluesFromEnd < opts.lastLineMinWords - 1; i--) {
-      // Only WORD gaps count: CJK inter-character glue is not a word
-      // boundary, and a penalty spliced between a kinsoku penalty and its
-      // glue would legalize a prohibited break (and render a phantom space).
-      // The same trap guards nowrap-internal spaces: their glue sits behind
-      // a penalty ∞, and splicing a finite penalty in between would create
-      // the very break opportunity the element forbids.
-      if (items[i]!.type !== ItemType.Glue || (items[i] as Glue).cjk === true) continue;
-      gluesFromEnd++;
-      const guard = items[i - 1];
-      if (guard !== undefined && guard.type === ItemType.Penalty && guard.penalty >= INF_PENALTY) {
-        continue; // still a word gap, but its break is already forbidden
-      }
-      const run = (items[i] as Glue).run;
-      items.splice(i, 0, {
-        type: ItemType.Penalty,
-        penalty: opts.lastLinePenalty,
-        width: 0,
-        flagged: false,
-        hyphen: false,
-        rp: 0,
-        run,
-      });
-    }
-  }
-
   // \penalty10000 \parfillskip \penalty-10000
   pushPenalty({ penalty: INF_PENALTY, width: 0, flagged: false, hyphen: false, rp: 0, run: 0 });
   items.push({ type: ItemType.Glue, width: 0, stretch: 0, stretchFil: 1, shrink: 0, run: 0 });

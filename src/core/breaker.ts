@@ -1,10 +1,12 @@
 import {
   badness,
   demerits,
+  demeritsUncapped,
   Fitness,
   fitness,
   INF_BAD,
   INF_PENALTY,
+  maxEndingStretch,
 } from "./badness.js";
 import { breakRp } from "./items.js";
 import {
@@ -62,27 +64,125 @@ export function breakParagraph(
 
   let end: Node | null = null;
   let pass: 1 | 2 | 3 = 1;
-  if (opts.pretolerance >= 0) {
-    end = attempt(para, widths, opts, opts.pretolerance, false, 0, false);
+  // RECTANGLE HUNT (lastLineMinWidth > 0): strict passes where the ending
+  // must be render-reachable (or cost no more than tolerance) and body
+  // lines bind at the normal tolerances. Failing both means NO breaking
+  // reaches the threshold without a worse-than-tolerance line —
+  // paragraph-level all-or-nothing: fall through to the bounded ladder
+  // below rather than let pass-3 emergency pricing buy a stretched ending
+  // with a wrecked body line (emergency stretch discounts body looseness
+  // in the cost while the ending's uncapped preference dwarfs it — the
+  // optimizer would trade a rescue-grade first line for a flush ending).
+  if (opts.lastLineMinWidth > 0) {
+    if (opts.pretolerance >= 0) {
+      end = attempt(para, widths, opts, {
+        tolerance: opts.pretolerance,
+        hyphens: false,
+        extraStretch: 0,
+        rescue: false,
+        strictEnding: true,
+      });
+    }
+    if (end === null) {
+      pass = 2;
+      end = attempt(para, widths, opts, {
+        tolerance: opts.tolerance,
+        hyphens: true,
+        extraStretch: 0,
+        rescue: false,
+        strictEnding: true,
+      });
+    }
   }
-  if (end === null) {
-    pass = 2;
-    end = attempt(para, widths, opts, opts.tolerance, true, 0, false);
-  }
-  if (end === null && emergency > 0) {
-    pass = 3;
-    end = attempt(para, widths, opts, opts.tolerance, true, emergency, false);
-  }
-  if (end === null) {
-    // Rescue: tolerance opens to INF_BAD so ANY line that merely stretches —
-    // however loose — beats poking out of the measure. TeX instead emits an
-    // overfull hbox and expects the author to rewrite; on the web there is
-    // no author in the loop, and a loose line degrades better than glyphs
-    // escaping the container. Artificial demerits (TeX §854) then fire only
-    // at genuinely unbreakable material (a token wider than the measure),
-    // which overflows exactly like an unbreakable word does in a browser.
-    // pass is already 2 or 3 here (pass 2 always runs when pass 1 fails).
-    end = attempt(para, widths, opts, INF_BAD, true, emergency, true);
+  // FALLBACK LADDERS. The classic option-off pass shape; the final rescue
+  // attempt opens tolerance to INF_BAD so ANY line that merely stretches —
+  // however loose — beats poking out of the measure (TeX instead emits an
+  // overfull hbox and expects the author to rewrite; on the web there is
+  // no author in the loop, and a loose line degrades better than glyphs
+  // escaping the container; artificial demerits, TeX §854, then fire only
+  // at genuinely unbreakable material, which overflows exactly like an
+  // unbreakable word does in a browser).
+  const ladder = (o: BreakOptions): { end: Node | null; pass: 1 | 2 | 3 } => {
+    let e: Node | null = null;
+    let p: 1 | 2 | 3 = 1;
+    if (o.pretolerance >= 0) {
+      e = attempt(para, widths, o, {
+        tolerance: o.pretolerance,
+        hyphens: false,
+        extraStretch: 0,
+        rescue: false,
+        strictEnding: false,
+      });
+    }
+    if (e === null) {
+      p = 2;
+      e = attempt(para, widths, o, {
+        tolerance: o.tolerance,
+        hyphens: true,
+        extraStretch: 0,
+        rescue: false,
+        strictEnding: false,
+      });
+    }
+    if (e === null && emergency > 0) {
+      p = 3;
+      e = attempt(para, widths, o, {
+        tolerance: o.tolerance,
+        hyphens: true,
+        extraStretch: emergency,
+        rescue: false,
+        strictEnding: false,
+      });
+    }
+    if (e === null) e = attempt(para, widths, o, {
+        tolerance: INF_BAD,
+        hyphens: true,
+        extraStretch: emergency,
+        rescue: true,
+        strictEnding: false,
+      });
+    return { end: e, pass: p };
+  };
+  if (end === null && opts.lastLineMinWidth > 0) {
+    // BOUNDED-PRESSURE FALLBACK, compare-and-pick. The bounded candidate
+    // gets ONE pass-2-shaped attempt: bodies bound at tolerance, hyphens
+    // available, endings exempt (as a fil line classically is) with cost
+    // capped at INF_BAD; the hyphen-free first pass is skipped because
+    // exempt endings would make it always succeed, masking the hyphenated
+    // longer-ending arrangements the preference exists to find. It is NOT
+    // allowed into emergency/rescue: body badness is admission-discounted
+    // there, so even the capped preference could outbid a genuinely
+    // degraded line — a paragraph in that much distress takes the off
+    // ladder's typography verbatim, preference silent.
+    //
+    // The bounded solution is kept ONLY if it renders a strictly longer
+    // ending; ties and losses take the off solution verbatim. This makes
+    // "ON never renders a shorter ending than OFF" true by construction:
+    // on the capped cost's plateau every hopeless ending prices alike, so
+    // ties there used to resolve against a different candidate set than
+    // OFF's (pass 2 vs pass 1) and could pick shorter endings.
+    const bounded = attempt(para, widths, opts, {
+      tolerance: opts.tolerance,
+      hyphens: true,
+      extraStretch: 0,
+      rescue: false,
+      strictEnding: false,
+    });
+    const off = ladder({ ...opts, lastLineMinWidth: 0 });
+    const v = opts.lastLineMinWidth;
+    if (
+      bounded !== null &&
+      (off.end === null ||
+        renderedEndingWidth(para, widths, bounded, v) >
+          renderedEndingWidth(para, widths, off.end, v) + 1e-9)
+    ) {
+      end = bounded;
+      pass = 2;
+    } else {
+      ({ end, pass } = off);
+    }
+  } else if (end === null) {
+    ({ end, pass } = ladder(opts));
   }
   if (end === null) throw new Error("justif: rescue pass failed (bug)");
 
@@ -97,17 +197,66 @@ export function breakParagraph(
   return { breakpoints, pass, overfull, demerits: end.totalDemerits };
 }
 
+/**
+ * The width a solution's final line will RENDER at under the layout floor:
+ * its natural width, plus the stretch to the lastLineMinWidth threshold
+ * when that is reachable within maxEndingStretch(v) — the same arithmetic
+ * as layoutLines' fil branch, so the fallback comparison judges solutions
+ * by what actually appears on the page.
+ */
+function renderedEndingWidth(
+  para: ParagraphItems,
+  widths: LineWidths,
+  end: Node,
+  minWidth: number,
+): number {
+  const { items, cumW, cumY, cumTrackY, firstBoxAfter } = para;
+  // `end` breaks at the final forced penalty; the last line runs from the
+  // previous node's start (the paragraph-start node when single-line).
+  const from = end.prev;
+  const start = from === null ? firstBoxAfter[0]! : from.start;
+  const line = from === null ? 0 : from.line;
+  const b = end.item;
+  let L = cumW[b]! - cumW[start]!;
+  const startItem = items[start];
+  if (startItem !== undefined && startItem.type === ItemType.Box) {
+    L -= line === 0 ? startItem.lpFirst : startItem.lp;
+  }
+  L -= breakRp(items, b);
+  const need = minWidth * lineWidthAt(widths, line) - L;
+  if (need <= 0) return L;
+  const glueOnly = Math.max(0, cumY[b]! - cumY[start]! - (cumTrackY[b]! - cumTrackY[start]!));
+  return glueOnly > 0 && need / glueOnly <= maxEndingStretch(minWidth) ? L + need : L;
+}
+
+/** One pass of the escalation ladder; see breakParagraph for the sequence. */
+interface AttemptMode {
+  /** Badness ceiling for this pass (pretolerance, tolerance, or INF_BAD). */
+  tolerance: number;
+  /** Enable hyphenation break candidates. */
+  hyphens: boolean;
+  /** Pass-3 emergency stretch, folded into badness only (px). */
+  extraStretch: number;
+  /** TeX §854 artificial-demerits rescue: never let the active list die. */
+  rescue: boolean;
+  /** Rectangle-hunt ending semantics (see the fil branch). */
+  strictEnding: boolean;
+}
+
 function attempt(
   para: ParagraphItems,
   widths: LineWidths,
   opts: BreakOptions,
-  tolerance: number,
-  allowHyphens: boolean,
-  extraStretch: number,
-  rescue: boolean,
+  mode: AttemptMode,
 ): Node | null {
-  const { items, cumW, cumY, cumYfil, cumZ, cumExpY, cumExpZ, firstBoxAfter } = para;
+  const { tolerance, hyphens: allowHyphens, extraStretch, rescue, strictEnding } = mode;
+  const { items, cumW, cumY, cumYfil, cumZ, cumExpY, cumExpZ, cumTrackY, firstBoxAfter } = para;
   const n = items.length;
+  // Strict acceptance window for the paragraph ending: the badness of the
+  // largest stretch the render floor is willing to apply. An ending inside
+  // it WILL render at the threshold, so it is a legitimate rectangle
+  // candidate however its stretch compares to tolerance.
+  const acceptBad = 100 * maxEndingStretch(opts.lastLineMinWidth) ** 3;
 
   let active: Node | null = {
     item: -1,
@@ -184,27 +333,77 @@ function attempt(
       if (r >= -1) {
         let bad: number;
         let filLine = false;
+        let filFitness: Fitness | null = null;
         if (L >= W) {
           bad = badness(L - W, Z);
         } else if (Yfil > 0) {
-          // Fil line (paragraph end). With finite lastLineStretch, short
-          // last lines cost badness. Fil lines are exempt from tolerance
-          // rejection (a genuinely short paragraph must stay breakable);
-          // with f = lastLineStretch the ratio is at most W/(f·W), so the
-          // cost stays finite and strictly monotone in shortness — no
-          // plateau, and the chosen last line is never shorter than the
-          // default's.
+          // Fil line (paragraph end). The lastLineMinWidth cost is
+          // RENDER-AWARE: it prices exactly what layoutLines will do with
+          // the same setting. An ending at or past the threshold is free.
+          // Below it, the render floor stretches the ending's own word
+          // glue to the threshold, so the cost is that stretch's badness —
+          // the CONTINUOUS 100·r³ (badness()'s INF_BAD saturation once
+          // flattened every short ending into one plateau: minWidth 1
+          // chose the same breaks as OFF while 0.5 worked). Unreachable
+          // endings (r past the render bound, which will revert to
+          // natural) price strictly above every reachable one, steering
+          // the breaker into arrangements that actually render at the
+          // threshold.
+          //
+          // STRICT mode (the rectangle hunt): the ending is accepted only
+          // inside the render-reachability window (acceptBad) or at
+          // tolerance-cheap shortness — anything else fails the pass, so
+          // the paragraph escalates into hyphenation for the rectangle's
+          // sake (a blanket exemption once trapped the pressure inside the
+          // hyphen-free pass) and, failing that, drops to the bounded
+          // ladder. BOUNDED mode: the classic fil exemption (an ending
+          // never rejects a break) with the cost capped at INF_BAD ≈ one
+          // maximally-bad line — a preference that cannot outbid body
+          // quality. Default endings (lastLineMinWidth 0, badness 0)
+          // never hit any of this.
           filLine = true;
-          bad =
-            opts.lastLineStretch === Infinity
-              ? 0
-              : badness(W - L, opts.lastLineStretch * W + Y + extraStretch);
+          const need = opts.lastLineMinWidth * W - L;
+          if (need <= 0) {
+            bad = 0;
+          } else {
+            // The render floor's pool: the ending's word-glue stretch
+            // (letterfit excluded — the floor keeps it natural). CLAMPED
+            // at 0: a glue-less ending's cumY − cumTrackY cancels to a
+            // float epsilon of EITHER sign, and a negative pool would
+            // flip the badness negative — a free pass through every
+            // tolerance (one-word endings beat everything; found via a
+            // real-text sweep, tracking on).
+            const glueOnly = Math.max(
+              0,
+              cumY[b]! - cumY[start]! - (cumTrackY[b]! - cumTrackY[start]!),
+            );
+            // Fitness classes by what RENDERS: a reachable ending by its
+            // real floor stretch, an unreachable one (renders natural) as
+            // Decent — so adjacency effects match the option-off ladder
+            // and a plateau tie among hopeless endings resolves exactly
+            // as OFF would (a VeryLoose class from the preference cost
+            // used to skew adjDemerits and pick different, shorter
+            // endings).
+            const rReal = glueOnly > 0 ? need / glueOnly : Infinity;
+            filFitness =
+              rReal <= maxEndingStretch(opts.lastLineMinWidth)
+                ? fitness(false, 100 * rReal * rReal * rReal)
+                : Fitness.Decent;
+            const rFil = need / (glueOnly + extraStretch); // 0 pool → Infinity: unaffordable
+            bad = 100 * rFil * rFil * rFil;
+            if (!strictEnding) bad = Math.min(bad, INF_BAD);
+          }
         } else {
           bad = badness(W - L, Y + extraStretch);
         }
-        if (bad <= tolerance || filLine) {
-          const fit = fitness(L > W, bad);
-          let d = demerits(opts.linePenalty, bad, p);
+        if (bad <= tolerance || (filLine && (strictEnding ? bad <= acceptBad : true))) {
+          const fit = filFitness ?? fitness(L > W, bad);
+          // Fil endings keep their uncapped badness through the demerits
+          // too — the shared formula flattens |linePenalty + bad| ≥ 10000
+          // to 10⁸, which would rebuild the same plateau one level up.
+          let d = filLine
+            ? demeritsUncapped(opts.linePenalty, bad, p)
+            : demerits(opts.linePenalty, bad, p);
           if (flagged && node.flagged) d += opts.doubleHyphenDemerits;
           if (Math.abs(fit - node.fitness) > 1) d += opts.adjDemerits;
           if (forced && b === n - 1 && node.flagged) d += opts.finalHyphenDemerits;

@@ -1,3 +1,4 @@
+import { maxEndingStretch } from "./badness.js";
 import { breakRp } from "./items.js";
 import {
   type BreakResult,
@@ -146,18 +147,49 @@ export function layoutLines(
       } else {
         glueRatio = glueRatioFor(delta);
       }
-    } else if (delta > 0 && Yfil > 0 && opts.lastLineFit > 0 && lines.length > 0) {
-      // eTeX's \lastlinefit, applied at layout time only (the breaker's
-      // cost model — and its test oracle — are untouched): the ending's
-      // spaces adopt a fraction of the paragraph's average adjustment
-      // ratio. The ending's letterfit stays natural, so the target and
-      // its fully-justified cap use the GLUE-ONLY pool (Yg minus the
+    } else if (delta > 0 && Yfil > 0) {
+      // Paragraph ending. Two layout-time targets compose — the larger
+      // wins; the breaker's cost model (and its test oracle) are
+      // untouched by both:
+      //   • eTeX's \lastlinefit: the ending's spaces adopt a fraction of
+      //     the paragraph's average adjustment ratio.
+      //   • the lastLineMinWidth floor: an ending the breaker could not
+      //     lengthen to the threshold widens its word spaces the rest of
+      //     the way — but ALL OR NOTHING: if reaching the threshold would
+      //     take more than maxEndingStretch(v) (the v-scaled underfull
+      //     bound: gentle floors barely open the spaces, rectangles work
+      //     them to ~2× natural), the ending reverts to natural spacing
+      //     entirely. A line both stretched and still short reads worse
+      //     than a clean ragged ending. At minWidth 1 the floor is the
+      //     measure: paragraphs set as rectangles. The breaker prices
+      //     endings with this same arithmetic (render-aware), so it
+      //     steers into arrangements that actually render at the
+      //     threshold.
+      // The ending's letterfit stays natural, so targets and the
+      // fully-justified cap use the GLUE-ONLY pool (Yg minus the
       // tracking flex folded into it).
       const glueOnly = Yg - (cumTrackY[b]! - cumTrackY[start]!);
       if (glueOnly > 0) {
-        let sum = 0;
-        for (const l of lines) sum += l.glueRatio;
-        const target = opts.lastLineFit * (sum / lines.length);
+        let target = 0;
+        if (opts.lastLineFit > 0 && lines.length > 0) {
+          let sum = 0;
+          for (const l of lines) sum += l.glueRatio;
+          target = opts.lastLineFit * (sum / lines.length);
+        }
+        if (opts.lastLineMinWidth > 0) {
+          const need = opts.lastLineMinWidth * W - L;
+          if (need > 0) {
+            const floorRatio = need / glueOnly;
+            if (floorRatio <= maxEndingStretch(opts.lastLineMinWidth)) {
+              target = Math.max(target, floorRatio);
+            }
+          } else if (target < 0) {
+            // The floor also binds a fit-shrunk ending: negative ratios
+            // render against the SHRINK pool, so the bound converts there.
+            const Zfil = cumZ[b]! - cumZ[start]!;
+            if (Zfil > 0) target = Math.max(target, need / Zfil);
+          }
+        }
         glueRatio = Math.max(-1, Math.min(target, delta / glueOnly));
       }
     } else if (delta < 0) {

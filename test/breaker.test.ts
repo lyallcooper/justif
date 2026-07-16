@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { badness, demerits, Fitness, fitness, INF_PENALTY } from "../src/core/badness.js";
+import {
+  badness,
+  demerits,
+  demeritsUncapped,
+  Fitness,
+  fitness,
+  INF_PENALTY,
+  maxEndingStretch,
+} from "../src/core/badness.js";
 import { breakParagraph } from "../src/core/breaker.js";
 import { buildItems } from "../src/core/items.js";
 import { layoutLines, lineText } from "../src/core/layout.js";
@@ -42,7 +50,7 @@ function bruteForce(
   widths: LineWidths,
   opts: BreakOptions,
 ): number | null {
-  const { items, cumW, cumY, cumYfil, cumZ, cumExpY, cumExpZ, firstBoxAfter } = para;
+  const { items, cumW, cumY, cumYfil, cumZ, cumExpY, cumExpZ, cumTrackY, firstBoxAfter } = para;
   const n = items.length;
   const memo = new Map<string, number | null>();
 
@@ -50,7 +58,7 @@ function bruteForce(
     start: number,
     b: number,
     line: number,
-  ): { bad: number; fit: Fitness } | null {
+  ): { bad: number; fit: Fitness; fil: boolean } | null {
     const it = items[b]!;
     let penWidth = 0;
     let rp = 0;
@@ -79,14 +87,35 @@ function bruteForce(
       if (Z <= 0 || (L - W) / Z > 1) return null;
       const bad = badness(L - W, Z);
       if (bad > opts.tolerance) return null;
-      return { bad, fit: fitness(true, bad) };
+      return { bad, fit: fitness(true, bad), fil: false };
     }
     if (L < W && Yfil <= 0) {
       const bad = badness(W - L, Y);
       if (bad > opts.tolerance) return null;
-      return { bad, fit: fitness(false, bad) };
+      return { bad, fit: fitness(false, bad), fil: false };
     }
-    return { bad: 0, fit: fitness(false, 0) };
+    // Fil ending: render-aware lastLineMinWidth cost, mirroring the
+    // breaker's STRICT (rectangle-hunt) pass 2 — the stretch the layout
+    // floor would apply (word glue only, tracking excluded), continuous
+    // and uncapped, accepted inside the render-reachability window or at
+    // tolerance-cheap shortness (no emergency stretch here).
+    let bad = 0;
+    let filFit: Fitness = fitness(false, 0);
+    const need = opts.lastLineMinWidth * W - L;
+    if (need > 0) {
+      // Clamped at 0, like the breaker: a glue-less ending's sums cancel
+      // to a float epsilon of either sign.
+      const glueOnly = Math.max(0, cumY[b]! - cumY[start]! - (cumTrackY[b]! - cumTrackY[start]!));
+      const r = need / glueOnly;
+      bad = 100 * r * r * r;
+      const acceptBad = 100 * maxEndingStretch(opts.lastLineMinWidth) ** 3;
+      if (bad > Math.max(opts.tolerance, acceptBad)) return null;
+      // Fitness from what renders, mirroring the breaker: reachable →
+      // the real floor stretch; unreachable (renders natural) → Decent.
+      filFit =
+        r <= maxEndingStretch(opts.lastLineMinWidth) ? fitness(false, bad) : Fitness.Decent;
+    }
+    return { bad, fit: filFit, fil: true };
   }
 
   function search(prev: number, line: number, fit: Fitness, flagged: boolean): number | null {
@@ -115,7 +144,9 @@ function bruteForce(
       }
       const feas = lineFeasibility(start, b, line);
       if (feas === null) continue;
-      let d = demerits(opts.linePenalty, feas.bad, p);
+      let d = feas.fil
+        ? demeritsUncapped(opts.linePenalty, feas.bad, p)
+        : demerits(opts.linePenalty, feas.bad, p);
       if (bFlagged && flagged) d += opts.doubleHyphenDemerits;
       if (Math.abs(feas.fit - fit) > 1) d += opts.adjDemerits;
       if (p <= -INF_PENALTY && b === n - 1 && flagged) d += opts.finalHyphenDemerits;
@@ -170,6 +201,28 @@ describe("breakParagraph vs brute-force oracle", () => {
     expect(bruteForce(para, 260, pass2Opts)).not.toBeNull();
     // The CJK stream too: inter-character glue makes most widths feasible.
     expect(bruteForce(build(texts[3]!), 210, pass2Opts)).not.toBeNull();
+  });
+
+  it("agrees with the oracle under lastLineMinWidth's render-aware ending cost", () => {
+    // Per-value counters: a shared cap once let minWidth 0.5 consume every
+    // check and left minWidth 1 — the headline value — with zero coverage.
+    for (const minWidth of [0.5, 1]) {
+      let checked = 0;
+      for (let width = 200; width <= 520; width += 40) {
+        const opts = { ...pass2Opts, lastLineMinWidth: minWidth };
+        const para = build(frogKing, { hyphenate: fakeHyphenator });
+        const oracle = bruteForce(para, width, opts);
+        if (oracle === null) continue; // no breaking passes tolerance at this width
+        const result = breakParagraph(para, width, opts);
+        // The oracle models the STRICT pass 2 only; compare when the
+        // breaker's strict hunt succeeded (pass 2 with these opts —
+        // pretolerance −1 skips both pass 1s, and a fallback result would
+        // be a different, laxer optimization).
+        expect(result.demerits, `minWidth ${minWidth} width ${width}`).toBeCloseTo(oracle, 6);
+        checked++;
+      }
+      expect(checked, `minWidth ${minWidth}`).toBeGreaterThan(0);
+    }
   });
 
   it("supports varying line widths (first-line indent)", () => {
@@ -419,43 +472,313 @@ describe("hyphenation neutrality", () => {
   });
 });
 
-describe("lastLineStretch (short-last-line avoidance)", () => {
-  const lastLineFraction = (width: number, lastLineStretch: number): number => {
-    const para = build(frogKing);
-    const opts = { ...defaultBreakOptions, lastLineStretch };
-    const result = breakParagraph(para, width, opts);
-    const lines = layoutLines(para, result, width, defaultBuildOptions);
+describe("lastLineMinWidth break pressure (short-last-line avoidance)", () => {
+
+  /** RENDERED last-line width fraction: natural plus the floor's stretch. */
+  const renderedEnding = (width: number, minWidth: number, tracking = false): number => {
+    const build = {
+      ...defaultBuildOptions,
+      hyphenate: fakeHyphenator,
+      lastLineMinWidth: minWidth,
+      ...(tracking ? { tracking: { max: 0.03, shrink: 0.03 } } : {}),
+    };
+    const para = buildItems([{ text: frogKing, run: 0 }], [mockRun()], build, mockMeasure);
+    const result = breakParagraph(para, width, {
+      ...defaultBreakOptions,
+      lastLineMinWidth: minWidth,
+    });
+    const lines = layoutLines(para, result, width, build);
     const last = lines[lines.length - 1]!;
     let natural = 0;
+    let glueY = 0;
     for (let i = last.start; i < last.end; i++) {
       const it = para.items[i]!;
-      if (it.type === ItemType.Box || it.type === ItemType.Glue) natural += it.width;
+      if (it.type === ItemType.Box) natural += it.width;
+      else if (it.type === ItemType.Glue) {
+        natural += it.width;
+        glueY += it.stretch;
+      }
     }
-    return natural / width;
+    return (natural + Math.max(0, last.glueRatio) * glueY) / width;
   };
 
-  it("never produces shorter last lines than the default, and fixes short ones", () => {
-    let shortDefault = 0;
-    let shortAvoiding = 0;
+
+  it("every setting renders endings at least as long as OFF, and lengthens some", () => {
+    // Regression for the badness-saturation plateau (1.0 used to behave
+    // like OFF while 0.5 worked): both settings must always render an
+    // ending no shorter than the default's. RENDERED width — the floor
+    // may stretch a naturally-shorter ending past the default's. NOTE:
+    // strong vs mid is deliberately NOT asserted — paragraph-level
+    // all-or-nothing means a paragraph can satisfy 0.5's threshold at
+    // tolerance yet fail 1.0's rectangle test and revert to clean-body
+    // breaks with a shorter ending.
+    let strongerHelped = 0;
     for (let width = 200; width <= 520; width += 20) {
-      const def = lastLineFraction(width, Infinity);
-      const avoid = lastLineFraction(width, 0.5);
-      expect(avoid).toBeGreaterThanOrEqual(def - 1e-9);
-      if (def < 0.2) shortDefault++;
-      if (avoid < 0.2) shortAvoiding++;
+      const def = renderedEnding(width, 0);
+      const mid = renderedEnding(width, 0.5);
+      const strong = renderedEnding(width, 1);
+      expect(mid, `width ${width}`).toBeGreaterThanOrEqual(def - 1e-9);
+      expect(strong, `width ${width}`).toBeGreaterThanOrEqual(def - 1e-9);
+      if (strong > def + 1e-9) strongerHelped++;
     }
-    // The frog-king fixture has orphan endings at several of these widths.
-    expect(shortDefault).toBeGreaterThan(0);
-    expect(shortAvoiding).toBeLessThan(shortDefault);
+    expect(strongerHelped).toBeGreaterThan(0);
   });
 
-  it("tolerates genuinely short paragraphs (capped badness, no rescue)", () => {
+  it("recruits hyphenation for the ending (pass 1 must not mask pass 2)", () => {
+    // The ending is tolerance-BOUND in passes 1–2: an arrangement whose
+    // ending prices past tolerance fails the pass, so the breaker
+    // escalates into hyphenation. A blanket fil exemption used to keep
+    // pass 1 (hyphen-free) always-succeeding, trapping the pressure among
+    // hyphenless breakings — skipping pass 1 by hand then produced
+    // strictly longer endings than the normal ladder, which this asserts
+    // can no longer happen.
+    const fracWithHyphens = (width: number, opts: Partial<BreakOptions>): number => {
+      const para = build(frogKing, { hyphenate: fakeHyphenator });
+      const result = breakParagraph(para, width, {
+        ...defaultBreakOptions,
+        lastLineMinWidth: 1,
+        ...opts,
+      });
+      const lines = layoutLines(para, result, width, defaultBuildOptions);
+      const last = lines[lines.length - 1]!;
+      let natural = 0;
+      for (let i = last.start; i < last.end; i++) {
+        const it = para.items[i]!;
+        if (it.type === ItemType.Box || it.type === ItemType.Glue) natural += it.width;
+      }
+      return natural / width;
+    };
+    for (let width = 200; width <= 520; width += 20) {
+      const normal = fracWithHyphens(width, {});
+      const forcedPass2 = fracWithHyphens(width, { pretolerance: -1 });
+      // Small slack: where pass 1 legitimately succeeds (ending within
+      // pretolerance), pass 2's extra candidates may trade a hair of
+      // ending length for cheaper demerits. The masking bug produced
+      // differences of 0.3+.
+      expect(normal, `width ${width}`).toBeGreaterThanOrEqual(forcedPass2 - 0.03);
+    }
+  });
+
+  it("never buys the ending with a wrecked body line (paragraph-level all-or-nothing)", () => {
+    // The telescope case: a paragraph too short for any tolerance-grade
+    // rectangle. Escalation once let emergency pricing DISCOUNT body
+    // looseness while the ending's preference dwarfed it — the optimizer
+    // set a first line at glue ratio 7+ to buy a flush ending; a later
+    // review found the bounded fallback's pass-3/rescue rungs doing the
+    // same on other texts (frogKing w=196: OFF worst 3.0 → ON 3.75, for
+    // an ending that STILL reverted). Now the strict hunt and the bounded
+    // fallback both bind bodies at tolerance, and paragraphs in genuine
+    // distress take the off ladder verbatim: no body line may be
+    // materially looser than the off solution's, on any text, tracking on
+    // or off. Pooled line.ratio is the badness currency (glueRatio
+    // re-solves higher after tracking saturation).
+    const TELESCOPE =
+      "“What a curious feeling!” said Alice; “I must be shutting up like a telescope.”";
+    const worstBody = (
+      text: string,
+      width: number,
+      minWidth: number,
+      tracking: boolean,
+    ): number => {
+      const build = {
+        ...defaultBuildOptions,
+        hyphenate: fakeHyphenator,
+        lastLineMinWidth: minWidth,
+        ...(tracking ? { tracking: { max: 0.03, shrink: 0.03 } } : {}),
+      };
+      const para = buildItems([{ text, run: 0 }], [mockRun()], build, mockMeasure);
+      const result = breakParagraph(para, width, {
+        ...defaultBreakOptions,
+        lastLineMinWidth: minWidth,
+      });
+      const lines = layoutLines(para, result, width, build);
+      let worst = 0;
+      for (const line of lines.slice(0, -1)) worst = Math.max(worst, line.ratio);
+      return worst;
+    };
+    for (const text of [TELESCOPE, frogKing]) {
+      for (const tracking of [true, false]) {
+        for (const v of [0.9, 1]) {
+          for (let width = 180; width <= 560; width += 8) {
+            const off = worstBody(text, width, 0, tracking);
+            const on = worstBody(text, width, v, tracking);
+            expect(
+              on,
+              `"${text.slice(1, 15)}" width ${width} v ${v} tracking ${tracking}`,
+            ).toBeLessThanOrEqual(Math.max(off, 1.27) + 1e-6);
+          }
+        }
+      }
+    }
+  });
+
+  it("never yields a shorter ending than OFF, with tracking enabled", () => {
+    // Regression: a glue-less ending's word-glue pool (cumY − cumTrackY)
+    // cancels to a float epsilon of either sign; unclamped, a NEGATIVE
+    // pool flipped the render-aware badness negative — a free pass
+    // through every tolerance, so one-word endings beat every honest
+    // arrangement (pass 1 "succeeded" with 1e99 total demerits while
+    // real candidates were tolerance-rejected). Tracking must be ON:
+    // without it the pool is a plain glue sum and never cancels.
+    for (let width = 180; width <= 560; width += 8) {
+      const off = renderedEnding(width, 0, true);
+      const on = renderedEnding(width, 1, true);
+      expect(on, `width ${width}`).toBeGreaterThanOrEqual(off - 1e-9);
+    }
+  });
+
+  it("tolerates genuinely short paragraphs (no rescue blowup)", () => {
     const para = build("one two three");
-    const result = breakParagraph(para, 500, { ...defaultBreakOptions, lastLineStretch: 0.5 });
+    const result = breakParagraph(para, 500, { ...defaultBreakOptions, lastLineMinWidth: 0.5 });
     const lines = layoutLines(para, result, 500, defaultBuildOptions);
     expect(lines.length).toBe(1);
     expect(lines[0]!.overfull).toBe(false);
     expect(lines[0]!.glueRatio).toBe(0); // still set naturally
+  });
+});
+
+describe("lastLineMinWidth rendering floor (ending widens to the threshold)", () => {
+  /**
+   * Last line's set width after glue adjustment, plus its word-glue
+   * stretch pool (tracking off in defaultBuildOptions, so the glue-only
+   * pool the layout stretches equals Yg here).
+   */
+  const setEnding = (text: string, width: number, minWidth: number) => {
+    const buildOpts = { ...defaultBuildOptions, lastLineMinWidth: minWidth };
+    const breakOpts = { ...defaultBreakOptions, lastLineMinWidth: minWidth };
+    const para = build(text, { hyphenate: fakeHyphenator });
+    const result = breakParagraph(para, width, breakOpts);
+    const lines = layoutLines(para, result, width, buildOpts);
+    const last = lines[lines.length - 1]!;
+    let natural = 0;
+    let Yg = 0;
+    for (let i = last.start; i < last.end; i++) {
+      const it = para.items[i]!;
+      if (it.type === ItemType.Box) natural += it.width;
+      else if (it.type === ItemType.Glue) {
+        natural += it.width;
+        Yg += it.stretch;
+      }
+    }
+    const set = natural + Math.max(0, last.glueRatio) * Yg;
+    return { set, natural, Yg, last, pass: result.pass };
+  };
+
+  it("widens endings below the threshold exactly to it, and leaves longer ones natural", () => {
+    let widened = 0;
+    let untouched = 0;
+    for (let width = 200; width <= 520; width += 20) {
+      const v = 0.6;
+      const { set, natural, Yg, last } = setEnding(frogKing, width, v);
+      if (Yg === 0 || natural >= width) continue; // one-word / shrinking ending
+      if (natural >= v * width) {
+        expect(last.glueRatio).toBe(0); // already past the floor: natural
+        untouched++;
+      } else if ((v * width - natural) / Yg <= maxEndingStretch(v)) {
+        expect(set).toBeCloseTo(v * width, 6);
+        widened++;
+      } else {
+        // Unreachable within the v-scaled bound: all or nothing.
+        expect(last.glueRatio).toBe(0);
+      }
+    }
+    expect(widened).toBeGreaterThan(0);
+    expect(untouched).toBeGreaterThan(0);
+  });
+
+  it("minWidth 1 sets rectangles whenever flush is within the underfull bound", () => {
+    let flush = 0;
+    for (let width = 200; width <= 520; width += 20) {
+      const { set, natural, Yg, last } = setEnding(frogKing, width, 1);
+      if (Yg === 0 || natural >= width) continue;
+      expect(last.overfull).toBe(false);
+      const need = (width - natural) / Yg;
+      if (need <= maxEndingStretch(1)) {
+        expect(set).toBeCloseTo(width, 6);
+        if (last.glueRatio > 0.01) flush++;
+      } else {
+        // Flush unreachable within the underfull bound: natural spacing.
+        expect(last.glueRatio).toBe(0);
+        expect(set).toBeCloseTo(natural, 6);
+      }
+    }
+    expect(flush).toBeGreaterThan(0);
+  });
+
+  it("the stretch willingness scales with the setting", () => {
+    // A gentle floor works its spaces far less hard than rectangles do:
+    // find widths where an ending is widened under v=1 yet reverts to
+    // natural under a small v with the SAME breaks (the bound shrank).
+    let scaled = 0;
+    for (let width = 200; width <= 520; width += 20) {
+      const para = build(frogKing, { hyphenate: fakeHyphenator });
+      const result = breakParagraph(para, width, {
+        ...defaultBreakOptions,
+        lastLineMinWidth: 0.9,
+      });
+      const at = (v: number) =>
+        layoutLines(para, result, width, { ...defaultBuildOptions, lastLineMinWidth: v });
+      const gentle = at(0.33)[at(0.33).length - 1]!.glueRatio;
+      const strong = at(0.9)[at(0.9).length - 1]!.glueRatio;
+      expect(gentle).toBeLessThanOrEqual(maxEndingStretch(0.33) + 1e-9);
+      if (strong > maxEndingStretch(0.33) + 1e-9 && gentle === 0) scaled++;
+    }
+    expect(scaled).toBeGreaterThan(0);
+  });
+
+  it("reverts to natural spacing when the threshold is unreachable (all or nothing)", () => {
+    // Three words cannot reach 500px at any sane spacing: rather than
+    // rendering a line both stretched AND still short — worse than either
+    // extreme — the ending falls back to fully natural spacing.
+    const { set, natural, last } = setEnding("one two three", 500, 1);
+    expect(last.glueRatio).toBe(0);
+    expect(set).toBeCloseTo(natural, 6);
+    expect(set).toBeLessThan(500);
+  });
+
+  it("leaves a one-word paragraph natural (no glue to stretch)", () => {
+    const { set, Yg, last } = setEnding("Honorificabilitudinitatibus", 500, 1);
+    expect(Yg).toBe(0);
+    expect(last.glueRatio).toBe(0);
+    expect(last.overfull).toBe(false);
+    expect(set).toBeLessThan(500);
+  });
+
+  it("binds lastLineFit to the floor: composed endings never render below it", () => {
+    // lastLineFit may color the ending looser OR tighter than natural;
+    // the floor must hold in both directions (a fit-shrunk ending stops
+    // at the floor, converted to the shrink pool it renders against).
+    const v = 0.5;
+    let fitActive = 0;
+    for (let width = 200; width <= 520; width += 20) {
+      const para = build(frogKing, { hyphenate: fakeHyphenator });
+      const result = breakParagraph(para, width, defaultBreakOptions);
+      const lines = layoutLines(para, result, width, {
+        ...defaultBuildOptions,
+        lastLineMinWidth: v,
+        lastLineFit: 1,
+      });
+      const last = lines[lines.length - 1]!;
+      let natural = 0;
+      let Yg = 0;
+      let Zg = 0;
+      for (let i = last.start; i < last.end; i++) {
+        const it = para.items[i]!;
+        if (it.type === ItemType.Box) natural += it.width;
+        else if (it.type === ItemType.Glue) {
+          natural += it.width;
+          Yg += it.stretch;
+          Zg += it.shrink;
+        }
+      }
+      if (Yg === 0 || natural >= width) continue;
+      const set = natural + last.glueRatio * (last.glueRatio >= 0 ? Yg : Zg);
+      const reachable =
+        natural >= v * width || (v * width - natural) / Yg <= maxEndingStretch(v);
+      if (reachable) expect(set, `width ${width}`).toBeGreaterThanOrEqual(v * width - 1e-6);
+      if (Math.abs(last.glueRatio) > 1e-9) fitActive++;
+    }
+    expect(fitActive).toBeGreaterThan(0);
   });
 });
 

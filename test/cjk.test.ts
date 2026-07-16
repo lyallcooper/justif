@@ -183,20 +183,6 @@ describe("buildItems on CJK text", () => {
     expect(stop.rp).toBeCloseTo(charWidth("。"));
   });
 
-  it("lastLineMinWords counts word gaps only, never CJK inter-character glue", () => {
-    const pure = build("吾輩は猫である", { lastLineMinWords: 3 });
-    expect(pure.items.some((it) => it.type === ItemType.Penalty && it.penalty === 500)).toBe(
-      false,
-    );
-    const mixed = build("吾輩は ねこ です", { lastLineMinWords: 2 });
-    const i = mixed.items.findIndex(
-      (it) => it.type === ItemType.Penalty && it.penalty === 500,
-    );
-    expect(i).toBeGreaterThan(0);
-    const next = mixed.items[i + 1] as Glue;
-    expect(next.type).toBe(ItemType.Glue);
-    expect(next.cjk).not.toBe(true);
-  });
 });
 
 describe("breaking CJK paragraphs", () => {

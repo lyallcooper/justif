@@ -148,6 +148,95 @@ test("justified lines end flush within 0.5px (no protrusion/expansion)", async (
   }
 });
 
+test("lastLineMinWidth: 1 justifies paragraph endings flush (rectangular paragraphs)", async ({ page }) => {
+  // Control: with the option explicitly OFF (it defaults to 0.33 now) at
+  // least one fixture ending must be genuinely short, or the flush
+  // assertions below would pass vacuously.
+  await enhance(page, {
+    hyphenate: true,
+    protrusion: false,
+    expansion: false,
+    lastLineMinWidth: 0,
+  });
+  const before = await readGeometry(page);
+  const shortEndings = before.filter(
+    (p) => p.contentRight - p.lines[p.lines.length - 1]!.right > 20,
+  );
+  expect(shortEndings.length).toBeGreaterThan(0);
+
+  // A roomier stretch pool keeps the floor REACHABLE for these endings:
+  // the render floor is capped at TeX's underfull threshold (~2.15× the
+  // glue's stretch), and at default spacing the fixture endings stop just
+  // short of flush at that bound (the cap mechanics are unit-tested
+  // symbolically; this test proves the flush rendering end to end).
+  await enhance(page, {
+    hyphenate: true,
+    protrusion: false,
+    expansion: false,
+    lastLineMinWidth: 1,
+    spacing: { stretch: 1, shrink: 1 / 3 },
+  });
+  await waitForQuiescence(page);
+  const after = await readGeometry(page);
+  expect(after.length).toBe(2);
+  for (const para of after) {
+    for (const line of para.lines) {
+      expect
+        .soft(Math.abs(line.right - para.contentRight), `${para.paragraph}: "${line.text.slice(0, 40)}"`)
+        .toBeLessThan(0.5);
+    }
+  }
+});
+
+test("lastLineMinWidth never renders a shorter ending than OFF (real-text sweep)", async ({ page }) => {
+  // Regression for the bounded-fallback plateau inversion: capped ending
+  // costs tie, and before the compare-and-pick fallback the tie resolved
+  // against a different candidate set than OFF's, sometimes choosing
+  // strictly shorter endings (found by review at exactly these widths —
+  // mock-measure unit sweeps never reproduced it, real fonts required).
+  const results = await page.evaluate(async () => {
+    const text = document.querySelectorAll("#host p")[1]!.textContent!;
+    const host = document.getElementById("host")!;
+    const endingWidth = async (widthPx: number, opts: object) => {
+      const p = document.createElement("p");
+      p.textContent = text;
+      p.style.cssText = `width: ${widthPx}px; text-align: justify;`;
+      host.append(p);
+      const ctl = window.__justif.justify(p, {
+        hyphenate: window.__justif.hyphenateEnUS,
+        protrusion: false,
+        expansion: false,
+        ...opts,
+      });
+      await ctl.ready;
+      const g = window.__justifLines(p);
+      const last = g.lines[g.lines.length - 1]!;
+      const w = last.right - last.left;
+      ctl.destroy();
+      p.remove();
+      return w;
+    };
+    const out: Array<{ label: string; off: number; on: number }> = [];
+    for (const { w, tracking } of [
+      { w: 340, tracking: true },
+      { w: 460, tracking: false },
+      { w: 520, tracking: false },
+    ]) {
+      for (const v of [0.5, 0.75, 1]) {
+        // Explicit 0: the option now DEFAULTS to 0.33, so an empty options
+        // object is not an off baseline.
+        const off = await endingWidth(w, { tracking, lastLineMinWidth: 0 });
+        const on = await endingWidth(w, { tracking, lastLineMinWidth: v });
+        out.push({ label: `w=${w} tracking=${tracking} v=${v}`, off, on });
+      }
+    }
+    return out;
+  });
+  for (const { label, off, on } of results) {
+    expect.soft(on, label).toBeGreaterThanOrEqual(off - 0.5);
+  }
+});
+
 test("models inline padding (enhances); still bails on margins and box-decoration-break: clone", async ({ page }) => {
   const results = await page.evaluate(async () => {
     const attempt = async (style: string) => {

@@ -3,10 +3,13 @@ export * from "./core/types.js";
 export {
   badness,
   demerits,
+  demeritsUncapped,
   Fitness,
   fitness,
   INF_BAD,
   INF_PENALTY,
+  maxEndingStretch,
+  UNDERFULL_RATIO,
 } from "./core/badness.js";
 export {
   CJK_CHAR,

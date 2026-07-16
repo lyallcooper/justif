@@ -111,13 +111,6 @@ describe("buildItems", () => {
     expect(shape(para.items)).toBe("box(tiny) pen(10000) fil pen(-10000)");
   });
 
-  it("inserts a discouraging penalty before the last glue when lastLineMinWords ≥ 2", () => {
-    const para = build("one two three", { lastLineMinWords: 2 });
-    expect(shape(para.items)).toBe(
-      "box(one) glue box(two) pen(500) glue box(three) pen(10000) fil pen(-10000)",
-    );
-  });
-
   it("computes protrusion credits from the table and char advances", () => {
     const para = build("Times one,", {
       protrusion: { T: { l: 100 }, ",": { r: 700 } },
@@ -445,25 +438,6 @@ describe("atomic (nowrap) scopes", () => {
     );
   });
 
-  it("lastLineMinWords never splices a break into a forbidden gap", () => {
-    const para = buildItems(
-      [
-        { text: "words go ", run: 0 },
-        { text: "x y", run: 1, atomicKey: 9 },
-      ],
-      [mockRun(), mockRun()],
-      { ...defaultBuildOptions, lastLineMinWords: 2 },
-      mockMeasure,
-    );
-    // The final gap (inside the atomic element) counts as a word gap — a
-    // last line "x y" already satisfies minWords — but no finite penalty
-    // may be spliced between its ∞ guard and the glue (that would create
-    // the very break the element forbids). Here nothing needs splicing.
-    expect(shape(para.items)).toBe(
-      "box(words) glue box(go) glue box(x) pen(10000) glue box(y) " +
-        "pen(10000) fil pen(-10000)",
-    );
-  });
 });
 
 describe("boundary space rigidity", () => {

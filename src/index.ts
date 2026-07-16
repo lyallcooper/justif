@@ -71,12 +71,25 @@ export interface JustifyOptions {
   finalHyphenDemerits?: number;
   emergencyStretch?: number | "auto";
   /**
-   * Discourage paragraph endings shorter than this fraction of the measure
-   * (0.33 ≈ Bringhurst's "at least a third"). Soft, cost-based pressure:
-   * the breaker lengthens endings when the paragraph can afford it and
-   * declines when other lines would suffer more. Off by default. (Maps to
-   * the core's TeX-style `lastLineStretch` budget of 1 − value; headless
-   * users tune that directly.)
+   * Keep paragraph endings at least this fraction of the measure wide
+   * (0.33 ≈ Bringhurst's "at least a third"). Two mechanisms compose.
+   * The breaker prefers arrangements whose endings reach the threshold
+   * naturally — cost pressure that escalates into hyphenation when
+   * needed, and prices endings by exactly what will render, so it steers
+   * into arrangements the render floor can finish. An ending that still
+   * falls short is then RENDERED with its word spaces widened to the
+   * threshold — within a willingness that scales with the setting:
+   * rectangles (`1`) work the spaces up to TeX's underfull-reporting
+   * standard (≈ 2× natural at the default `spacing`), a gentle `0.33`
+   * floor barely opens them. An ending that would need more keeps fully
+   * natural spacing instead: all or nothing, never stretched AND still
+   * short. The same principle holds for the whole paragraph: a threshold
+   * ending is never bought with a worse-than-tolerance body line, and the
+   * option never renders a shorter ending than it would produce switched
+   * off (the breaker compares and keeps the better solution). The top of
+   * the range can still be non-monotone per paragraph — one may satisfy
+   * `0.5` yet revert to its natural ending at `1`. At `1` every paragraph
+   * that can afford it sets as a perfect rectangle. Off by default.
    */
   lastLineMinWidth?: number;
   /** true = built-in Latin table; an object merges over it; false disables. */
@@ -94,7 +107,6 @@ export interface JustifyOptions {
   hangingPunctuation?: boolean | "first-line" | "all-lines";
   /** Glyph expansion limits via the wdth axis; false disables. */
   expansion?: ExpansionOptions | false;
-  lastLineMinWords?: number;
   /**
    * Inter-word glue flexibility as fractions of the space width. `pull`
    * (0–1, default 0.7) is the downward pressure on secondary-font spaces
@@ -231,12 +243,10 @@ export function justify(
   let destroyed = false;
 
   const breakOpts = withOverrides(defaultBreakOptions, options);
-  // Public intent ("ending at least this wide") → core mechanism (finite
-  // parfillskip stretch budget). Smaller budget = stronger pressure, so
-  // the two run in opposite directions — hence the friendlier name.
-  if (options.lastLineMinWidth !== undefined && options.lastLineMinWidth > 0) {
-    breakOpts.lastLineStretch = Math.max(0.05, 1 - Math.min(options.lastLineMinWidth, 0.95));
-  }
+  // One clamped value feeds breaker pricing AND the layout floor — the
+  // two must see the same number.
+  const lastLineMinWidth = Math.max(0, Math.min(1, options.lastLineMinWidth ?? 0));
+  breakOpts.lastLineMinWidth = lastLineMinWidth;
   /** User's explicit per-char overrides, kept separate so they also win
    * over any per-font config matched in buildRunMetrics. */
   const protrusionUser: ProtrusionTable | null =
@@ -281,9 +291,9 @@ export function justify(
     ...defaultBuildOptions,
     hyphenate,
     lastLineFit: Math.max(0, Math.min(1, options.lastLineFit ?? 0)),
+    lastLineMinWidth,
     hyphenPenalty: options.hyphenPenalty ?? defaultBuildOptions.hyphenPenalty,
     exHyphenPenalty: options.exHyphenPenalty ?? defaultBuildOptions.exHyphenPenalty,
-    lastLineMinWords: options.lastLineMinWords ?? defaultBuildOptions.lastLineMinWords,
     protrusion,
     protrusionFirst,
     expansion,
