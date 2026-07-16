@@ -2607,14 +2607,24 @@ await controller.ready;</code></pre>
     }
   } catch { /* corrupt or unavailable storage: fall through to defaults */ }
 
-  // Fresh loads target the widths that make the comparison clearest: 13em
-  // side-by-side and 19em in flicker. Narrow windows still clamp each view
-  // to the space it can actually display, while saved preferences win.
-  function defaultMeasureForWindow() {
+  // Fresh loads choose the text and measure together. If two columns would
+  // each be narrower than 12em, the 10em specimen gives the clearest mobile
+  // comparison; roomier layouts use Alice at up to 13em. Saved preferences
+  // still win, and flicker starts at 19em.
+  function sideMeasureCapacityForWindow() {
     const gap = window.innerWidth <= 1100 ? 24 : 48; // .panes gap (1.5/3rem)
     const padding = 48; // .panes horizontal padding (2 × 1.5rem)
-    const perColumnEm = (window.innerWidth - padding - gap) / 2 / 16;
-    return Math.max(10, Math.min(13, Math.floor(perColumnEm / 0.5) * 0.5));
+    return (window.innerWidth - padding - gap) / 2 / 16;
+  }
+  function usesNarrowDefaults() {
+    return sideMeasureCapacityForWindow() < 12;
+  }
+  function defaultMeasureForWindow() {
+    if (usesNarrowDefaults()) return 10;
+    return Math.min(13, Math.floor(sideMeasureCapacityForWindow() / 0.5) * 0.5);
+  }
+  function defaultSampleForWindow() {
+    return usesNarrowDefaults() ? "specimen" : "aliceExcerpt";
   }
   function defaultFlickerMeasure() {
     return 19;
@@ -2623,6 +2633,13 @@ await controller.ready;</code></pre>
     if (value === null || value === undefined || value === "") return null;
     const number = Number(value);
     return Number.isFinite(number) ? Math.max(10, Math.min(36, number)) : null;
+  }
+
+  const hasSavedSample =
+    typeof savedParams?.sample === "string" &&
+    Object.prototype.hasOwnProperty.call(SAMPLES, savedParams.sample);
+  if (!hasSavedSample) {
+    document.getElementById("sample").value = defaultSampleForWindow();
   }
 
   const initialView = document.getElementById("view").value === "flicker" ? "flicker" : "side";
@@ -3560,6 +3577,7 @@ await controller.ready;</code></pre>
       }
     }
     // Fully fresh-load semantics: window-derived defaults, not static ones.
+    $("sample").value = defaultSampleForWindow();
     const sideMeasure = defaultMeasureForWindow();
     viewMeasures.side = sideMeasure;
     viewMeasures.flicker = defaultFlickerMeasure();

@@ -323,6 +323,44 @@ test("flicker toast uses touch wording on coarse pointers", async ({ browser }) 
   await context.close();
 });
 
+test("narrow windows use the 10em type specimen defaults", async ({ page }) => {
+  await page.setViewportSize({ width: 455, height: 844 });
+  await page.goto("/demo/");
+  await page.waitForFunction(
+    () => !document.documentElement.classList.contains("fonts-loading"),
+  );
+
+  const sample = page.locator("#sample");
+  const measure = page.locator("#measure");
+  await expect(sample).toHaveValue("specimen");
+  await expect(measure).toHaveValue("10");
+
+  await page.click("#dock-toggle");
+  await page.selectOption("#sample", "tale");
+  await measure.evaluate((element: HTMLInputElement) => {
+    element.value = "11";
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.click("#reset");
+  await expect(sample).toHaveValue("specimen");
+  await expect(measure).toHaveValue("10");
+
+  await page.selectOption("#sample", "tale");
+  await measure.evaluate((element: HTMLInputElement) => {
+    element.value = "11";
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.reload();
+  await expect(sample).toHaveValue("tale");
+  await expect(measure).toHaveValue("11");
+
+  await page.evaluate(() => localStorage.removeItem("justif-demo-params"));
+  await page.setViewportSize({ width: 456, height: 844 });
+  await page.reload();
+  await expect(sample).toHaveValue("aliceExcerpt");
+  await expect(measure).toHaveValue("12");
+});
+
 test("comparison views retain independent widths", async ({ page }) => {
   await page.setViewportSize({ width: 500, height: 844 });
   await page.goto("/demo/");
