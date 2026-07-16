@@ -858,8 +858,7 @@
     border-bottom: 1px solid var(--ink);
   }
   #metrics tbody tr:last-child td { border-bottom: 1px solid var(--ink); }
-  #metrics td.better { color: var(--good); font-weight: 600; }
-  #metrics td.worse { color: var(--accent); }
+  #metrics td.better { font-weight: 700; }
 
   /* ── Bottom dock: controls & metrics, collapsed by default ─── */
   @media (pointer: coarse) {
@@ -2870,19 +2869,26 @@ justify(document.querySelectorAll("article p"), {
       [LINE_LABELS[4], nat.riverSpaces, jus.riverSpaces, "lower"],
     ];
     const spacingRows = [
-      [SPACING_LABELS[0], pct(nat.stats.mean), pct(jus.stats.mean), null],
+      [SPACING_LABELS[0], pct(nat.stats.mean), pct(jus.stats.mean), 1,
+        nat.stats.mean, jus.stats.mean],
       [SPACING_LABELS[1], pct(nat.stats.deviation), pct(jus.stats.deviation), "lower"],
       [SPACING_LABELS[2], pct(nat.stats.sd), pct(jus.stats.sd), "lower"],
       [SPACING_LABELS[3], relPct(nat.stats.max), relPct(jus.stats.max), "lower"],
     ];
 
-    const makeRow = ([label, a, b, direction]) => {
+    const makeRow = ([label, a, b, direction, compareA = a, compareB = b]) => {
       const tr = document.createElement("tr");
       const numeric = (v) => parseFloat(String(v).replace("−", "-").replace("+", ""));
       let aClass = "";
       let bClass = "";
       if (direction === "lower" && numeric(a) !== numeric(b)) {
         [aClass, bClass] = numeric(a) < numeric(b) ? ["better", "worse"] : ["worse", "better"];
+      } else if (typeof direction === "number") {
+        const aDistance = Math.abs(numeric(compareA) - direction);
+        const bDistance = Math.abs(numeric(compareB) - direction);
+        if (aDistance !== bDistance) {
+          [aClass, bClass] = aDistance < bDistance ? ["better", "worse"] : ["worse", "better"];
+        }
       }
       tr.innerHTML =
         `<td>${label}</td><td class="${aClass}">${a}</td><td class="${bClass}">${b}</td>`;

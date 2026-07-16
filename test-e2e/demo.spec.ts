@@ -140,6 +140,20 @@ test("gap highlights use a symmetric grayscale ramp", async ({ page }) => {
   });
 });
 
+test("metrics leave equally natural spacing unranked", async ({ page }) => {
+  await page.goto("/demo/");
+  await page.click("#dock-toggle");
+  await page.selectOption("#sample", "soseki");
+
+  const meanRow = page.locator("#metrics table").nth(1).locator("tbody tr").first();
+  const browserMean = meanRow.locator("td").nth(1);
+  const justifMean = meanRow.locator("td").nth(2);
+  await expect(browserMean).toHaveText("100%", { timeout: 15_000 });
+  await expect(justifMean).toHaveText("100%");
+  await expect(browserMean).not.toHaveClass(/better|worse/);
+  await expect(justifMean).not.toHaveClass(/better|worse/);
+});
+
 test("comparison controls stay stable and explain flicker once", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/demo/");
