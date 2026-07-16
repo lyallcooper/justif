@@ -278,7 +278,7 @@
     letter-spacing: 0.14em;
   }
   .masthead .subtitle {
-    margin: 0.4rem 0 0;
+    margin: 0.2rem 0 0;
     font-style: italic;
     font-size: 1.1rem;
     color: var(--muted);
@@ -379,7 +379,7 @@
     grid-template-columns: max-content 1fr;
     align-items: start;
     gap: 0.55rem 1.25rem;
-    max-width: 64rem;
+    max-width: 48rem;
     margin: 0 auto;
     padding: 0.8rem 1rem 0.9rem;
     border-bottom: 1px solid var(--hairline);
@@ -787,7 +787,7 @@
      label) so the two tables align with each other — side by side AND
      stacked — without being wider than their content. */
   #metrics table { border-collapse: collapse; }
-  #metrics thead th:nth-child(1) { width: 14.2em; }
+  #metrics thead th:nth-child(1) { width: 12em; }
   #metrics thead th:nth-child(2) { width: 5.2em; }
   #metrics thead th:nth-child(3) { width: 5.2em; }
   /* Compact drawers keep the paired choices together and move the width
@@ -965,17 +965,6 @@
 <div id="dock-body" hidden>
 
 <div class="controls">
-  <b>display</b>
-  <div class="control-items display-controls">
-    <span class="theme-control">
-      <span>appearance</span>
-      <span class="theme-toggle" role="group" aria-label="Appearance">
-        <button id="theme-system" type="button" aria-pressed="true">system</button>
-        <button id="theme-light" type="button" aria-pressed="false">light</button>
-        <button id="theme-dark" type="button" aria-pressed="false">dark</button>
-      </span>
-    </span>
-  </div>
   <b>text</b>
   <div class="control-items text-controls">
     <label class="select-control">
@@ -1056,8 +1045,19 @@
     <label><input id="blur" type="checkbox" /> <span>blur (squint test)</span></label>
     <label><input id="rulers" type="checkbox" /> margin rulers</label>
     <label><input id="deviation" type="checkbox" />
-      <span>uneven spaces (loose/tight)</span></label>
+      <span>uneven spaces</span></label>
     <button id="reset" type="button">reset</button>
+  </div>
+  <b>display</b>
+  <div class="control-items display-controls">
+    <span class="theme-control">
+      <span>appearance</span>
+      <span class="theme-toggle" role="group" aria-label="Appearance">
+        <button id="theme-system" type="button" aria-pressed="true">system</button>
+        <button id="theme-light" type="button" aria-pressed="false">light</button>
+        <button id="theme-dark" type="button" aria-pressed="false">dark</button>
+      </span>
+    </span>
   </div>
 </div>
 
@@ -2842,11 +2842,11 @@ justify(document.querySelectorAll("article p"), {
   // ------------------------------------------------------------------
 
   const LINE_LABELS = [
-    "lines",
+    "count",
     "hyphenated breaks",
     "overfull lines",
-    "short last lines (<25% or lone word)",
-    "river spaces (≥3 aligned)",
+    "short last lines",
+    "rivers",
   ];
   const SPACING_LABELS = [
     "mean space (100% = natural)",
