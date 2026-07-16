@@ -2478,17 +2478,17 @@ justify(document.querySelectorAll("article p"), {
     }
   } catch { /* corrupt or unavailable storage: fall through to defaults */ }
 
-  // Fresh loads start side-by-side at the widest two-column fit, capped at
-  // 16em (a comfortable book measure beats a maximal one as a first
-  // impression). Flicker gets a wider default, while saved preferences win.
+  // Fresh loads target the widths that make the comparison clearest: 14em
+  // side-by-side and 26em in flicker. Narrow windows still clamp each view
+  // to the space it can actually display, while saved preferences win.
   function defaultMeasureForWindow() {
     const gap = window.innerWidth <= 1100 ? 24 : 48; // .panes gap (1.5/3rem)
     const padding = 48; // .panes horizontal padding (2 × 1.5rem)
     const perColumnEm = (window.innerWidth - padding - gap) / 2 / 16;
-    return Math.max(10, Math.min(16, Math.floor(perColumnEm / 0.5) * 0.5));
+    return Math.max(10, Math.min(14, Math.floor(perColumnEm / 0.5) * 0.5));
   }
-  function defaultFlickerMeasure(sideMeasure = defaultMeasureForWindow()) {
-    return Math.min(24, sideMeasure * 1.5);
+  function defaultFlickerMeasure() {
+    return 26;
   }
   function storedMeasure(value) {
     if (value === null || value === undefined || value === "") return null;
@@ -2498,7 +2498,7 @@ justify(document.querySelectorAll("article p"), {
 
   const initialView = document.getElementById("view").value === "flicker" ? "flicker" : "side";
   const sideDefault = defaultMeasureForWindow();
-  const flickerDefault = defaultFlickerMeasure(sideDefault);
+  const flickerDefault = defaultFlickerMeasure();
   const legacyMeasure = storedMeasure(savedParams?.measure);
   const viewMeasures = {
     side: storedMeasure(savedParams?.measureByView?.side)
@@ -3386,7 +3386,7 @@ justify(document.querySelectorAll("article p"), {
     // Fully fresh-load semantics: window-derived defaults, not static ones.
     const sideMeasure = defaultMeasureForWindow();
     viewMeasures.side = sideMeasure;
-    viewMeasures.flicker = defaultFlickerMeasure(sideMeasure);
+    viewMeasures.flicker = defaultFlickerMeasure();
     $("view").value = "side";
     syncMeasureLimit(viewMeasures.side);
     applyMeasure();

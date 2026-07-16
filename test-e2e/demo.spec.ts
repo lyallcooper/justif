@@ -263,7 +263,7 @@ test("comparison views retain independent widths", async ({ page }) => {
 
   await expect(measure).toHaveValue("13");
   await page.click("#view-flicker");
-  await expect(measure).toHaveValue("19.5");
+  await expect(measure).toHaveValue("26");
   await setMeasure("18");
 
   await page.click("#view-side");
@@ -287,9 +287,9 @@ test("comparison views retain independent widths", async ({ page }) => {
   await page.evaluate(() => localStorage.removeItem("justif-demo-params"));
   await page.setViewportSize({ width: 1280, height: 844 });
   await page.reload();
-  await expect(measure).toHaveValue("16");
+  await expect(measure).toHaveValue("14");
   await page.click("#view-flicker");
-  await expect(measure).toHaveValue("24");
+  await expect(measure).toHaveValue("26");
 });
 
 test("inline code background follows protruded end punctuation", async ({ page }) => {
