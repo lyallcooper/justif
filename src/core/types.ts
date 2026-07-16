@@ -368,6 +368,10 @@ export interface Line {
    * budget (Bringhurst's ±3%), while spaces stretch on past their nominal
    * flexibility (they just cost badness). glueRatio is recomputed over the
    * glue-only pool for such lines so the line still fills exactly.
+   * Fil (paragraph-ending) lines keep natural letterfit on the stretch
+   * side (0 for a ragged or lastLineFit-colored ending) but equal
+   * glueRatio when the ending shrinks — the breaker priced that shrink
+   * against the pooled flex, tracking included.
    */
   trackRatio: number;
   /** Px the first glyph protrudes into the line-START margin (left in

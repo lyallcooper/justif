@@ -186,9 +186,13 @@ export function layoutLines(
     // alone. Re-derive the glue-only ratio so the line still fills: the
     // residual R satisfied R = (Yg − Yt)·s + Yt·min(s, 1); when the pooled
     // s exceeds 1, solve the saturated form for the spaces' s.
-    // Fil lines keep natural letterfit whatever their glue does (both the
-    // default natural ending and a lastLineFit-colored one).
-    let trackRatio = Yfil > 0 ? 0 : glueRatio;
+    // Fil lines keep natural letterfit on the STRETCH side (both the
+    // default natural ending and a lastLineFit-colored one) — but an
+    // over-long ending's shrink was priced by the breaker and the shrink
+    // branch above against the POOLED Zg, tracking included, so the
+    // letterfit share must render or the ending sets wider than modeled
+    // and overflows the measure.
+    let trackRatio = Yfil > 0 ? Math.min(glueRatio, 0) : glueRatio;
     const Yt = cumTrackY[b]! - cumTrackY[start]!;
     if (Yfil === 0 && glueRatio > 1 && Yt > 0) {
       trackRatio = 1;

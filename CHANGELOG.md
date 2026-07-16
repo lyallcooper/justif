@@ -1,63 +1,56 @@
 # Changelog
 
+## 0.2.2 (2026-07-16)
+
+- Fixed: with tracking enabled (the default), a last line that shrinks to
+  fit could overflow the measure by up to ~20px — it was set without the
+  letterfit tightening the layout had counted on. Ragged last lines are
+  unaffected.
+
 ## 0.2.1 (2026-07-15)
 
-- Critical: `dist` now ships with destructuring pre-lowered, and the build
-  gates on esbuild accepting every file at Vite 6's default `build.target`.
-  esbuild marks all destructuring as broken below Safari 14.1 and refuses
-  to transform it; the older esbuilds bundled in Vite 6 / Astro 5 shipped
-  the broken transform instead — a default production build initialized
-  justif cleanly and silently managed zero paragraphs.
-- New `onSkip(paragraph, reason)` option: one callback per paragraph justif
-  declines, with the failing check ("inline `<kbd>` has a horizontal
-  margin", "author font-stretch: 75% on a run"). The drop-in script accepts
-  `data-justif-debug` to log the same to the console.
-- Caps variants (`small-caps`, `all-small-caps`, …) are measured with DOM
-  probes on every engine, and variant-run word spaces are measured in
-  letter context: GTK WebKit synthesizes small caps at ~0.7× — scaling
-  interior spaces with the letters — where other engines use the font's
-  real feature, and lone-space probes measured full-size, leaving
-  small-caps lines visibly under-filled on that port.
-- README: the TeX-style tuning knobs are documented, and the inline-margin
-  limitation is stated next to the chip padding/border support note.
+- Critical: production builds bundled with Vite 6 / Astro 5's default
+  `build.target` silently justified nothing — their bundled esbuild
+  mis-transformed justif's `dist`. The published files are now
+  pre-lowered and verified against those targets.
+- New `onSkip(paragraph, reason)` option: reports each paragraph justif
+  declines and why. The drop-in script logs the same when given
+  `data-justif-debug`.
+- Fixed under-filled small-caps lines on Linux WebKit, which synthesizes
+  small caps instead of using the font's own.
+- README: documented the TeX-style tuning knobs and the inline-margin
+  limitation.
 
 ## 0.2.0 (2026-07-15)
 
 - Inline chips and pills are now first-class: horizontal padding and
   borders on inline elements (styled `code`, `kbd`, badges) are modeled
-  as layout width instead of bailing the paragraph to native. Padding
-  follows `box-decoration-break: slice` (the initial value) when an
-  element wraps; `clone`, inline margins, and preserved-whitespace
-  `white-space` values still bail.
-- Word spaces at font-family boundaries stretch but no longer shrink
-  below their natural width by default — chips live at those boundaries,
-  and native CSS justification never shrinks a space. New
-  `spacing.boundaryShrink` option (default `0`; `1` restores TeX
-  semantics).
-- `white-space: nowrap` on inline elements is honored: no break
-  opportunity inside (spaces keep their justification flexibility).
-- Author `font-variant-*` values and `font-feature-settings` no longer
-  bail paragraphs to native: runs canvas cannot shape are measured with
-  batched DOM probes, so small caps, oldstyle/tabular numerals, and
+  instead of bailing the paragraph to native. Inline margins,
+  `box-decoration-break: clone`, and preserved-whitespace `white-space`
+  values still bail.
+- Word spaces next to a font-family change stretch but no longer shrink
+  below their natural width by default, matching native CSS
+  justification around chips. New `spacing.boundaryShrink` option
+  (default `0`; `1` restores TeX semantics).
+- `white-space: nowrap` on inline elements is honored: no line break
+  inside, spaces keep their justification flexibility.
+- Author `font-variant-*` and `font-feature-settings` values no longer
+  bail paragraphs to native: small caps, oldstyle/tabular numerals, and
   stylistic sets justify like everything else.
-- An unbreakable word wider than the measure now overflows from a line
-  of its own — like a browser — instead of dragging the preceding words
-  onto the overfull line with their spaces crushed.
-- The corrective line-end margin lands outside a cloned inline element
-  that closes at the line end, so a padded chip's end inset is never
-  visually pinched.
-- Drop-in: the import base is picked by URL shape instead of probing,
-  removing a console 404 on non-English pages served from bare package
-  CDN URLs.
+- A word wider than the measure now overflows from a line of its own —
+  like a browser — instead of dragging the preceding words onto the
+  overfull line with their spaces crushed.
+- Fixed a padded chip at a line end rendering with its end padding
+  slightly pinched.
+- Drop-in: removed a console 404 on non-English pages served from bare
+  package CDN URLs.
 
 ## 0.1.1 (2026-07-15)
 
-- Drop-in: on-demand language modules now load correctly from bare
-  package CDN URLs (`https://cdn.jsdelivr.net/npm/justif`), which serve
-  `auto.js` without redirecting to its file path — sibling-relative
-  imports resolved a directory too high and non-English content silently
-  fell back to spacing-only justification. The loader now retries against
-  the module's own URL as the package root.
+- Drop-in: non-English pages loaded from a bare package CDN URL
+  (`https://cdn.jsdelivr.net/npm/justif`) silently fell back to
+  spacing-only justification — hyphenation language modules now load
+  correctly there.
 
 ## 0.1.0 (2026-07-15)
 
@@ -65,27 +58,22 @@ Initial release.
 
 - Zero-config drop-in: `<script type="module"
   src="https://cdn.jsdelivr.net/npm/justif"></script>` enhances everything
-  the page's CSS justifies; hyphenation auto-follows declared `lang`
-  attributes (en-US inlined, other bundled languages loaded on demand).
-
-- Knuth-Plass total-fit line breaking (TeX's exact badness/demerits model,
-  three-pass tolerance escalation, emergency stretch).
-- Microtypography: character protrusion / optical margin alignment
-  (pdfTeX-style, per-font tables), font expansion via the variable-font
-  `wdth` axis (script-aware calibration), letterfit tracking (±3%),
-  full hanging punctuation presets.
-- Pluggable hyphenation; 23 bundled languages from CTAN hyph-utf8 (each
-  its own entry, lazy-compiled), en-US from Knuth/Liang's original
-  hyphen.tex, and the Liang engine itself (`justif/hyphenate/liang`) for
-  any other TeX pattern set.
+  the page's CSS justifies; hyphenation follows declared `lang`
+  attributes.
+- Knuth-Plass total-fit line breaking with TeX's badness/demerits model.
+- Microtypography: character protrusion (optical margin alignment) with
+  per-font tables, font expansion via the variable-font `wdth` axis,
+  letterfit tracking (±3%), hanging punctuation presets.
+- Pluggable hyphenation: 23 bundled languages (each its own entry),
+  en-US from Knuth/Liang's original TeX patterns, and the Liang engine
+  itself (`justif/hyphenate/liang`) for any other TeX pattern set.
 - CJK (Japanese-first): per-cluster breaking, kinsoku shori, burasage.
-- RTL: pure-RTL Hebrew/Arabic paragraphs with mirrored protrusion;
-  mixed-direction content bails to native rendering.
-- eTeX-style `\lastlinefit` (last-line color matching); TeX-style
-  short-last-line pressure.
-- Accessibility-preserving DOM emission (inline flow, no cloned line
-  boxes), byte-identical `destroy()`, clipboard cleanup, automatic
-  resize re-layout (viewport-first, scroll-anchored), exact
-  `content-visibility` placeholder cooperation.
-- Fail-safe enhancement: unsupported or throwing paragraphs are left to
-  native rendering; CSP-safe and shadow-DOM-aware stylesheet installation.
+- RTL: Hebrew/Arabic paragraphs with mirrored protrusion;
+  mixed-direction content is left to native rendering.
+- eTeX-style `\lastlinefit` and TeX-style short-last-line pressure.
+- Accessible output: lines stay ordinary inline flow, so links,
+  find-in-page, selection and copy work normally; `destroy()` restores
+  the original markup byte-identically; automatic re-layout on resize;
+  `content-visibility` cooperation for very long documents.
+- Fail-safe: unsupported or throwing paragraphs keep native rendering;
+  works under strict CSP and inside shadow DOM.
