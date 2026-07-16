@@ -89,6 +89,81 @@ test("drawer controls form compact responsive rows", async ({ page }) => {
   expect(Math.abs(layout.pretty.top - layout.blur.top)).toBeLessThan(1);
 });
 
+test("short Alice excerpt is available as a sample", async ({ page }) => {
+  await page.goto("/demo/");
+  await page.click("#dock-toggle");
+  await page.selectOption("#sample", "aliceExcerpt");
+
+  await expect(page.locator("#native > p")).toHaveCount(3);
+  await expect(page.locator("#enhanced > p")).toHaveCount(3);
+  await expect(page.locator("#native > p").first()).toContainText(
+    "“Perhaps it doesn’t understand English,”",
+  );
+});
+
+test("Frankenstein excerpt is available as a sample", async ({ page }) => {
+  await page.goto("/demo/");
+  await page.click("#dock-toggle");
+
+  await page.selectOption("#sample", "frankenstein");
+  await expect(page.locator("#native > p")).toHaveCount(6);
+  await expect(page.locator("#enhanced > p")).toHaveCount(6);
+  await expect(page.locator("#native > p").first()).toContainText(
+    "It was on a dreary night of November",
+  );
+});
+
+test("RFC 2324 is available as a quoted technical sample", async ({ page }) => {
+  await page.goto("/demo/");
+  await page.click("#dock-toggle");
+
+  await page.selectOption("#sample", "rfc2324");
+  await expect(page.locator("#native > p")).toHaveCount(7);
+  await expect(page.locator("#enhanced > p")).toHaveCount(7);
+  await expect(page.locator("#native > p").first()).toContainText(
+    "“There is coffee all over the world",
+  );
+  await expect(page.locator("#native")).toContainText("418 I’m a teapot");
+  await expect(page.locator("#native code")).toHaveCount(2);
+  await expect(page.locator("#native .smcp").filter({ hasText: "htcpcp" })).not.toHaveCount(0);
+  await expect(page.locator("#native .smcp").filter({ hasText: "http" })).not.toHaveCount(0);
+});
+
+test("sample menu groups entries by type", async ({ page }) => {
+  await page.goto("/demo/");
+
+  expect(await page.locator("#sample optgroup").evaluateAll((groups) =>
+    groups.map((group) => group.getAttribute("label")),
+  )).toEqual([
+    "Prose",
+    "Technical",
+    "Typography",
+    "Other scripts",
+  ]);
+  await expect(page.locator('#sample optgroup[label="Prose"] option')).toHaveCount(4);
+  await expect(page.locator('#sample optgroup[label="Technical"] option')).toHaveCount(2);
+});
+
+test("technical and specimen samples preserve their showcase markup", async ({ page }) => {
+  await page.goto("/demo/");
+  await page.click("#dock-toggle");
+
+  await page.selectOption("#sample", "tech");
+  await expect(page.locator("#native > p")).toHaveCount(3);
+  await expect(page.locator("#enhanced > pre")).toHaveCount(1);
+  await expect(page.locator("#enhanced > pre")).not.toHaveAttribute("data-justif");
+  await expect(page.locator("#native")).toContainText("getBoundingClientRect()");
+
+  await page.selectOption("#sample", "specimen");
+  await expect(page.locator("#native > p")).toHaveCount(4);
+  await expect(page.locator("#native .smcp")).toHaveCount(3);
+  await expect(page.locator("#native em")).toHaveCount(1);
+  await expect(page.locator("#native strong")).toHaveCount(1);
+  await expect(page.locator("#native a")).toHaveCount(1);
+  await expect(page.locator("#native")).toContainText("Fig. 7");
+  await expect(page.locator("#native")).toContainText("un­com­pro­mis­ing");
+});
+
 test("gap highlights use a symmetric grayscale ramp", async ({ page }) => {
   await page.goto("/demo/");
   await page.click("#dock-toggle");

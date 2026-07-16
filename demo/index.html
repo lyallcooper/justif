@@ -978,12 +978,23 @@
     <label class="select-control">
       <span class="control-name">sample</span>
       <select id="sample">
-        <option value="tale" selected>Frog Prince</option>
-        <option value="tech">Technical post</option>
-        <option value="specimen">Type specimen</option>
-        <option value="rtl">Hebrew &amp; Arabic (RTL)</option>
-        <option value="soseki">吾輩は猫である (Japanese)</option>
-        <option value="alice">Alice in Wonderland (long)</option>
+        <optgroup label="Prose">
+          <option value="tale" selected>Frog Prince</option>
+          <option value="frankenstein">Frankenstein</option>
+          <option value="aliceExcerpt">Alice in Wonderland (excerpt)</option>
+          <option value="alice">Alice in Wonderland (long)</option>
+        </optgroup>
+        <optgroup label="Technical">
+          <option value="tech">Technical post</option>
+          <option value="rfc2324">RFC 2324</option>
+        </optgroup>
+        <optgroup label="Typography">
+          <option value="specimen">Type specimen</option>
+        </optgroup>
+        <optgroup label="Other scripts">
+          <option value="rtl">Hebrew &amp; Arabic (RTL)</option>
+          <option value="soseki">吾輩は猫である (Japanese)</option>
+        </optgroup>
       </select>
     </label>
     <label class="select-control">
@@ -1101,11 +1112,13 @@
   // protrusion). "tech": inline <code> in another font inside justified
   // lines, plus a <pre> block that justif leaves untouched. "specimen":
   // small caps, soft hyphens, no-break spaces, dashes, mixed inline markup.
-  // "alice": Carroll's chapters I–VI complete (~13,400 words, ~300
-  // paragraphs; Project Gutenberg #11, public domain) — a long-document
-  // performance stress test. Verse (the crocodile poem, Father William)
-  // keeps its <br> line structure, which justif deliberately bails on:
-  // those paragraphs render natively in both columns.
+  // "aliceExcerpt": a punctuation-rich passage that makes the spacing
+  // comparison especially visible at the default measure. "alice":
+  // Carroll's chapters I–VI complete (~13,400 words, ~300 paragraphs;
+  // Project Gutenberg #11, public domain) — a long-document performance
+  // stress test. Verse (the crocodile poem, Father William) keeps its <br>
+  // line structure, which justif deliberately bails on: those paragraphs
+  // render natively in both columns.
   const SAMPLES = {
     tale: `
       <p>In olden times when wishing still helped one, there lived a king
@@ -1135,75 +1148,65 @@
       and jewels, and even the golden crown which I am wearing.”</p>`,
 
     tech: `
-      <p>Browsers justify the way a hurried compositor might: fill each
-      line until the next word no longer fits, then stretch that line’s
-      gaps to cover the remainder. This is
-      <code>text-align: justify</code>—greedy and first-fit—and because no
-      later line can repair an earlier decision, one long identifier such
-      as <code>getBoundingClientRect()</code> strands a gaping line behind
-      it that <code>text-wrap: pretty</code> and <code>hyphens: auto</code>
-      can only soften.</p>
+      <p>A browser normally breaks justified text one line at a time. It
+      fills the available measure, commits to a break, and stretches the
+      spaces that remain. This is fast and predictable, but a stubborn token
+      such as <code>getBoundingClientRect()</code> can be sent intact to the
+      next line, leaving the preceding gaps to absorb the difference. In a
+      narrow column, those gaps become the first thing the eye sees.</p>
       <pre><code>import { justify } from "justif";
 import { hyphenateEnUS } from "justif/hyphenate/en-us";
 
-justify(document.querySelectorAll("article p"), {
+const controller = justify(document.querySelectorAll("article p"), {
   hyphenate: hyphenateEnUS,
-});</code></pre>
-      <p>justif takes the other road. Every word is measured once with
-      canvas <code>measureText()</code>, and the whole paragraph goes to
-      the Knuth-Plass breaker, so each break is chosen in full knowledge
-      of every other. Resizing the container re-runs arithmetic only,
-      behind a shared <code>ResizeObserver</code>; every line then carries
-      its own <code>word-spacing</code> and <code>font-stretch</code>—each
-      held within ±2%—so the color of the page stays even without
-      distorting a single letterform.</p>
-      <p>The options read like the typography they control:
-      <code>lastLineMinWidth: 0.33</code> discourages orphaned last lines,
-      <code>spacing: { pull: 0.5 }</code> draws a monospace cell-space in
-      toward the prose around it, and <code>expansion: { max: 0.02 }</code>
-      sets the letterforms’ breathing room. Whether it is a command like
-      <code>npm install justif</code> or a declaration like
-      <code>const ctl = justify(paragraphs)</code>, inline code keeps its
-      word boundaries readable—and the block above stays untouched,
-      because justif enhances only the paragraphs you give it. The page
-      stays honest to the browser, too: press <kbd>Ctrl-F</kbd>—or
-      <kbd><span class="key-sym">⌘</span>F</kbd> on a Mac—and find-in-page
-      matches phrases straight across the justified line breaks, keycaps
-      and all.</p>`,
+});
+
+await controller.ready;</code></pre>
+      <p><code>justify()</code> treats the paragraph as one problem. The
+      Knuth–Plass algorithm compares feasible sets of breaks and chooses the
+      sequence with the most even fit. The call above supplies
+      <code>{ hyphenate: hyphenateEnUS }</code>, adding useful candidates;
+      hanging punctuation cleans the edge; restrained spacing, tracking,
+      and font-width adjustments refine each line without asking any one
+      space to do all the work.</p>
+      <p>The enhancement stays inside the elements you select. Links,
+      <em>emphasis</em>, and inline <code>code</code> remain ordinary
+      content: selectable, searchable, and copyable. The
+      <code>&lt;pre&gt;</code> block above is not a paragraph, so it keeps its
+      native layout. Resize the column and the controller lays out its
+      paragraphs again; after fonts change, <code>controller.refresh()</code>
+      repeats measurement, and <code>controller.destroy()</code> restores
+      the original content.</p>`,
 
     specimen: `
-      <p><span class="smcp">In the beginning</span>
-      of every chapter the old printers set the opening words in small
-      capitals—a quiet signal that the page, not the sentence, was the
-      unit of design. Their compositors kept a full case of dashes: the em
-      for interruption—like this—the en for spans of years (1450–1455),
-      and the “curly” quotation marks a typewriter would later flatten
-      into ticks. Above all they trusted ligatures: fi, fl, and ffi fuse
-      the most difficult letter fits into single, efficient
-      glyphs—affliction, officialdom, and the office door all read the
-      better for it.</p>
-      <p>Numbers kept their manners too: 1,024 lines of 66 characters, set
-      in 10-point type on a 12-point body, cost a compositor the better
-      part of a morning. Abbreviations such as
+      <p>“<span class="smcp">The reader should enter</span> a page as easily
+      as a room.” Good typography does not ask to be admired before the
+      words are understood. It gives each voice its register: roman for the
+      steady argument, <em>italic for a change of tone</em>, and
+      <strong>weight only where the structure needs it</strong>. Small
+      capitals introduce a chapter without shouting, while fi, fl, and ffi
+      settle difficult joins—fidelity, flowers, and affinity—into the
+      rhythm of the line.</p>
+      <p>Proportion makes the details cohere. A page numbered 1,024 can
+      still feel light; a note marked Fig.&nbsp;7 stays with its figure; the
+      years 1450–1455 take an en dash, while a sudden interruption—if it
+      earns one—takes the longer em dash. Acronyms such as
       <span class="smcp">nasa</span> and
-      <span class="smcp">unesco</span> sat down
-      quietly in small capitals; <em>emphasis</em> stayed italic,
-      <strong>importance</strong> went bold, and a well-placed
-      <a href="#specimen">hyperlink</a> would have delighted them all the
-      same.</p>
-      <p>Punctuation earns its margins: “Aha!” cries the proofreader,
-      “quotes hang, commas trail, and the period drops clear of the
-      measure.” Watch the right edge—each dash, each self-made
-      hyphen-break, each bracketed aside (however brief) tests the optical
-      margin, while sloped capitals like Very, Wide, Away, and Tall lean
-      out; round ones—Order, Curve, Quire, Grand—let their bowls kiss
-      the rule. Ask, answer, insist! ‘Singles’, “doubles”, and «guillemets»
-      all overhang; so, at the very last, does the full stop.</p>
-      <p>Hard cases remain, as they always have: the
-      un&shy;com&shy;pro&shy;mis&shy;ing author fond of words like
-      “incomprehensibilities”, the narrow column that pries them apart
-      syllable by syllable, and Fig.&nbsp;7, which must never, under any
-      widening of the measure, drift away from its number.</p>`,
+      <span class="smcp">unesco</span> sit more comfortably in small
+      capitals. None should disturb the even texture of the page.</p>
+      <p>At the margin, shape matters as much as width. “Look closely,” says
+      the proofreader: ‘the opening quote may hang; the final comma may
+      follow.’ Parentheses (even these), brackets [like these], and
+      guillemets «like these» ask for optical rather than mathematical
+      alignment. Round capitals—O, C, G, Q—and sloped ones—A, V, W, T—meet
+      the edge differently, yet the column should appear calm.</p>
+      <p>Narrow measures reveal every compromise. An
+      un&shy;com&shy;pro&shy;mis&shy;ing word may need a discretionary break;
+      “incomprehensibilities” may need several. A well-set paragraph
+      balances those breaks with the spaces around them, preserves a
+      <a href="#specimen">useful link</a>, and keeps No.&nbsp;12 intact. The
+      test is simple: nothing snags the eye, and nothing important comes
+      apart.</p>`,
 
     rtl: `
       <p dir="rtl" lang="he">בראשית ברא אלהים את השמים ואת הארץ. והארץ
@@ -1235,6 +1238,114 @@ justify(document.querySelectorAll("article p"), {
       <p lang="ja">吾輩は猫である。名前はまだ無い。どこで生れたかとんと見当がつかぬ。何でも薄暗いじめじめした所でニャーニャー泣いていた事だけは記憶している。吾輩はここで始めて人間というものを見た。しかもあとで聞くとそれは書生という人間中で一番獰悪な種族であったそうだ。この書生というのは時々我々を捕えて煮て食うという話である。しかしその当時は何という考もなかったから別段恐しいとも思わなかった。ただ彼の掌に載せられてスーと持ち上げられた時何だかフワフワした感じがあったばかりである。</p>
       <p lang="ja">掌の上で少し落ちついて書生の顔を見たのがいわゆる人間というものの見始であろう。この時妙なものだと思った感じが今でも残っている。第一毛をもって装飾されべきはずの顔がつるつるしてまるで薬缶だ。その後猫にもだいぶ逢ったがこんな片輪には一度も出会わした事がない。のみならず顔の真中があまりに突起している。そうしてその穴の中から時々ぷうぷうと煙を吹く。どうも咽せぽくて実に弱った。これが人間の飲む<em>煙草</em>というものである事はようやくこの頃知った。</p>
       <p lang="ja">この書生の掌の裏でしばらくはよい心持に坐っておったが、しばらくすると非常な速力で運転し始めた。書生が動くのか自分だけが動くのか分らないが無暗に眼が廻る。胸が悪くなる。到底助からないと思っていると、どさりと音がして眼から火が出た。それまでは記憶しているがあとは何の事やらいくら考え出そうとしても分らない。</p>`,
+
+    // Mary Shelley, Frankenstein, Chapter V (Project Gutenberg #84).
+    frankenstein: `
+      <p>It was on a dreary night of November that I beheld the accomplishment
+      of my toils. With an anxiety that almost amounted to agony, I collected
+      the instruments of life around me, that I might infuse a spark of being
+      into the lifeless thing that lay at my feet.</p>
+      <p>It was already one in the morning; the rain pattered dismally against
+      the panes, and my candle was nearly burnt out, when, by the glimmer of the
+      half-extinguished light, I saw the dull yellow eye of the creature open;
+      it breathed hard, and a convulsive motion agitated its limbs.</p>
+      <p>How can I describe my emotions at this catastrophe, or how delineate
+      the wretch whom with such infinite pains and care I had endeavoured to
+      form? His limbs were in proportion, and I had selected his features as
+      beautiful.</p>
+      <p>Beautiful! Great God! His yellow skin scarcely covered the work of
+      muscles and arteries beneath; his hair was of a lustrous black, and
+      flowing; his teeth of a pearly whiteness; but these luxuriances only
+      formed a more horrid contrast with his watery eyes, that seemed almost of
+      the same colour as the dun-white sockets in which they were set, his
+      shrivelled complexion and straight black lips.</p>
+      <p>The different accidents of life are not so changeable as the feelings
+      of human nature. I had worked hard for nearly two years, for the sole
+      purpose of infusing life into an inanimate body. For this I had deprived
+      myself of rest and health. I had desired it with an ardour that far
+      exceeded moderation; but now that I had finished, the beauty of the dream
+      vanished, and breathless horror and disgust filled my heart.</p>
+      <p>Unable to endure the aspect of the being I had created, I rushed out
+      of the room and continued a long time traversing my bed-chamber, unable
+      to compose my mind to sleep. At length lassitude succeeded to the tumult
+      I had before endured, and I threw myself on the bed in my clothes,
+      endeavouring to seek a few moments of forgetfulness. But it was in vain;
+      I slept, indeed, but I was disturbed by the wildest dreams. I thought I
+      saw Elizabeth, in the bloom of health, walking in the streets of
+      Ingolstadt.</p>`,
+
+    // L. Masinter, IETF RFC 2324, “Hyper Text Coffee Pot Control Protocol”
+    // (1998). The excerpts are identified in the sample label; quotation
+    // marks and inline code are presentational markup.
+    rfc2324: `
+      <p>“There is coffee all over the world. Increasingly, in a world in
+      which computing is ubiquitous, the computists want to make coffee.
+      Coffee brewing is an art, but the distributed intelligence of the
+      web-connected world transcends art. Thus, there is a strong, dark, rich
+      requirement for a protocol designed espressoly for the brewing of
+      coffee. Coffee is brewed using coffee pots. Networked coffee pots
+      require a control protocol if they are to be controlled.”</p>
+      <p>Increasingly, home and consumer devices are being connected to the
+      Internet. Early networking experiments demonstrated vending devices
+      connected to the Internet for status monitoring
+      [<span class="smcp">coke</span>]. One of the first remotely
+      <em>operated</em> machine to be hooked up to the Internet, the Internet
+      Toaster, (controlled via <span class="smcp">snmp</span>) was debuted in
+      1990 [<span class="smcp">rfc</span>2235].</p>
+      <p>The demand for ubiquitous appliance connectivity that is causing
+      the consumption of the <span class="smcp">ipv4</span> address space.
+      Consumers want remote control of devices such as coffee pots so that
+      they may wake up to freshly brewed coffee, or cause coffee to be
+      prepared at a precise time after the completion of dinner
+      preparations.</p>
+      <p>This document specifies a Hyper Text Coffee Pot Control Protocol
+      (<span class="smcp">htcpcp</span>), which permits the full request and
+      responses necessary to control all devices capable of making the
+      popular caffeinated hot beverages.</p>
+      <p><span class="smcp">http</span> 1.1
+      ([<span class="smcp">rfc</span>2068]) permits the transfer of web
+      objects from origin servers to clients. The web is world-wide.
+      <span class="smcp">htcpcp</span> is based on
+      <span class="smcp">http</span>. This is because
+      <span class="smcp">http</span> is everywhere. It could not be so
+      pervasive without being good. Therefore, <span class="smcp">http</span>
+      is good. If you want good coffee, <span class="smcp">htcpcp</span>
+      needs to be good. To make <span class="smcp">htcpcp</span> good, it is
+      good to base <span class="smcp">htcpcp</span> on
+      <span class="smcp">http</span>.</p>
+      <p>The <span class="smcp">htcpcp</span> protocol is built on top of
+      <span class="smcp">http</span>, with the addition of a few new methods,
+      header fields and return codes. All <span class="smcp">htcpcp</span>
+      servers should be referred to with the “<code>coffee:</code>”
+      <span class="smcp">uri</span> scheme (Section 4).</p>
+      <p>Any attempt to brew coffee with a teapot should result in the error
+      code “<code>418 I’m a teapot</code>”. The resulting entity body
+      <span class="smcp">may</span> be short and stout.</p>`,
+
+    // Lewis Carroll, Alice’s Adventures in Wonderland, Chapter II. The
+    // opening paragraph gives the clearest comparison at the 13em default.
+    aliceExcerpt: `
+      <p>“Perhaps it doesn’t understand English,” thought Alice; “I daresay
+      it’s a French mouse, come over with William the Conqueror.” (For, with
+      all her knowledge of history, Alice had no very clear notion how long
+      ago anything had happened.) So she began again: “Où est ma chatte?”
+      which was the first sentence in her French lesson-book. The Mouse gave
+      a sudden leap out of the water, and seemed to quiver all over with
+      fright. “Oh, I beg your pardon!” cried Alice hastily, afraid that she
+      had hurt the poor animal’s feelings. “I quite forgot you didn’t like
+      cats.”</p>
+      <p>“Not like cats!” cried the Mouse, in a shrill, passionate voice.
+      “Would <em>you</em> like cats if you were me?”</p>
+      <p>“Well, perhaps not,” said Alice in a soothing tone: “don’t be angry
+      about it. And yet I wish I could show you our cat Dinah: I think you’d
+      take a fancy to cats if you could only see her. She is such a dear
+      quiet thing,” Alice went on, half to herself, as she swam lazily about
+      in the pool, “and she sits purring so nicely by the fire, licking her
+      paws and washing her face—and she is such a nice soft thing to
+      nurse—and she’s such a capital one for catching mice—oh, I beg your
+      pardon!” cried Alice again, for this time the Mouse was bristling all
+      over, and she felt certain it must be really offended. “We won’t talk
+      about her any more if you’d rather not.”</p>`,
 
     alice: `
       <p><span class="smcp">Chapter I.</span> Down the Rabbit-Hole</p>
