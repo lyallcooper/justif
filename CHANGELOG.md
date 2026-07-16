@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+- `lastLineMinWidth` now defaults to `0.33` — paragraph endings shorter
+  than a third of the measure (Bringhurst's rule) are avoided out of the
+  box. Pass `0` for the old default.
+- Fixed two `lastLineMinWidth` bugs: values near 1 silently behaved like
+  the option was off, and endings that needed a hyphen to lengthen never
+  got one.
+- `lastLineMinWidth` endings now also render at the requested width: an
+  ending the line breaks can't fill naturally widens its word spacing up
+  to the threshold, so `1` sets paragraphs as perfect rectangles wherever
+  the text allows. Endings too short to reach the threshold at reasonable
+  spacing keep their natural spacing, and the option never produces a
+  shorter ending than leaving it off would.
+- Removed `lastLineMinWords`. Use `lastLineMinWidth`: the objection to a
+  lone word ending a paragraph is really about the line's width, which
+  the width rule handles directly.
+- For headless `justif/core` users: `BreakOptions.lastLineStretch` is
+  replaced by `lastLineMinWidth` (set it to the same value as the build
+  option, as the main API does).
+
 ## 0.2.2 (2026-07-16)
 
 - Fixed: with tracking enabled (the default), a last line that shrinks to
