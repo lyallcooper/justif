@@ -11,6 +11,8 @@ It is a progressive enhancement. Your HTML and CSS provide the initial and
 fallback rendering, while `justif` upgrades paragraphs it can measure
 reliably. Unsupported paragraphs are left untouched.
 
+See the [**live demo**](https://justif.lyall.co).
+
 ## Why it exists
 
 Browsers normally justify one line at a time. A locally acceptable break can
@@ -23,7 +25,7 @@ poor break near the end of the paragraph.
     alt="Native browser justification with uneven spacing compared with justif's more balanced line breaks"
     width="760"
   ><br>
-  <em>Native browser and justif rendering in Google Chrome.</em>
+  <em>Native browser vs. justif rendering, Google Chrome.</em>
 </p>
 
 `justif` uses the [Knuth-Plass line-breaking
