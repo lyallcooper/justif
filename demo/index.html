@@ -210,6 +210,12 @@
     --ink: #000;
     --paper: #fff;
     --muted: #000;
+    /* Ink share of the code-chip/pre gray. Themed because equal OkLab
+       lightness steps read weaker on a dark ground: 4.5% on white gives
+       chip-vs-paper dL ~ 0.034, and dark mode needs ~2x that (7% ->
+       dL ~ 0.068, rgb(34,34,31) on #121210) to look equally distinct —
+       the same reason dark-elevation overlays use larger percentages. */
+    --chip-mix: 4.5%;
     --hairline: #000;
     --accent: #a23b2e; /* madder red: loose spaces, worse metrics — NOT general UI */
     --tight: #2e5f8a;  /* tight spaces */
@@ -223,6 +229,7 @@
     --ink: #f2f0ea;
     --paper: #121210;
     --muted: #d4d0c7;
+    --chip-mix: 7%;
     --hairline: #817d75;
     --accent: #e17a6d;
     --tight: #73aee0;
@@ -237,6 +244,7 @@
       --ink: #f2f0ea;
       --paper: #121210;
       --muted: #d4d0c7;
+      --chip-mix: 7%;
       --hairline: #817d75;
       --accent: #e17a6d;
       --tight: #73aee0;
@@ -666,7 +674,7 @@
   /* Nothing inside the columns is colored: the sample hyperlink inherits. */
   .article a { color: inherit; text-decoration: underline; }
   .article code {
-    --code-chip: color-mix(in srgb, var(--ink) 4.5%, var(--paper));
+    --code-chip: color-mix(in srgb, var(--ink) var(--chip-mix), var(--paper));
     font-family: "Courier Prime", ui-monospace, Menlo, Consolas, "DejaVu Sans Mono", monospace;
     /* Courier Prime's small typewriter body sits at 95% so inline code
        matches the serif's optical size and weight. */
@@ -751,7 +759,7 @@
     font-size: 0.8em;
     line-height: 1.55;
     text-align: left;
-    background: color-mix(in srgb, var(--ink) 4.5%, transparent);
+    background: color-mix(in srgb, var(--ink) var(--chip-mix), transparent);
     border-radius: 4px;
     overflow-x: auto;
   }
