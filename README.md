@@ -56,7 +56,7 @@ Keep native justification in your CSS, then load the automatic entry:
 
 <script
   type="module"
-  src="https://cdn.jsdelivr.net/npm/justif@0.2.1/dist/auto.js"
+  src="https://cdn.jsdelivr.net/npm/justif@0.2.2/dist/auto.js"
 ></script>
 ```
 
@@ -80,7 +80,7 @@ To limit the automatic scan, add a selector to the script:
 <script
   type="module"
   data-justif-selector="article .prose p"
-  src="https://cdn.jsdelivr.net/npm/justif@0.2.1/dist/auto.js"
+  src="https://cdn.jsdelivr.net/npm/justif@0.2.2/dist/auto.js"
 ></script>
 ```
 
