@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-07-16)
 
 - `lastLineMinWidth` now defaults to `0.33` — paragraph endings shorter
   than a third of the measure (Bringhurst's rule) are avoided out of the
