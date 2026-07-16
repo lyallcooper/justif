@@ -89,7 +89,8 @@ export interface JustifyOptions {
    * off (the breaker compares and keeps the better solution). The top of
    * the range can still be non-monotone per paragraph — one may satisfy
    * `0.5` yet revert to its natural ending at `1`. At `1` every paragraph
-   * that can afford it sets as a perfect rectangle. Off by default.
+   * that can afford it sets as a perfect rectangle. Defaults to `0.33`
+   * (Bringhurst); pass `0` to disable.
    */
   lastLineMinWidth?: number;
   /** true = built-in Latin table; an object merges over it; false disables. */
@@ -243,9 +244,11 @@ export function justify(
   let destroyed = false;
 
   const breakOpts = withOverrides(defaultBreakOptions, options);
-  // One clamped value feeds breaker pricing AND the layout floor — the
-  // two must see the same number.
-  const lastLineMinWidth = Math.max(0, Math.min(1, options.lastLineMinWidth ?? 0));
+  // The public default is Bringhurst's third (the CORE default stays 0 =
+  // classic TeX, like tracking's core-off/public-on split). One clamped
+  // value feeds breaker pricing AND the layout floor — the two must see
+  // the same number.
+  const lastLineMinWidth = Math.max(0, Math.min(1, options.lastLineMinWidth ?? 0.33));
   breakOpts.lastLineMinWidth = lastLineMinWidth;
   /** User's explicit per-char overrides, kept separate so they also win
    * over any per-font config matched in buildRunMetrics. */
