@@ -384,7 +384,7 @@
     padding: 0.8rem 1rem 0.9rem;
     border-bottom: 1px solid var(--hairline);
     font-size: 0.95rem;
-    font-variant-numeric: oldstyle-nums;
+    /*font-variant-numeric: oldstyle-nums;*/
   }
   .controls > b {
     justify-self: end;
@@ -544,7 +544,7 @@
     color: var(--paper);
     background: var(--ink);
   }
-  #measure-out { font-variant-numeric: oldstyle-nums tabular-nums; color: var(--muted); min-width: 3.2em; }
+  #measure-out, #lastline-out { font-variant-numeric: lining-nums tabular-nums; color: var(--muted); min-width: 3.2em; }
 
   /* ── The comparison spread ────────────────────────────────── */
   .panes {
@@ -865,7 +865,7 @@
     /* A finger-sized hit area for the width slider without shifting
        layout; touch-action keeps page-scroll from stealing the first
        drag gesture. */
-    #measure {
+    #measure, #lastline {
       touch-action: none;
       padding: 14px 0;
       margin: -14px 0;
@@ -1028,7 +1028,13 @@
     <div id="expansion-note" popover></div>
     <label><input id="tracking" type="checkbox" checked /> tracking</label>
     <label><input id="lastlinefit" type="checkbox" /> match last-line spacing</label>
-    <label><input id="lastline" type="checkbox" checked /> min. last-line width</label>
+    <label class="measure-control">
+      <span class="control-name">min. last-line width</span>
+      <span class="measure-row">
+        <input id="lastline" type="range" min="0" max="1" step="0.01" value="0.33" />
+        <span id="lastline-out"></span>
+      </span>
+    </label>
     <label class="hang-control">hang punctuation
       <button id="hangpunct-info" class="info" type="button" popovertarget="hangpunct-note"
         aria-label="Why is hanging punctuation disabled?" hidden>i</button>
@@ -2465,6 +2471,10 @@ justify(document.querySelectorAll("article p"), {
           .find((o) => o.value.startsWith(saved.font));
         if (opt !== undefined) saved.font = opt.value;
       }
+      // "avoid short last lines" was a checkbox before it became a slider:
+      // map old boolean saves onto the equivalent fraction (a non-numeric
+      // value would silently snap the range input to its midpoint).
+      if (typeof saved.lastline === "boolean") saved.lastline = saved.lastline ? 0.33 : 0;
       for (const id of PARAM_IDS) {
         const el = document.getElementById(id);
         if (el === null || !(id in saved)) continue;
@@ -2789,8 +2799,10 @@ justify(document.querySelectorAll("article p"), {
   // ------------------------------------------------------------------
   // Deviation overlay: every space that strays too far from the natural
   // space width gets tinted in grayscale. Opacity tracks the magnitude of
-  // the deviation in either direction. Paragraph-final lines are skipped
-  // (ragged by design).
+  // the deviation in either direction. Paragraph-final lines are included:
+  // a natural ending sits below the tolerance and shows nothing, while a
+  // stretched one (the lastLineMinWidth floor, lastLineFit coloring) marks
+  // like any other line.
   // ------------------------------------------------------------------
 
   // A multiplicative scale treats reciprocal changes equally: 3× natural
@@ -2811,7 +2823,7 @@ justify(document.querySelectorAll("article p"), {
     const originLeft = origin.left + article.clientLeft;
     const originTop = origin.top + article.clientTop;
     for (const para of analysis.paragraphs) {
-      for (const line of para.lines.slice(0, -1)) {
+      for (const line of para.lines) {
         for (const gap of line.gaps) {
           const ratio = gap.width / gap.natural;
           const rel = ratio - 1;
@@ -3079,6 +3091,13 @@ justify(document.querySelectorAll("article p"), {
   }
 
   let applyGeneration = 0;
+  // Serialized live-apply state for the last-line slider (see
+  // lastlineLiveApply): the slider value the last completed apply()
+  // rendered, so already-applied values are skipped.
+  let lastlineApplied = null;
+  let lastlineApplying = false;
+  let lastlineDirty = false;
+
   async function apply() {
     const generation = ++applyGeneration;
     const family = $("font").value;
@@ -3108,11 +3127,12 @@ justify(document.querySelectorAll("article p"), {
       hangingPunctuation: $("hangpunct").value === "off" ? false : $("hangpunct").value,
       expansion: $("expansion").checked ? undefined : false,
       tracking: $("tracking").checked,
-      // Bringhurst: paragraph endings at least a third of the measure —
-      // and never a lone word, however wide (the width rule alone would
-      // pass a single long word).
-      lastLineMinWidth: $("lastline").checked ? 0.33 : undefined,
-      lastLineMinWords: $("lastline").checked ? 2 : undefined,
+      // Slider = the ending's minimum fraction of the measure (Bringhurst's
+      // "at least a third" at 0.33 = the library default; 1 = rectangles
+      // where affordable). ALWAYS passed explicitly: 0 must mean OFF, not
+      // "fall back to the 0.33 default" — tex-compare's parity pin relies
+      // on slider 0 being classic TeX.
+      lastLineMinWidth: Number($("lastline").value),
       // eTeX \lastlinefit at full strength: the ending's word spaces adopt
       // the paragraph's mean stretch. Subtle at these measures (hyphenation
       // and expansion keep the body's mean near zero) — most visible with
@@ -3143,6 +3163,10 @@ justify(document.querySelectorAll("article p"), {
         scheduleUpdate();
       },
     });
+    // Every apply() renders whatever the slider holds right now (the
+    // options above read it), whoever triggered the apply — record it so
+    // the slider's live path can skip values that already rendered.
+    lastlineApplied = $("lastline").value;
     await controller.ready;
     // Align the flicker stack in the same task the enhancement landed in —
     // before the next paint — so paragraphs start in place instead of
@@ -3151,8 +3175,41 @@ justify(document.querySelectorAll("article p"), {
     scheduleUpdate();
   }
 
-  for (const id of ["font", "hyphenate", "protrusion", "hangpunct", "expansion", "tracking", "lastline", "lastlinefit"]) {
+  for (const id of ["font", "hyphenate", "protrusion", "hangpunct", "expansion", "tracking", "lastlinefit"]) {
     $(id).addEventListener("change", apply);
+  }
+  // Live readout for the last-line slider.
+  function syncLastLineOut() {
+    const v = Number($("lastline").value);
+    $("lastline-out").textContent = v > 0 ? String(v) : "off";
+  }
+  // The text re-justifies LIVE while the slider drags. Applies are
+  // serialized: one in flight at a time, drag events during it just mark
+  // it dirty (the loop then re-applies the LATEST value — intermediate
+  // positions coalesce away), and a value that already rendered is
+  // skipped, so the trailing "change" costs nothing. "change" routes here
+  // too because programmatic pins set value + change without any input
+  // event (tools/tex-compare.mjs).
+  async function lastlineLiveApply() {
+    if (lastlineApplying) {
+      lastlineDirty = true;
+      return;
+    }
+    lastlineApplying = true;
+    try {
+      do {
+        lastlineDirty = false;
+        if ($("lastline").value !== lastlineApplied) await apply();
+      } while (lastlineDirty);
+    } finally {
+      lastlineApplying = false;
+    }
+  }
+  for (const event of ["input", "change"]) {
+    $("lastline").addEventListener(event, () => {
+      syncLastLineOut();
+      lastlineLiveApply();
+    });
   }
   // Full hangs are a protrusion style: without protrusion there is nothing
   // to hang, so the toggle grays out.
@@ -3415,6 +3472,7 @@ justify(document.querySelectorAll("article p"), {
   // run after persistence restore and after reset.
   function syncSideEffects() {
     syncHangPunct();
+    syncLastLineOut();
     native.classList.toggle("pretty", $("pretty").checked);
     document.body.classList.toggle("blur-mode", $("blur").checked);
     setView($("view").value === "flicker" ? "flicker" : "side");

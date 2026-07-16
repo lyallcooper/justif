@@ -226,10 +226,11 @@ async function extractBrowserLines(scenario) {
         tracking.checked = false;
         tracking.dispatchEvent(new Event("change", { bubbles: true }));
       }
-      // TeX runs have no short-last-line pressure; the demo defaults it on.
+      // TeX runs have no short-last-line pressure; the demo defaults the
+      // slider to 0.33.
       const lastline = document.getElementById("lastline");
-      if (lastline && lastline.checked) {
-        lastline.checked = false;
+      if (lastline && Number(lastline.value) > 0) {
+        lastline.value = "0";
         lastline.dispatchEvent(new Event("change", { bubbles: true }));
       }
     }
