@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- `lastLineMinWidth` no longer gives up on paragraphs that cannot reach
+  the requested ending width: the ending now renders at the fullest width
+  the paragraph can afford instead of reverting to its natural — often
+  very short — last line. Raising the setting can no longer shorten any
+  paragraph's ending.
+- Endings may now use letterfit tracking and font expansion (when those
+  features are enabled) to reach the requested width, completing endings
+  that word spacing alone left just short.
+
 - No more re-layout flash on page load: load the drop-in script in
   `<head>` with `blocking="render"` (Chrome, Edge, Safari) and the page's
   first paint already shows justified text. For languages whose
