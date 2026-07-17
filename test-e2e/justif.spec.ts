@@ -1261,81 +1261,21 @@ test("unicode-range subset fonts are awaited and converge without refresh()", as
   expect(r.maxDev).toBeLessThan(1); // converged to the real font without refresh()
 });
 
-test("auto drop-in: justif-pending lifts at the interim commit, not at pattern arrival", async ({ page }) => {
-  await page.route("**/dist/hyphenate/de.js", async (route) => {
-    await new Promise((r) => setTimeout(r, 700));
-    await route.continue();
-  });
-  await page.addInitScript(() => {
-    // Init scripts can run before <html> exists — arm once it does.
-    const arm = (): void => {
-      document.documentElement.classList.add("justif-pending");
-      // The DOCUMENTED hide pattern: visibility (never display:none,
-      // which would make paragraphs unmeasurable and bail them).
-      const style = document.createElement("style");
-      style.textContent = "html.justif-pending p { visibility: hidden; }";
-      document.documentElement.append(style);
-      const w = window as unknown as {
-        __revealAt: number | null;
-        __revealEnhanced?: boolean;
-        __revealHyphens?: number;
-      };
-      w.__revealAt = null;
-      new MutationObserver(() => {
-        if (w.__revealAt === null && !document.documentElement.classList.contains("justif-pending")) {
-          // Snapshot AT the reveal — sampling later from the test would
-          // race the (deliberately slow) pattern module's arrival.
-          w.__revealAt = performance.now();
-          w.__revealEnhanced = document.getElementById("de-just")!.hasAttribute("data-justif");
-          w.__revealHyphens = document.querySelectorAll("#de-just .justif-hyphen").length;
-        }
-      }).observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
-    };
-    if (document.documentElement !== null) arm();
-    else {
-      new MutationObserver((_, obs) => {
-        if (document.documentElement !== null) {
-          obs.disconnect();
-          arm();
-        }
-      }).observe(document, { childList: true });
-    }
-  });
-  await page.goto("/test-e2e/fixture-auto.html");
-  await page.waitForFunction(
-    () => (window as Window & { __revealAt?: number | null }).__revealAt != null,
-  );
-  const r = await page.evaluate(() => {
-    const w = window as unknown as {
-      __revealAt: number;
-      __revealEnhanced: boolean;
-      __revealHyphens: number;
-    };
-    return { revealAt: w.__revealAt, deEnhanced: w.__revealEnhanced, deHyphens: w.__revealHyphens };
-  });
-  // Ordering is proven by the same-tick snapshot: at the reveal the
-  // paragraph was already enhanced but not yet hyphenated, i.e. the
-  // reveal preceded pattern arrival. (No wall-clock bound — reveal time
-  // and the route delay run on unrelated clocks, which flakes on slow
-  // runners.)
-  expect(r.revealAt).toBeGreaterThan(0);
-  expect(r.deEnhanced).toBe(true); // interim already justified at reveal…
-  expect(r.deHyphens).toBe(0); // …hyphens arrive with the patterns
-  await page.evaluate(async () => {
-    await (window as Window & { justif?: { booted: Promise<void> } }).justif!.booted;
-  });
-  expect(await page.locator("#de-just .justif-hyphen").count()).toBeGreaterThan(0);
-});
-
 test("auto drop-in: teardown before pattern arrival stays torn down", async ({ page }) => {
   await page.route("**/dist/hyphenate/de.js", async (route) => {
     await new Promise((r) => setTimeout(r, 400));
     await route.continue();
   });
-  // justif-pending guarantees the de group commits an interim controller
-  // that teardown can reach before its pattern module lands.
+  // Keep the page contentless-unpainted (test-owned CSS, no library
+  // contract): with no paint entries at boot, the de group
+  // deterministically commits an interim controller that teardown can
+  // reach before its pattern module lands.
   await page.addInitScript(() => {
-    const arm = (): void => document.documentElement.classList.add("justif-pending");
+    const arm = (): void => {
+      const style = document.createElement("style");
+      style.textContent = "body { visibility: hidden; }";
+      document.documentElement.append(style);
+    };
     if (document.documentElement !== null) arm();
     else {
       new MutationObserver((_, obs) => {

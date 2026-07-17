@@ -23,9 +23,6 @@
   keeping the fallback layout after a slow font arrived.
   `controller.ready` (and the new `window.justif.booted`) resolve once
   fonts have settled and the layout has converged on them.
-- Pages that hide their text while justif loads can hide it under an
-  `html.justif-pending` rule: the drop-in script removes the class as
-  soon as the text is justified.
 - Fonts finishing to load no longer trigger a needless re-layout when
   their rendering hasn't changed.
 
