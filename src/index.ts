@@ -33,6 +33,7 @@ import {
   collectDomMeasurements,
   ctxFontOf,
   type FontSpec,
+  probeAdvance,
   requiresDomMeasurement,
   supportsSpec,
 } from "./dom/measure.js";
@@ -152,6 +153,13 @@ export interface JustifyOptions {
    * cleanup). `false` restores raw copies.
    */
   cleanClipboard?: boolean;
+  /**
+   * Re-layout managed paragraphs when their content width changes
+   * (default true). With `false`, width changes after enhancement are
+   * not tracked — including ones caused by OTHER elements' late-loading
+   * fonts resizing a shared shrink-to-fit container; call `refresh()`
+   * after such changes.
+   */
   observeResize?: boolean;
   /**
    * Called after a paragraph's lines are (re)patched into the DOM — initial
@@ -173,7 +181,13 @@ export interface JustifyOptions {
 }
 
 export interface JustifyController {
-  /** Resolves after fonts are ready and the initial enhancement ran. */
+  /**
+   * Resolves once the content's font faces have settled (loaded or
+   * failed) and the layout converged on them. The text is enhanced
+   * earlier than this — justify() commits synchronously against
+   * whatever fonts are rendering at call time, so a still-loading
+   * webfont shows its fallback justified until the faces settle.
+   */
   readonly ready: Promise<void>;
   /**
    * Re-measure with the currently loaded font files and re-layout (also runs
@@ -526,24 +540,15 @@ export function justify(
     }
   };
 
-  const enhanceAll = async (): Promise<void> => {
-    // Read phase for every paragraph first (one style/layout flush), then
-    // ensure every needed font face is actually loaded — canvas measureText
-    // silently uses fallback metrics for lazily-loading webfonts, which
-    // would set every line to the wrong measure — then canvas measurement
-    // and one write phase.
-    const scannable = paragraphs.filter(scanParagraph);
-    const fontsNeeded = new Set<string>();
-    for (const p of scannable) {
-      const scan = scanned.get(p);
-      if (scan !== undefined) for (const spec of scan.specs) fontsNeeded.add(ctxFontOf(spec));
-    }
-    if (fontsNeeded.size > 0) {
-      await Promise.all(
-        [...fontsNeeded].map((font) => document.fonts.load(font).catch(() => {})),
-      );
-    }
-    if (destroyed) return;
+  /**
+   * Measurement + patch + flush for scanned paragraphs — fully synchronous,
+   * no awaits, so a caller who runs it inside one task (e.g. a
+   * render-blocking script, or the same task that reveals a font) gets the
+   * enhanced text and everything it depends on painted in a single frame.
+   * Every font face used by `scannable` must be loaded (or failed — canvas
+   * then measures the same fallback the DOM renders) before this runs.
+   */
+  const commit = (scannable: readonly HTMLElement[]): void => {
     // Discover every string needed by variant-bearing runs using disposable
     // canvas estimates, then shape all of those strings in one hidden DOM
     // batch. The real prepare pass below reads exact cached widths.
@@ -572,10 +577,48 @@ export function justify(
     for (const e of batch) emitRelayout(e.p);
   };
 
+  /** One entry per ctx font the content needs. `sample` holds every
+   * distinct code point set in that font — faces are matched by
+   * unicode-range against concrete text, so both the load() await and the
+   * change probe must carry the scripts the content really uses
+   * (document.fonts.load() defaults to U+0020; a fixed Latin sentinel is
+   * blind to a Greek/CJK/symbol subset face). `kernSample` is a slice of
+   * RAW run text: real letter sequences, so a face that differs from its
+   * fallback only in kerning/shaping of adjacent pairs — metric-clone
+   * families, size-adjust-tuned fallbacks — still moves a probe even when
+   * per-glyph advances match. Baselines are the advances as of the last
+   * commit/re-measure. */
+  interface FontProbe {
+    font: string;
+    sample: string;
+    kernSample: string;
+    baseline: number;
+    kernBaseline: number;
+  }
+  let fontProbes: FontProbe[] = [];
+  /** True once the needed faces settled (loaded or failed) and the layout
+   * was reconciled with them — the module-level measure caches then hold
+   * settled-font metrics that a future controller may safely reuse. */
+  let fontsConverged = false;
+
+  const reprobeBaselines = (): void => {
+    for (const f of fontProbes) {
+      f.baseline = probeAdvance(f.font, f.sample);
+      f.kernBaseline = probeAdvance(f.font, f.kernSample);
+    }
+  };
+  const probesChanged = (): boolean =>
+    fontProbes.some(
+      (f) =>
+        Math.abs(probeAdvance(f.font, f.sample) - f.baseline) > 0.01 ||
+        Math.abs(probeAdvance(f.font, f.kernSample) - f.kernBaseline) > 0.01,
+    );
+
   const remeasureAll = (): void => {
     if (destroyed) return;
     clearMeasureCache();
     clearCalibrationCache();
+    reprobeBaselines();
     const mine = paragraphs.filter((p) => states.get(p)?.owner === owner);
     // All width reads first, then all patches, then one correction flush —
     // interleaving reads with the DOM writes would force a layout per
@@ -865,13 +908,18 @@ export function justify(
   if (options.cleanClipboard !== false) document.addEventListener("copy", onCopy);
 
   let observer: WidthObserver | null = null;
-  const onFontsLoaded = (): void => remeasureAll();
+  /** Late font loads only matter if they change what canvas measures: a
+   * loadingdone fired moments after a commit that already measured those
+   * faces (the async path's own loads, a page-driven re-justify) would
+   * otherwise rewrite every paragraph for nothing. Probe advances are the
+   * arbiter — the same net that catches engines whose check() reports a
+   * still-loading face as available (WebKit with a loaded fallback in the
+   * font string; it also fires no loadingdone for CSS-initiated loads). */
+  const onFontsLoaded = (): void => {
+    if (probesChanged()) remeasureAll();
+  };
 
-  const ready = (async () => {
-    await document.fonts.ready;
-    if (destroyed) return;
-    await enhanceAll();
-    if (destroyed) return;
+  const attachObservers = (): void => {
     // Viewport tracking is independent of resize observation: corrections
     // park during the initial enhancement flush on ANY page (the measure/
     // park split in flushPatches gates on nearViewport), so both viewport
@@ -913,7 +961,90 @@ export function justify(
       }
     }
     document.fonts.addEventListener("loadingdone", onFontsLoaded);
-  })();
+  };
+
+  // The initial enhancement commits SYNCHRONOUSLY inside this justify()
+  // call, whatever the font situation: canvas measures the fonts that are
+  // RENDERING right now, so while webfonts are still loading the reader
+  // gets the FALLBACK rendering fully justified — every visible state is
+  // a justified one. Run from a render-blocking script, this puts
+  // justified text in the first frame the page ever paints. When the real
+  // faces settle, onFontsLoaded's probe guard re-measures only if their
+  // metrics actually differ, and that convergence rides the same repaint
+  // as the font swap. (Awaiting document.fonts.ready instead would forfeit
+  // all of this — it can only resolve after the layout work that triggers
+  // font loads, i.e. after the browser has painted native text. And
+  // document.fonts.check() is no arbiter either: WebKit answers true for
+  // a still-loading face whenever the font string carries an available
+  // fallback family. Probe advances are the only ground truth used here.)
+  const scannable = paragraphs.filter(scanParagraph);
+  // Per-font samples: every DISTINCT code point the content sets in that
+  // font, spaces included (they size the glue), plus a raw-text kerning
+  // slice. No injected seed — foreign-script filler would force unrelated
+  // subset faces to download — and no cap: discarding later code points
+  // would blind both the load() await and the change probe to exactly the
+  // scripts it dropped (CJK documents, aggressively partitioned
+  // unicode-range families). Distinctness bounds the sample; probeAdvance
+  // measures in chunks, so cost stays flat even for ideographic content.
+  const KERN_SAMPLE_MAX = 256;
+  const fontSample = new Map<string, { chars: Set<string>; kern: string }>();
+  for (const p of scannable) {
+    const scan = scanned.get(p);
+    if (scan === undefined) continue;
+    for (const spec of scan.specs) {
+      const font = ctxFontOf(spec);
+      if (!fontSample.has(font)) fontSample.set(font, { chars: new Set(), kern: "" });
+    }
+    for (const run of scan.runs) {
+      const s = fontSample.get(ctxFontOf(scan.specs[run.spec]!))!;
+      for (const ch of run.text) s.chars.add(ch);
+      if (s.kern.length < KERN_SAMPLE_MAX) {
+        s.kern += run.text.slice(0, KERN_SAMPLE_MAX - s.kern.length);
+      }
+      // Hyphenatable content renders a "-" the runs may not contain (the
+      // break glyph is measured per spec and painted via ::after) — a
+      // face serving U+002D must be awaited and watched too.
+      if (hyphenate !== undefined || run.text.includes("\u00AD")) s.chars.add("-");
+    }
+  }
+  // A font no run draws from (a base spec whose text all sits in inline
+  // children) still sizes the paragraph's word spaces — its space glyph
+  // is the one piece of it the layout consumes.
+  fontProbes = [...fontSample].map(([font, s]) => ({
+    font,
+    sample: s.chars.size === 0 ? " " : [...s.chars].join(""),
+    kernSample: s.kern,
+    baseline: 0,
+    kernBaseline: 0,
+  }));
+
+  let ready: Promise<void>;
+  try {
+    commit(scannable);
+    reprobeBaselines();
+    attachObservers();
+    // `ready` keeps its contract — it resolves only once the needed faces
+    // settled (loaded or failed) and the layout converged on them. The
+    // load() calls also TRIGGER fetches for gated faces nothing has
+    // rendered yet, and cover engines that never fire loadingdone for
+    // CSS-initiated loads (WebKit). A face that fails to load settles
+    // too: probes then match the fallback the commit measured, no work.
+    if (fontProbes.length === 0) {
+      fontsConverged = true;
+      ready = Promise.resolve();
+    } else {
+      ready = Promise.all(
+        fontProbes.map((f) => document.fonts.load(f.font, f.sample + f.kernSample).catch(() => {})),
+      ).then(() => {
+        fontsConverged = true;
+        if (!destroyed) onFontsLoaded();
+      });
+    }
+  } catch (error) {
+    // Unexpected controller-level failures surface through `ready`,
+    // never as a synchronous justify() throw.
+    ready = Promise.reject(error instanceof Error ? error : new Error(String(error)));
+  }
   // Fire-and-forget callers must not trigger unhandled-rejection noise;
   // callers who await `ready` still observe failures.
   ready.catch(() => {});
@@ -924,6 +1055,17 @@ export function justify(
     refresh: remeasureAll,
     destroy() {
       destroyed = true;
+      // Destroyed before the faces settled: the module-level measure
+      // caches hold fallback-font metrics that nothing would ever
+      // invalidate now (spec keys carry no font-load state, and this
+      // controller's listeners die here) — a later justify() over the
+      // same specs would silently reuse them against the loaded face.
+      // Sacrifice the caches instead; live controllers merely re-measure
+      // on their next layout.
+      if (!fontsConverged) {
+        clearMeasureCache();
+        clearCalibrationCache();
+      }
       pendingWidths.clear();
       pendingCorrections.clear();
       hiddenCorrections.clear();

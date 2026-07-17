@@ -131,6 +131,40 @@ function getCtx(): MeasureCtx {
   return sharedCtx;
 }
 
+/** Dedicated context for raw font-string probes (font readiness / change
+ * detection). Separate from the shared measuring context on purpose:
+ * probes set `ctx.font` from a bare shorthand, which would silently
+ * desync setFont's currentKey memoization and skip its caps/spacing
+ * resets. Element-backed for the same Firefox reason as getCtx. */
+let probeCtx: MeasureCtx | null = null;
+
+/**
+ * Canvas advance of `text` under a raw ctx-font shorthand, uncached.
+ * Measured in chunks so a pathologically large sample (thousands of
+ * distinct ideographs) never becomes one giant shaping call; the chunk
+ * edge steps over a high surrogate rather than splitting a pair.
+ */
+export function probeAdvance(font: string, text: string): number {
+  if (probeCtx === null) {
+    const canvas =
+      typeof document !== "undefined"
+        ? document.createElement("canvas")
+        : new OffscreenCanvas(0, 0);
+    probeCtx = (canvas as HTMLCanvasElement).getContext("2d") as unknown as MeasureCtx;
+    if (probeCtx === null) throw new Error("justif: no 2d canvas context");
+  }
+  probeCtx.font = font;
+  let width = 0;
+  for (let at = 0; at < text.length; ) {
+    let end = Math.min(text.length, at + 2048);
+    const code = text.charCodeAt(end - 1);
+    if (code >= 0xd800 && code <= 0xdbff && end < text.length) end++;
+    width += probeCtx.measureText(text.slice(at, end)).width;
+    at = end;
+  }
+  return width;
+}
+
 function setFont(ctx: MeasureCtx, spec: FontSpec): void {
   if (currentKey === spec.key && currentDirection === spec.direction) return;
   // Base direction for shaping; the default "inherit" would follow the
