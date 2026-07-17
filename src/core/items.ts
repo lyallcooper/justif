@@ -51,6 +51,35 @@ export function breakRp(items: readonly Item[], b: number): number {
 }
 
 /**
+ * The lastLineMinWidth floor's stretch solve: distributes the `need` px
+ * to the threshold over the ending's own pools — word glue plus the
+ * RECRUITED flexes, letterfit tracking and wdth expansion (`flexY`,
+ * their summed budgets). Body lines use those flexes invisibly on every
+ * line; an ending whose author asked for width may use them too. One
+ * pooled ratio, with the flexes saturating at their full budgets (ratio
+ * 1, like body-line tracking saturation) while glue may continue to
+ * `maxRatio` (maxEndingStretch). Returns the GLUE ratio that reaches the
+ * threshold — the flexes ride at min(ratio, min(maxRatio, 1)) — or null
+ * when the ending is unreachable and renders natural: all or nothing, a
+ * line both stretched and still short reads worse than a ragged one.
+ * Shared by the breaker's ending cost and the layout floor so pricing
+ * and rendering can never disagree about reachability.
+ */
+export function endingFloorRatio(
+  need: number,
+  glueY: number,
+  flexY: number,
+  maxRatio: number,
+): number | null {
+  if (need <= 0) return 0;
+  const flexCap = Math.min(maxRatio, 1);
+  if (!(need <= glueY * maxRatio + flexY * flexCap)) return null;
+  const pooled = need / (glueY + flexY);
+  if (pooled <= flexCap) return pooled;
+  return glueY > 0 ? (need - flexY * flexCap) / glueY : flexCap;
+}
+
+/**
  * Protrusion hang for `ch` at a line edge, in px: code/1000 × advance
  * (pdfTeX semantics), from the run's own hand-tuned table when one matched
  * its font, else the paragraph-wide table. Monospace runs inside another

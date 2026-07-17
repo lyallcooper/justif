@@ -362,6 +362,15 @@ export interface BreakResult {
   pass: 1 | 2 | 3;
   /** True per line that could not be fit within shrink limits. */
   overfull: boolean[];
+  /**
+   * The lastLineMinWidth threshold this solution was found under —
+   * normally the requested value, LOWER when the rectangle hunt had to
+   * descend (no arrangement reached the requested threshold within
+   * tolerance, so the breaker retreated to the fullest ending it could
+   * afford instead of collapsing to the option-off breaks). layoutLines
+   * applies the render floor at this value.
+   */
+  endingMinWidth?: number;
   /** Total demerits of the chosen path (diagnostics, oracle tests). */
   demerits: number;
 }

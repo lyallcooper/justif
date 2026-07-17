@@ -96,24 +96,35 @@ function bruteForce(
     }
     // Fil ending: render-aware lastLineMinWidth cost, mirroring the
     // breaker's STRICT (rectangle-hunt) pass 2 — the stretch the layout
-    // floor would apply (word glue only, tracking excluded), continuous
-    // and uncapped, accepted inside the render-reachability window or at
-    // tolerance-cheap shortness (no emergency stretch here).
+    // floor would apply over the ending's word glue PLUS the recruited
+    // flexes (letterfit tracking and wdth expansion, saturating at their
+    // budgets while glue continues to maxEndingStretch), continuous and
+    // uncapped, accepted when the floor can actually reach the threshold
+    // or at tolerance-cheap shortness (no emergency stretch here).
     let bad = 0;
     let filFit: Fitness = fitness(false, 0);
     const need = opts.lastLineMinWidth * W - L;
     if (need > 0) {
       // Clamped at 0, like the breaker: a glue-less ending's sums cancel
       // to a float epsilon of either sign.
-      const glueOnly = Math.max(0, cumY[b]! - cumY[start]! - (cumTrackY[b]! - cumTrackY[start]!));
-      const r = need / glueOnly;
+      const trackY = cumTrackY[b]! - cumTrackY[start]!;
+      const glueOnly = Math.max(0, cumY[b]! - cumY[start]! - trackY);
+      const flexY = trackY + (cumExpY[b]! - cumExpY[start]!);
+      const maxR = maxEndingStretch(opts.lastLineMinWidth);
+      const flexCap = Math.min(maxR, 1);
+      // endingFloorRatio, inlined — the oracle stays independent.
+      let rFloor: number | null = null;
+      if (need <= glueOnly * maxR + flexY * flexCap) {
+        const pooled = need / (glueOnly + flexY);
+        rFloor =
+          pooled <= flexCap ? pooled : glueOnly > 0 ? (need - flexY * flexCap) / glueOnly : flexCap;
+      }
+      const r = need / (glueOnly + flexY);
       bad = 100 * r * r * r;
-      const acceptBad = 100 * maxEndingStretch(opts.lastLineMinWidth) ** 3;
-      if (bad > Math.max(opts.tolerance, acceptBad)) return null;
+      if (rFloor === null && bad > opts.tolerance) return null;
       // Fitness from what renders, mirroring the breaker: reachable →
       // the real floor stretch; unreachable (renders natural) → Decent.
-      filFit =
-        r <= maxEndingStretch(opts.lastLineMinWidth) ? fitness(false, bad) : Fitness.Decent;
+      filFit = rFloor !== null ? fitness(false, 100 * rFloor ** 3) : Fitness.Decent;
     }
     return { bad, fit: filFit, fil: true };
   }
@@ -207,21 +218,31 @@ describe("breakParagraph vs brute-force oracle", () => {
     // Per-value counters: a shared cap once let minWidth 0.5 consume every
     // check and left minWidth 1 — the headline value — with zero coverage.
     for (const minWidth of [0.5, 1]) {
-      let checked = 0;
-      for (let width = 200; width <= 520; width += 40) {
-        const opts = { ...pass2Opts, lastLineMinWidth: minWidth };
-        const para = build(frogKing, { hyphenate: fakeHyphenator });
-        const oracle = bruteForce(para, width, opts);
-        if (oracle === null) continue; // no breaking passes tolerance at this width
-        const result = breakParagraph(para, width, opts);
-        // The oracle models the STRICT pass 2 only; compare when the
-        // breaker's strict hunt succeeded (pass 2 with these opts —
-        // pretolerance −1 skips both pass 1s, and a fallback result would
-        // be a different, laxer optimization).
-        expect(result.demerits, `minWidth ${minWidth} width ${width}`).toBeCloseTo(oracle, 6);
-        checked++;
+      // Tracking on exercises the recruited-flex pools in the ending
+      // cost (letterfit budgets enter the floor's reach); off keeps the
+      // classic glue-only coverage.
+      for (const tracking of [false, { max: 0.03, shrink: 0.03 }] as const) {
+        let checked = 0;
+        for (let width = 200; width <= 520; width += 40) {
+          const opts = { ...pass2Opts, lastLineMinWidth: minWidth };
+          const para = build(frogKing, { hyphenate: fakeHyphenator, tracking });
+          const oracle = bruteForce(para, width, opts);
+          if (oracle === null) continue; // no breaking passes tolerance at this width
+          const result = breakParagraph(para, width, opts);
+          // The oracle models the STRICT pass 2 only; compare when the
+          // breaker's strict hunt succeeded (pass 2 with these opts —
+          // pretolerance −1 skips both pass 1s, and a fallback result
+          // would be a different, laxer optimization).
+          expect(
+            result.demerits,
+            `minWidth ${minWidth} width ${width} tracking ${tracking !== false}`,
+          ).toBeCloseTo(oracle, 6);
+          checked++;
+        }
+        expect(checked, `minWidth ${minWidth} tracking ${tracking !== false}`).toBeGreaterThan(
+          0,
+        );
       }
-      expect(checked, `minWidth ${minWidth}`).toBeGreaterThan(0);
     }
   });
 
@@ -491,15 +512,23 @@ describe("lastLineMinWidth break pressure (short-last-line avoidance)", () => {
     const last = lines[lines.length - 1]!;
     let natural = 0;
     let glueY = 0;
+    let trackY = 0;
     for (let i = last.start; i < last.end; i++) {
       const it = para.items[i]!;
-      if (it.type === ItemType.Box) natural += it.width;
-      else if (it.type === ItemType.Glue) {
+      if (it.type === ItemType.Box) {
+        natural += it.width;
+        trackY += it.trackStretch;
+      } else if (it.type === ItemType.Glue) {
         natural += it.width;
         glueY += it.stretch;
       }
     }
-    return (natural + Math.max(0, last.glueRatio) * glueY) / width;
+    // Recruited letterfit counts toward the rendered ending (the floor
+    // may draw on it; trackRatio ≤ 0 outside the floor path).
+    return (
+      (natural + Math.max(0, last.glueRatio) * glueY + Math.max(0, last.trackRatio) * trackY) /
+      width
+    );
   };
 
 
@@ -522,6 +551,70 @@ describe("lastLineMinWidth break pressure (short-last-line avoidance)", () => {
       if (strong > def + 1e-9) strongerHelped++;
     }
     expect(strongerHelped).toBeGreaterThan(0);
+  });
+
+  it("raising the setting never shortens an ending (threshold descent)", () => {
+    // The cliff this guards: a paragraph that reaches 0.33's threshold
+    // but not 1's used to collapse to the OPTION-OFF breaks, so raising
+    // the slider GREW the short-last-line population (observed on the
+    // Alice corpus). The descent retreats to the fullest reachable
+    // absolute-sixteenth instead, making the rendered ending monotone in
+    // the setting.
+    const settings = [0, 0.25, 0.5, 0.75, 1];
+    let strictlyImproved = 0;
+    for (let width = 200; width <= 520; width += 16) {
+      let prev = -1;
+      for (const v of settings) {
+        const frac = renderedEnding(width, v, true);
+        expect(frac, `width ${width} v ${v}`).toBeGreaterThanOrEqual(prev - 1e-9);
+        if (prev >= 0 && frac > prev + 1e-9) strictlyImproved++;
+        prev = frac;
+      }
+    }
+    expect(strictlyImproved).toBeGreaterThan(0);
+  });
+
+  it("recruits letterfit tracking for rectangles spaces alone cannot finish", () => {
+    // The floor may draw on the ending's own letterfit (and wdth
+    // expansion, exercised end-to-end in the browser) when word spaces
+    // alone cannot reach the threshold — saturating at the ±3% budget,
+    // with all-or-nothing preserved: a recruited ending always renders
+    // AT the threshold, never stretched-and-still-short.
+    const tracking = { max: 0.03, shrink: 0.03 };
+    let recruited = 0;
+    for (let width = 200; width <= 520; width += 8) {
+      const buildOpts = {
+        ...defaultBuildOptions,
+        hyphenate: fakeHyphenator,
+        lastLineMinWidth: 1,
+        tracking,
+      };
+      const para = buildItems([{ text: frogKing, run: 0 }], [mockRun()], buildOpts, mockMeasure);
+      const result = breakParagraph(para, width, { ...defaultBreakOptions, lastLineMinWidth: 1 });
+      const lines = layoutLines(para, result, width, buildOpts);
+      const last = lines[lines.length - 1]!;
+      let natural = 0;
+      let glueY = 0;
+      let trackY = 0;
+      for (let i = last.start; i < last.end; i++) {
+        const it = para.items[i]!;
+        if (it.type === ItemType.Box) {
+          natural += it.width;
+          trackY += it.trackStretch;
+        } else if (it.type === ItemType.Glue) {
+          natural += it.width;
+          glueY += it.stretch;
+        }
+      }
+      if (last.trackRatio > 1e-9) {
+        const rendered =
+          natural + Math.max(0, last.glueRatio) * glueY + last.trackRatio * trackY;
+        expect(rendered, `width ${width}`).toBeCloseTo(width, 6);
+        // Count the cases the old glue-only floor could NOT complete.
+        if ((width - natural) / glueY > maxEndingStretch(1)) recruited++;
+      }
+    }
+    expect(recruited).toBeGreaterThan(0);
   });
 
   it("recruits hyphenation for the ending (pass 1 must not mask pass 2)", () => {
@@ -661,7 +754,7 @@ describe("lastLineMinWidth rendering floor (ending widens to the threshold)", ()
       }
     }
     const set = natural + Math.max(0, last.glueRatio) * Yg;
-    return { set, natural, Yg, last, pass: result.pass };
+    return { set, natural, Yg, last, pass: result.pass, achieved: result.endingMinWidth ?? minWidth };
   };
 
   it("widens endings below the threshold exactly to it, and leaves longer ones natural", () => {
@@ -669,7 +762,7 @@ describe("lastLineMinWidth rendering floor (ending widens to the threshold)", ()
     let untouched = 0;
     for (let width = 200; width <= 520; width += 20) {
       const v = 0.6;
-      const { set, natural, Yg, last } = setEnding(frogKing, width, v);
+      const { set, natural, Yg, last, achieved } = setEnding(frogKing, width, v);
       if (Yg === 0 || natural >= width) continue; // one-word / shrinking ending
       if (natural >= v * width) {
         expect(last.glueRatio).toBe(0); // already past the floor: natural
@@ -677,8 +770,14 @@ describe("lastLineMinWidth rendering floor (ending widens to the threshold)", ()
       } else if ((v * width - natural) / Yg <= maxEndingStretch(v)) {
         expect(set).toBeCloseTo(v * width, 6);
         widened++;
+      } else if (achieved < v) {
+        // Unreachable at the request: the hunt DESCENDED — the ending
+        // renders exactly at the achieved threshold (or stays natural
+        // when it already clears it). All-or-nothing holds per level.
+        if (natural < achieved * width) expect(set).toBeCloseTo(achieved * width, 6);
+        else expect(last.glueRatio).toBe(0);
       } else {
-        // Unreachable within the v-scaled bound: all or nothing.
+        // No rung reachable at all (bounded/off fallback): natural.
         expect(last.glueRatio).toBe(0);
       }
     }
@@ -689,15 +788,20 @@ describe("lastLineMinWidth rendering floor (ending widens to the threshold)", ()
   it("minWidth 1 sets rectangles whenever flush is within the underfull bound", () => {
     let flush = 0;
     for (let width = 200; width <= 520; width += 20) {
-      const { set, natural, Yg, last } = setEnding(frogKing, width, 1);
+      const { set, natural, Yg, last, achieved } = setEnding(frogKing, width, 1);
       if (Yg === 0 || natural >= width) continue;
       expect(last.overfull).toBe(false);
       const need = (width - natural) / Yg;
       if (need <= maxEndingStretch(1)) {
         expect(set).toBeCloseTo(width, 6);
         if (last.glueRatio > 0.01) flush++;
+      } else if (achieved < 1) {
+        // Flush unreachable: the hunt descended to the fullest
+        // affordable sixteenth and the ending renders exactly there
+        // (or stays natural when it already clears the rung).
+        if (natural < achieved * width) expect(set).toBeCloseTo(achieved * width, 6);
+        else expect(last.glueRatio).toBe(0);
       } else {
-        // Flush unreachable within the underfull bound: natural spacing.
         expect(last.glueRatio).toBe(0);
         expect(set).toBeCloseTo(natural, 6);
       }
@@ -716,8 +820,14 @@ describe("lastLineMinWidth rendering floor (ending widens to the threshold)", ()
         ...defaultBreakOptions,
         lastLineMinWidth: 0.9,
       });
+      // Strip the result's own threshold: this test probes the LAYOUT
+      // floor's willingness scaling in isolation, so the opts fallback
+      // must decide (a real result pins layout to its achieved value).
       const at = (v: number) =>
-        layoutLines(para, result, width, { ...defaultBuildOptions, lastLineMinWidth: v });
+        layoutLines(para, { ...result, endingMinWidth: undefined }, width, {
+          ...defaultBuildOptions,
+          lastLineMinWidth: v,
+        });
       const gentle = at(0.33)[at(0.33).length - 1]!.glueRatio;
       const strong = at(0.9)[at(0.9).length - 1]!.glueRatio;
       expect(gentle).toBeLessThanOrEqual(maxEndingStretch(0.33) + 1e-9);
