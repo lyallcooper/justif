@@ -162,8 +162,9 @@ export interface JustifyOptions {
    */
   observeResize?: boolean;
   /**
-   * Called after a paragraph's lines are (re)patched into the DOM — initial
-   * enhancement, resize re-layout, refresh. Use it to keep overlays or
+   * Called after a paragraph's lines are (re)patched into the DOM —
+   * initial enhancement, resize re-layout, refresh, and re-measures
+   * triggered by fonts finishing to load. Use it to keep overlays or
    * annotations positioned over the text in sync. NOT fired for the
    * deferred wrap-guarantee corrections: those only normalize trailing
    * layout-advance margins and never move a glyph.
@@ -366,7 +367,9 @@ export function justify(
     return buildItems(runTexts(scan), runsMetrics, opts, measureFor(specByKey));
   };
 
-  /** Phase 2: measurement + item building (fonts must be loaded by now). */
+  /** Phase 2: measurement + item building, against the fonts currently
+   * rendering (still-loading faces measure as their fallbacks and
+   * converge later). */
   const prepare = (p: HTMLElement): boolean => {
     if (states.get(p)?.enhanced) {
       scanned.delete(p); // another controller won the race; drop our scan
@@ -545,8 +548,10 @@ export function justify(
    * no awaits, so a caller who runs it inside one task (e.g. a
    * render-blocking script, or the same task that reveals a font) gets the
    * enhanced text and everything it depends on painted in a single frame.
-   * Every font face used by `scannable` must be loaded (or failed — canvas
-   * then measures the same fallback the DOM renders) before this runs.
+   * Measurement targets whatever fonts are RENDERING right now: a face
+   * that is still loading is measured as its fallback — consistently, in
+   * canvas and DOM alike — and the layout converges once it settles, via
+   * the probe guard in onFontsLoaded.
    */
   const commit = (scannable: readonly HTMLElement[]): void => {
     // Discover every string needed by variant-bearing runs using disposable
