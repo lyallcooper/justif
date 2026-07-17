@@ -47,7 +47,8 @@ find-in-page, and assistive technology keep normal paragraph semantics.
 
 ### Add one script
 
-Keep native justification in your CSS, then load the automatic entry:
+Keep native justification in your CSS, then load the automatic entry in
+your `<head>`:
 
 ```html
 <style>
@@ -58,6 +59,7 @@ Keep native justification in your CSS, then load the automatic entry:
 
 <script
   type="module"
+  blocking="render"
   src="https://cdn.jsdelivr.net/npm/justif@0.3.0/dist/auto.js"
 ></script>
 ```
@@ -81,6 +83,7 @@ To limit the automatic scan, add a selector to the script:
 ```html
 <script
   type="module"
+  blocking="render"
   data-justif-selector="article .prose p"
   src="https://cdn.jsdelivr.net/npm/justif@0.3.0/dist/auto.js"
 ></script>
@@ -88,6 +91,47 @@ To limit the automatic scan, add a selector to the script:
 
 Add `data-justif-debug` to log why a paragraph keeps native justification.
 With the JavaScript API, pass `onSkip` instead.
+
+The script exposes `window.justif` with `justify`, `unjustify`, its
+`controllers`, and a `booted` promise that settles once fonts have settled
+and every layout is final. Await `booted` before tearing down via
+`controllers` — on-demand language controllers can arrive late. To keep
+content hidden until it is justified,
+add the class `justif-pending` to `<html>` from an inline script and hide
+the content under it with `visibility: hidden` — justif removes the class
+as soon as the text is justified. Use `visibility`, not `display: none`:
+content without layout cannot be measured and keeps native justification.
+Always pair the class with your own `setTimeout` removal, so a failed
+script load cannot leave content hidden.
+
+### Performance tips
+
+Setting `blocking="render"` in the script tag ensures the page's first paint
+already shows justified text. Browsers without it, [currently
+Firefox](https://caniuse.com/wf-blocking-render), may briefly show native
+justification while the script loads. For languages whose hyphenation
+patterns load on demand, the first paint is justified without hyphens;
+hyphenation arrives with the pattern file.
+
+A few things make the loading experience smoother:
+
+- Self-host the script (copy the package's `dist/` folder, keeping `hyphenate/`
+  next to `auto.js`) and serve it with long-lived caching. It loads ahead of
+  first paint, so repeat visits should come from cache.
+- Standard web font best practices apply: preload them and match the fallback
+  font's metrics to the web font. Text in a font that is still loading is
+  justified in the fallback font and re-justifies when the font arrives, so
+  the earlier that happens, the better.
+- On very long pages, keep off-screen paragraphs out of layout work.
+  justif keeps their placeholder heights exact, so scrollbars and anchors
+  stay stable:
+
+  ```css
+  article p {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 8em;
+  }
+  ```
 
 ### Use the JavaScript API
 

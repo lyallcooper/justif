@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- No more re-layout flash on page load: load the drop-in script in
+  `<head>` with `blocking="render"` (Chrome, Edge, Safari) and the page's
+  first paint already shows justified text. For languages whose
+  hyphenation patterns load on demand, the first paint is justified
+  without hyphens; they arrive with the pattern file. Firefox may still
+  briefly show native justification while the script loads.
+- Text no longer waits for web fonts. A font that is still loading —
+  including subset (`unicode-range`) faces — shows its fallback justified
+  and re-justifies with the font swap. This also fixes Safari sometimes
+  keeping the fallback layout after a slow font arrived.
+  `controller.ready` (and the new `window.justif.booted`) resolve once
+  fonts have settled and the layout is final.
+- Pages that hide their text while justif loads can hide it under an
+  `html.justif-pending` rule: the drop-in script removes the class as
+  soon as the text is justified.
+- Fonts finishing to load no longer trigger a needless re-layout when
+  their rendering hasn't changed.
+
 ## 0.3.0 (2026-07-16)
 
 - `lastLineMinWidth` now defaults to `0.33` — paragraph endings shorter
