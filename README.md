@@ -93,21 +93,48 @@ Add `data-justif-debug` to log why a paragraph keeps native justification.
 With the JavaScript API, pass `onSkip` instead.
 
 The script exposes `window.justif` with `justify`, `unjustify`, its
-`controllers`, and a `booted` promise that settles once fonts have settled
-and every layout is final. Await `booted` before tearing down via
-`controllers` — on-demand language controllers can arrive late. To keep
-content hidden until it is justified,
-add the class `justif-pending` to `<html>` from an inline script and hide
-the content under it with `visibility: hidden` — justif removes the class
-as soon as the text is justified. Use `visibility`, not `display: none`:
-content without layout cannot be measured and keeps native justification.
-Always pair the class with your own `setTimeout` removal, so a failed
-script load cannot leave content hidden.
+`controllers`, and a `booted` promise — a completion barrier that settles
+once every language group has converged: fonts settled, on-demand
+hyphenation applied. Later width, font, or content changes can still
+re-layout text.
 
-### Performance tips
+To keep content hidden until it is justified, hide it under a
+`justif-pending` class on `<html>`; justif removes the class as soon as
+the text is justified. The class must be added by an inline script, with
+a timeout so a failed script load cannot leave the page hidden, and the
+hide must use `visibility` — content with `display: none` has no layout
+to measure and keeps native justification:
+
+```html
+<script>
+  document.documentElement.classList.add("justif-pending");
+  setTimeout(function () {
+    document.documentElement.classList.remove("justif-pending");
+  }, 2000);
+</script>
+<style>
+  html.justif-pending article p {
+    visibility: hidden;
+  }
+</style>
+<script
+  type="module"
+  blocking="render"
+  src="https://cdn.jsdelivr.net/npm/justif@0.3.0/dist/auto.js"
+></script>
+```
+
+If your Content-Security-Policy forbids inline scripts, give the snippet
+a nonce or hash — or skip the hide and rely on `blocking="render"` alone.
+
+### Loading and first paint
 
 Setting `blocking="render"` in the script tag ensures the page's first paint
-already shows justified text. Browsers without it, [currently
+already shows justified text. The cost is that first paint then waits for
+the script to be fetched and executed: a visual-stability versus
+first-paint tradeoff, not a free win. Omit the attribute when the fastest
+possible first paint matters more to you than a one-time re-justification.
+Browsers without it, [currently
 Firefox](https://caniuse.com/wf-blocking-render), may briefly show native
 justification while the script loads. For languages whose hyphenation
 patterns load on demand, the first paint is justified without hyphens;
@@ -153,16 +180,17 @@ const controller = justify(document.querySelectorAll("article p"), {
 
 await controller.ready;
 
-// Re-measure after the active font files change.
-controller.refresh();
-
 // Restore the original paragraph DOM and stop observing resizes.
 controller.destroy();
 ```
 
 Container width changes and newly loaded web fonts are handled automatically.
-If paragraph content or its computed text styles change, call `destroy()` and
-run `justify()` again so the paragraph can be rescanned.
+`refresh()` forces a re-measure for changes justif cannot observe — for
+example a container width change with `observeResize: false`. If paragraph
+content or its computed text styles change, call `destroy()` and
+run `justify()` again so the paragraph can be rescanned. With the drop-in
+script, await `window.justif.booted` before tearing down through
+`controllers`: on-demand language controllers can arrive late.
 
 `justify()` accepts one `Element` or any iterable of elements. The returned
 controller exposes `ready`, `refresh()`, `destroy()`, and the selected
@@ -220,7 +248,7 @@ These are the options most applications need:
 | `lastLineFit` | `0` | Carries the paragraph's average spacing adjustment into the last line; `1` applies it fully |
 | `observeResize` | `true` | Reflows managed paragraphs when their width changes |
 | `cleanClipboard` | `true` | Removes layout-only characters from copied text while preserving author nonbreaking spaces |
-| `onRelayout` | none | Callback that runs after initial layout, resize, or refresh |
+| `onRelayout` | none | Callback that runs after initial layout, resize, refresh, or a font finishing to load |
 | `onSkip` | none | Callback that reports why a paragraph kept native layout |
 
 The default `lastLineMinWidth` follows the traditional “at least a third”
@@ -305,11 +333,13 @@ to the originals, not the rendered clones.
 
 ## Browser requirements
 
-justif requires a modern browser with canvas text measurement,
-`ResizeObserver`, `IntersectionObserver`, and CSS logical margins. Importing
-the package during SSR is safe, but `justify()` only enhances content in a
-browser. The DOM-free layout engine is available from `justif/core` for custom
-renderers.
+justif requires a modern browser with canvas text measurement, the CSS
+Font Loading API (`document.fonts`), and CSS logical margins.
+`ResizeObserver` is needed for the default `observeResize: true`
+re-layout; `IntersectionObserver` is an optimization used when available.
+Importing the package during SSR is safe, but `justify()` only enhances
+content in a browser. The DOM-free layout engine is available from
+`justif/core` for custom renderers.
 
 ## License
 

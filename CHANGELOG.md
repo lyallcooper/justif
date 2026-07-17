@@ -13,7 +13,7 @@
   and re-justifies with the font swap. This also fixes Safari sometimes
   keeping the fallback layout after a slow font arrived.
   `controller.ready` (and the new `window.justif.booted`) resolve once
-  fonts have settled and the layout is final.
+  fonts have settled and the layout has converged on them.
 - Pages that hide their text while justif loads can hide it under an
   `html.justif-pending` rule: the drop-in script removes the class as
   soon as the text is justified.
