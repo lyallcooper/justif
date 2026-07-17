@@ -29,15 +29,17 @@ const TALE =
   "golden ball, and threw it up on high and caught it; and this ball was " +
   "her favorite plaything.";
 
-// Mirrors the demo's tech sample paragraph 1 (inline code in a second font).
+// Mirrors the demo's tech sample paragraph 1 (inline code in a second
+// font). MUST track demo/index.html's SAMPLES.tech verbatim — a drifted
+// copy compares two different texts and reports 0/n agreement with
+// nonsense spacing stats.
 const TECH_TEX =
-  "Browsers justify the way a hurried compositor might: fill each line " +
-  "until the next word no longer fits, then stretch that line’s gaps to " +
-  "cover the remainder. This is \\texttt{text-align: justify}—greedy and " +
-  "first-fit—and because no later line can repair an earlier decision, " +
-  "one long identifier such as \\texttt{getBoundingClientRect()} strands " +
-  "a gaping line behind it that \\texttt{text-wrap: pretty} and " +
-  "\\texttt{hyphens: auto} can only soften.";
+  "A browser normally breaks justified text one line at a time. It " +
+  "fills the available measure, commits to a break, and stretches the " +
+  "spaces that remain. This is fast and predictable, but a stubborn token " +
+  "such as \\texttt{getBoundingClientRect()} can be sent intact to the " +
+  "next line, leaving the preceding gaps to absorb the difference. In a " +
+  "narrow column, those gaps become the first thing the eye sees.";
 
 const SCENARIOS = [
   {
