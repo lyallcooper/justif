@@ -21,7 +21,19 @@
  *   data-justif-selector="article p"   candidate elements (default below)
  *
  * Controllers are exposed at `window.justif.controllers` (with `justify`
- * and `unjustify`) as an escape hatch for debugging or teardown.
+ * and `unjustify`) as an escape hatch for debugging or teardown, and
+ * `window.justif.booted` settles once every group's fonts settled and its
+ * layout converged. FULL teardown must await `booted` first: language
+ * groups whose patterns load on demand may not have pushed their final
+ * controller yet (tearing down an interim-committed group by any route —
+ * destroy(), unjustify(), a manual restore — cancels its pending
+ * upgrade, but a group that committed no interim has nothing to tear
+ * down until its pattern module lands). No-flash cooperation: a page may hide its text under
+ * an `html.justif-pending` CSS rule — added by an inline head snippet
+ * that MUST carry its own removal timeout, since a failed script load
+ * would otherwise leave the content hidden forever; the class is removed
+ * as soon as every group has committed (earlier than `booted`), so the
+ * revealed frame is already justified.
  */
 import { justify, unjustify } from "./index.js";
 import { hyphenateEnUS } from "./hyphenation/en-us.js";
@@ -40,6 +52,11 @@ declare global {
       justify: typeof justify;
       unjustify: typeof unjustify;
       controllers: ReturnType<typeof justify>[];
+      /** Settles once every group's fonts have settled and its layout
+       * converged. The text is justified (and any `justif-pending` hide
+       * class removed) earlier — as soon as every group has committed
+       * against the fonts rendering at that moment. */
+      booted: Promise<void>;
     };
   }
 }
@@ -89,7 +106,15 @@ async function hyphenatorFor(id: string | null): Promise<((w: string) => string[
   return tryImport("./hyphenate/" + id + ".js"); // undefined → spacing only
 }
 
-async function boot(): Promise<void> {
+/** Tier-2 no-flash reveal: pages may hide candidate text under an
+ * `html.justif-pending` rule (set by an inline head snippet that carries
+ * its own timeout escape); the class comes off once the initial
+ * enhancement has committed, so the reveal frame is already justified. */
+function revealPending(): void {
+  document.documentElement.classList.remove("justif-pending");
+}
+
+function boot(): Promise<void> {
   // document.currentScript is null inside module scripts, so configuration
   // is looked up by attribute on whichever script tag carries it.
   const selector =
@@ -116,12 +141,79 @@ async function boot(): Promise<void> {
   }
 
   const controllers: ReturnType<typeof justify>[] = [];
-  await Promise.all(
-    [...groups].map(async ([id, els]) => {
-      controllers.push(justify(els, { hyphenate: await hyphenatorFor(id), onSkip }));
-    }),
+  /** One entry per group: settles once the group has a justified layout
+   * in the DOM (an interim counts) — this is what lifts justif-pending. */
+  const committed: Promise<unknown>[] = [];
+  /** One entry per group: settles once the group's FINAL controller
+   * exists (pattern module loaded and applied, or not needed). */
+  const settled: Promise<unknown>[] = [];
+  for (const [id, els] of groups) {
+    if (id === null || id === "en-us") {
+      // Synchronous fast path — justify() commits before this call
+      // returns (against whatever fonts are rendering right now), so a
+      // render-blocking script tag puts justified text in the first
+      // frame the page ever paints. Only languages needing a
+      // pattern-module fetch go async.
+      const c = justify(els, { hyphenate: id === null ? undefined : hyphenateEnUS, onSkip });
+      controllers.push(c);
+      committed.push(Promise.resolve());
+      settled.push(Promise.resolve());
+    } else {
+      // Pattern modules arrive by dynamic import, which nothing — not
+      // even a render-blocking script tag — can hold first paint for.
+      // While the content is not yet VISIBLE (nothing painted, or hidden
+      // under justif-pending), commit an interim UNHYPHENATED layout now
+      // so what first appears is justified; the patterns re-justify on
+      // arrival (destroy + justify in one task — a single visible
+      // change, and only on lines that gain a hyphen). Once the content
+      // is visible the interim would ADD a visible change instead of
+      // removing one, so it is skipped.
+      const invisible =
+        performance.getEntriesByType("paint").length === 0 ||
+        document.documentElement.classList.contains("justif-pending");
+      const interim: ReturnType<typeof justify> | null = invisible
+        ? justify(els, { onSkip })
+        : null;
+      if (interim !== null) {
+        controllers.push(interim);
+        committed.push(Promise.resolve());
+      }
+      const final = hyphenatorFor(id).then((hyphenate) => {
+        // Torn down while the patterns were in flight — by ANY route:
+        // controller.destroy(), unjustify(), a manual restore. The
+        // elements carry no enhancement, so re-enhancing would undo the
+        // consumer's teardown. (An interim that enhanced nothing because
+        // every paragraph bailed lands here too; the fresh controller
+        // would only bail identically.)
+        if (interim !== null && !els.some((el) => el.hasAttribute("data-justif"))) return;
+        // Unbundled language: the interim (spacing-only) IS the final
+        // rendering — replacing it would rewrite identical output.
+        if (hyphenate === undefined && interim !== null) return;
+        if (interim !== null) {
+          const at = controllers.indexOf(interim);
+          if (at >= 0) controllers.splice(at, 1);
+          interim.destroy();
+        }
+        controllers.push(justify(els, { hyphenate, onSkip }));
+      });
+      settled.push(final);
+      if (!invisible) committed.push(final);
+    }
+  }
+  // Reveal as soon as every group has a justified layout on the page —
+  // what first becomes visible is already justified even while pattern
+  // modules are still in flight. allSettled: one group's failure must
+  // neither block the reveal nor hide the others' committed text. On the
+  // synchronous path these promises are already settled, so the reveal
+  // lands in this same task's microtask checkpoint — still ahead of the
+  // next paint. `booted` settles later: final controllers in place,
+  // fonts settled, layouts converged.
+  void Promise.allSettled(committed).then(revealPending);
+  const booted = Promise.allSettled(settled).then(() =>
+    Promise.allSettled(controllers.map((c) => c.ready)).then(() => undefined),
   );
-  window.justif = { justify, unjustify, controllers };
+  window.justif = { justify, unjustify, controllers, booted };
+  return booted;
 }
 
 if (document.readyState === "loading") {

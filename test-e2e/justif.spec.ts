@@ -1127,11 +1127,13 @@ test("enhances paragraphs inside shadow DOM (rules reach the shadow root)", asyn
 test("auto drop-in: enhances justified text only, language-gated hyphenation", async ({ page }) => {
   const leftBefore = "This paragraph is left aligned";
   await page.goto("/test-e2e/fixture-auto.html");
-  // The drop-in exposes its controllers; wait for their ready promises.
+  // Await `booted`: it settles only after every language group — including
+  // controllers pushed later by dynamic pattern-module imports — has
+  // committed and converged. A snapshot of `controllers` taken when
+  // window.justif appears would miss the dynamic groups.
   await page.waitForFunction(() => (window as Window & { justif?: unknown }).justif !== undefined);
   await page.evaluate(async () => {
-    const g = window as Window & { justif?: { controllers: Array<{ ready: Promise<void> }> } };
-    await Promise.all(g.justif!.controllers.map((c) => c.ready));
+    await (window as Window & { justif?: { booted: Promise<void> } }).justif!.booted;
   });
   // Both computed-justify paragraphs enhanced; the left-aligned one untouched.
   expect(await page.locator("#en-just .justif-seg").count()).toBeGreaterThan(0);
@@ -1157,6 +1159,248 @@ test("auto drop-in: enhances justified text only, language-gated hyphenation", a
     return m.hyphenateDe("silbentrennung").join("-");
   });
   expect(isGerman).toBe("sil-ben-tren-nung");
+});
+
+test("auto drop-in: booted awaits delayed pattern modules", async ({ page }) => {
+  // The German patterns arrive by dynamic import; delay them well past the
+  // initial commit. `booted` must not settle before that group's final
+  // controller exists and has hyphenated its paragraph.
+  await page.route("**/dist/hyphenate/de.js", async (route) => {
+    await new Promise((r) => setTimeout(r, 500));
+    await route.continue();
+  });
+  await page.goto("/test-e2e/fixture-auto.html");
+  await page.waitForFunction(() => (window as Window & { justif?: unknown }).justif !== undefined);
+  const controllers = await page.evaluate(async () => {
+    const g = window as Window & { justif?: { booted: Promise<void>; controllers: unknown[] } };
+    await g.justif!.booted;
+    return g.justif!.controllers.length;
+  });
+  expect(controllers).toBe(3); // en-US, de, and the unbundled-language group
+  expect(await page.locator("#de-just .justif-hyphen").count()).toBeGreaterThan(0);
+});
+
+test("unicode-range subset fonts are awaited and converge without refresh()", async ({ page }) => {
+  // A Greek-only face: font readiness must be judged with the content's own
+  // characters — document.fonts.load()'s default U+0020 never matches this
+  // face, and a fixed Latin probe cannot see its arrival. The paragraph
+  // leads with 300+ DISTINCT Latin code points so any sample cap that
+  // discards later content would drop the Greek and regress silently.
+  await page.route("**/Junicode-Roman.ttf", async (route) => {
+    await new Promise((r) => setTimeout(r, 600));
+    await route.continue();
+  });
+  const r = await page.evaluate(async () => {
+    const style = document.createElement("style");
+    style.textContent = `@font-face {
+      font-family: "GreekSubset";
+      src: url("/demo/fonts/Junicode-Roman.ttf") format("truetype");
+      unicode-range: U+0370-03FF, U+1F00-1FFF;
+    }`;
+    document.head.append(style);
+    const uniques: string[] = [];
+    for (const [a, b] of [
+      [0x21, 0x7e],
+      [0xa1, 0x17e],
+    ] as const) {
+      for (let c = a; c <= b; c++) uniques.push(String.fromCodePoint(c));
+    }
+    const latinNoise = uniques.join("").replace(/(.{8})/g, "$1 ");
+    const greek =
+      "Η στοίχιση του κειμένου απαιτεί ακριβείς μετρήσεις των γλυφών, και οι μετρήσεις πρέπει να γίνονται στη γραμματοσειρά που πράγματι αποδίδεται στην οθόνη, αλλιώς οι γραμμές δεν γεμίζουν το πλάτος της στήλης.";
+    const p = document.createElement("p");
+    p.style.cssText = "width: 320px; font: 18px/1.5 GreekSubset, serif; text-align: justify;";
+    p.textContent = latinNoise + " " + greek;
+    document.getElementById("host")!.append(p);
+    // Independent witness that the face actually changed Greek metrics.
+    const probe = document.createElement("span");
+    probe.style.cssText =
+      "position:absolute;visibility:hidden;white-space:pre;font:18px GreekSubset, serif;";
+    probe.textContent = "γραμματοσειρά μετρήσεις";
+    document.body.append(probe);
+    const widthBefore = probe.getBoundingClientRect().width;
+
+    let relayouts = 0;
+    const t0 = performance.now();
+    const ctl = window.__justif.justify(p, {
+      protrusion: false,
+      expansion: false,
+      onRelayout: () => relayouts++,
+    });
+    const relayoutsAtCommit = relayouts;
+    await ctl.ready;
+    const readyAfter = performance.now() - t0;
+    const widthAfter = probe.getBoundingClientRect().width;
+    const loaded = [...document.fonts].some(
+      (f) => f.family.replace(/["']/g, "") === "GreekSubset" && f.status === "loaded",
+    );
+    const g = window.__justifLines(p);
+    const maxDev = Math.max(
+      ...g.lines.slice(0, -1).map((l) => Math.abs(l.right - g.contentRight)),
+    );
+    ctl.destroy();
+    p.remove();
+    probe.remove();
+    style.remove();
+    return {
+      readyAfter,
+      loaded,
+      relayoutsAtCommit,
+      relayouts,
+      fontDelta: Math.abs(widthAfter - widthBefore),
+      lines: g.lines.length,
+      maxDev,
+    };
+  });
+  expect(r.loaded).toBe(true);
+  expect(r.readyAfter).toBeGreaterThan(400); // ready awaited the subset face, not just U+0020
+  expect(r.relayoutsAtCommit).toBeGreaterThan(0); // interim committed synchronously
+  expect(r.fontDelta).toBeGreaterThan(1); // the face genuinely changed Greek metrics…
+  expect(r.relayouts).toBeGreaterThan(r.relayoutsAtCommit); // …and that triggered a re-measure
+  expect(r.lines).toBeGreaterThan(2);
+  expect(r.maxDev).toBeLessThan(1); // converged to the real font without refresh()
+});
+
+test("auto drop-in: justif-pending lifts at the interim commit, not at pattern arrival", async ({ page }) => {
+  await page.route("**/dist/hyphenate/de.js", async (route) => {
+    await new Promise((r) => setTimeout(r, 700));
+    await route.continue();
+  });
+  await page.addInitScript(() => {
+    // Init scripts can run before <html> exists — arm once it does.
+    const arm = (): void => {
+      document.documentElement.classList.add("justif-pending");
+      // The DOCUMENTED hide pattern: visibility (never display:none,
+      // which would make paragraphs unmeasurable and bail them).
+      const style = document.createElement("style");
+      style.textContent = "html.justif-pending p { visibility: hidden; }";
+      document.documentElement.append(style);
+      const w = window as unknown as {
+        __revealAt: number | null;
+        __revealEnhanced?: boolean;
+        __revealHyphens?: number;
+      };
+      w.__revealAt = null;
+      new MutationObserver(() => {
+        if (w.__revealAt === null && !document.documentElement.classList.contains("justif-pending")) {
+          // Snapshot AT the reveal — sampling later from the test would
+          // race the (deliberately slow) pattern module's arrival.
+          w.__revealAt = performance.now();
+          w.__revealEnhanced = document.getElementById("de-just")!.hasAttribute("data-justif");
+          w.__revealHyphens = document.querySelectorAll("#de-just .justif-hyphen").length;
+        }
+      }).observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+    };
+    if (document.documentElement !== null) arm();
+    else {
+      new MutationObserver((_, obs) => {
+        if (document.documentElement !== null) {
+          obs.disconnect();
+          arm();
+        }
+      }).observe(document, { childList: true });
+    }
+  });
+  await page.goto("/test-e2e/fixture-auto.html");
+  await page.waitForFunction(
+    () => (window as Window & { __revealAt?: number | null }).__revealAt != null,
+  );
+  const r = await page.evaluate(() => {
+    const w = window as unknown as {
+      __revealAt: number;
+      __revealEnhanced: boolean;
+      __revealHyphens: number;
+    };
+    return { revealAt: w.__revealAt, deEnhanced: w.__revealEnhanced, deHyphens: w.__revealHyphens };
+  });
+  // Ordering is proven by the same-tick snapshot: at the reveal the
+  // paragraph was already enhanced but not yet hyphenated, i.e. the
+  // reveal preceded pattern arrival. (No wall-clock bound — reveal time
+  // and the route delay run on unrelated clocks, which flakes on slow
+  // runners.)
+  expect(r.revealAt).toBeGreaterThan(0);
+  expect(r.deEnhanced).toBe(true); // interim already justified at reveal…
+  expect(r.deHyphens).toBe(0); // …hyphens arrive with the patterns
+  await page.evaluate(async () => {
+    await (window as Window & { justif?: { booted: Promise<void> } }).justif!.booted;
+  });
+  expect(await page.locator("#de-just .justif-hyphen").count()).toBeGreaterThan(0);
+});
+
+test("auto drop-in: teardown before pattern arrival stays torn down", async ({ page }) => {
+  await page.route("**/dist/hyphenate/de.js", async (route) => {
+    await new Promise((r) => setTimeout(r, 400));
+    await route.continue();
+  });
+  // justif-pending guarantees the de group commits an interim controller
+  // that teardown can reach before its pattern module lands.
+  await page.addInitScript(() => {
+    const arm = (): void => document.documentElement.classList.add("justif-pending");
+    if (document.documentElement !== null) arm();
+    else {
+      new MutationObserver((_, obs) => {
+        if (document.documentElement !== null) {
+          obs.disconnect();
+          arm();
+        }
+      }).observe(document, { childList: true });
+    }
+  });
+  await page.goto("/test-e2e/fixture-auto.html");
+  await page.waitForFunction(() => (window as Window & { justif?: unknown }).justif !== undefined);
+  // Tear down through unjustify() — the public route that bypasses any
+  // controller-level hook, so cancellation must key off element state.
+  await page.evaluate(() => {
+    const g = window as Window & { justif?: { unjustify: (t: Iterable<Element>) => void } };
+    g.justif!.unjustify(document.querySelectorAll("p"));
+  });
+  await page.evaluate(async () => {
+    await (window as Window & { justif?: { booted: Promise<void> } }).justif!.booted;
+  });
+  expect(await page.locator("#de-just .justif-seg").count()).toBe(0);
+  expect(
+    await page.evaluate(() => document.getElementById("de-just")!.hasAttribute("data-justif")),
+  ).toBe(false);
+});
+
+test("destroy() before font convergence does not poison later controllers", async ({ page }) => {
+  // A controller destroyed while its face is still loading must not leave
+  // fallback-font metrics in the module-level measure caches: a later
+  // justify() over the same specs would reuse them against the loaded
+  // face and lay out permanently mis-fit lines.
+  await page.route("**/Junicode-Roman.ttf", async (route) => {
+    await new Promise((r) => setTimeout(r, 500));
+    await route.continue();
+  });
+  const r = await page.evaluate(async () => {
+    const style = document.createElement("style");
+    style.textContent = `@font-face {
+      font-family: "GreekLate";
+      src: url("/demo/fonts/Junicode-Roman.ttf") format("truetype");
+      unicode-range: U+0370-03FF, U+1F00-1FFF;
+    }`;
+    document.head.append(style);
+    const p = document.createElement("p");
+    p.style.cssText = "width: 320px; font: 18px/1.5 GreekLate, serif; text-align: justify;";
+    p.textContent =
+      "Η στοίχιση του κειμένου απαιτεί ακριβείς μετρήσεις των γλυφών, και οι μετρήσεις πρέπει να γίνονται στη γραμματοσειρά που πράγματι αποδίδεται στην οθόνη, αλλιώς οι γραμμές δεν γεμίζουν το πλάτος της στήλης.";
+    document.getElementById("host")!.append(p);
+    const first = window.__justif.justify(p, { protrusion: false, expansion: false });
+    first.destroy(); // face still in flight
+    await document.fonts.load('18px "GreekLate"', "γλ");
+    const ctl = window.__justif.justify(p, { protrusion: false, expansion: false });
+    await ctl.ready;
+    const g = window.__justifLines(p);
+    const maxDev = Math.max(
+      ...g.lines.slice(0, -1).map((l) => Math.abs(l.right - g.contentRight)),
+    );
+    ctl.destroy();
+    p.remove();
+    style.remove();
+    return { maxDev, lines: g.lines.length };
+  });
+  expect(r.lines).toBeGreaterThan(2);
+  expect(r.maxDev).toBeLessThan(1); // measured with the loaded face, not stale cache
 });
 
 test("destroy() restores the original DOM byte-identically", async ({ page }) => {
