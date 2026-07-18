@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.1 (2026-07-18)
 
 - Naturally one-line elements now stay on native layout instead of having the
   default short-ending rule widen labels or other paragraph-shaped UI. They
