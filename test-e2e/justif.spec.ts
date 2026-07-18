@@ -1046,6 +1046,121 @@ test("cleanClipboard: false leaves copies untouched", async ({ page }) => {
   expect(r.prevented).toBe(false);
 });
 
+test("text autosizing is disabled before scanning and author styles are restored", async ({
+  page,
+}) => {
+  const r = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    host.replaceChildren();
+
+    const p = document.createElement("p");
+    p.style.cssText =
+      "width:340px;font:17px/1.45 Georgia,serif;text-align:justify;color:rgb(1,2,3)";
+    p.style.setProperty("-webkit-text-size-adjust", "145%", "important");
+    p.style.setProperty("text-size-adjust", "145%", "important");
+    p.innerHTML =
+      "In <strong>olden times</strong> <em>wishing still helped one</em>, there lived a king whose daughters " +
+      "were all beautiful, and the youngest astonished the sun whenever it shone in her face.";
+    const strong = p.querySelector<HTMLElement>("strong")!;
+    const em = p.querySelector<HTMLElement>("em")!;
+    em.style.color = "rgb(4, 5, 6)";
+    em.style.setProperty("-webkit-text-size-adjust", "160%", "important");
+    em.style.setProperty("text-size-adjust", "160%", "important");
+
+    const skipped = document.createElement("p");
+    skipped.style.cssText =
+      "width:340px;font:17px/1.45 Georgia,serif;text-align:justify;text-transform:uppercase";
+    skipped.textContent = "This unsupported paragraph must remain byte-identical.";
+    host.append(p, skipped);
+
+    const original = {
+      pStyle: p.getAttribute("style"),
+      strongStyle: strong.getAttribute("style"),
+      emStyle: em.getAttribute("style"),
+      markup: p.innerHTML,
+      skippedStyle: skipped.getAttribute("style"),
+    };
+    const supportedProperties = ["text-size-adjust", "-webkit-text-size-adjust"].filter(
+      (property) => CSS.supports(property, "100%"),
+    );
+    const adjustments = (el: HTMLElement) =>
+      supportedProperties.map((property) => ({
+        property,
+        value: el.style.getPropertyValue(property),
+        priority: el.style.getPropertyPriority(property),
+      }));
+
+    let pAtFirstRead: ReturnType<typeof adjustments> | null = null;
+    let strongAtFirstRead: ReturnType<typeof adjustments> | null = null;
+    let emAtFirstRead: ReturnType<typeof adjustments> | null = null;
+    const nativeGetComputedStyle = window.getComputedStyle;
+    window.getComputedStyle = ((element: Element, pseudo?: string | null) => {
+      if (element === p && pAtFirstRead === null) pAtFirstRead = adjustments(p);
+      if (element === strong && strongAtFirstRead === null) {
+        strongAtFirstRead = adjustments(strong);
+      }
+      if (element === em && emAtFirstRead === null) emAtFirstRead = adjustments(em);
+      return nativeGetComputedStyle.call(window, element, pseudo);
+    }) as typeof window.getComputedStyle;
+
+    let skippedStyleSeenByCallback: string | null = null;
+    let controller: ReturnType<typeof window.__justif.justify>;
+    try {
+      controller = window.__justif.justify([p, skipped], {
+        protrusion: false,
+        expansion: false,
+        onSkip(el: HTMLElement) {
+          if (el === skipped) skippedStyleSeenByCallback = el.getAttribute("style");
+        },
+      });
+    } finally {
+      window.getComputedStyle = nativeGetComputedStyle;
+    }
+    await controller.ready;
+
+    const rendered = {
+      pAdjustments: adjustments(p),
+      segmentAdjustments: [...p.querySelectorAll<HTMLElement>(".justif-seg")].map(adjustments),
+      strongStyle: p.querySelector("strong")?.getAttribute("style") ?? null,
+      skippedStyle: skipped.getAttribute("style"),
+    };
+    controller.destroy();
+
+    return {
+      supportedProperties,
+      pAtFirstRead,
+      strongAtFirstRead,
+      emAtFirstRead,
+      skippedStyleSeenByCallback,
+      rendered,
+      restored: {
+        pStyle: p.getAttribute("style"),
+        strongStyle: strong.getAttribute("style"),
+        emStyle: em.getAttribute("style"),
+        markup: p.innerHTML,
+        skippedStyle: skipped.getAttribute("style"),
+      },
+      original,
+    };
+  });
+
+  const pinned = r.supportedProperties.map((property) => ({
+    property,
+    value: "100%",
+    priority: "important",
+  }));
+  expect(r.pAtFirstRead).toEqual(pinned);
+  expect(r.strongAtFirstRead).toEqual(pinned);
+  expect(r.emAtFirstRead).toEqual(pinned);
+  expect(r.skippedStyleSeenByCallback).toBe(r.original.skippedStyle);
+  expect(r.rendered.pAdjustments).toEqual(pinned);
+  expect(r.rendered.segmentAdjustments.length).toBeGreaterThan(0);
+  for (const adjustments of r.rendered.segmentAdjustments) expect(adjustments).toEqual(pinned);
+  expect(r.rendered.strongStyle).toBeNull();
+  expect(r.rendered.skippedStyle).toBe(r.original.skippedStyle);
+  expect(r.restored).toEqual(r.original);
+});
+
 test("enhances under a strict Content-Security-Policy (no inline styles)", async ({ page }) => {
   // fixture-csp.html serves style-src 'self': an injected <style> element
   // is blocked, so the segment rules must arrive via adoptedStyleSheets.
@@ -1061,16 +1176,31 @@ test("enhances under a strict Content-Security-Policy (no inline styles)", async
     const c = window.__justif.justify(document.querySelectorAll("#host p"));
     await c.ready;
     const seg = document.querySelector<HTMLElement>("#host .justif-seg");
+    const paragraph = document.querySelector<HTMLElement>("#host [data-justif]");
+    const paragraphStyle = paragraph === null ? null : getComputedStyle(paragraph);
     return {
       segs: document.querySelectorAll("#host .justif-seg").length,
       // The load-bearing assertion: the nowrap rule genuinely applies —
       // without it the line model silently collapses.
       whiteSpace: seg === null ? null : getComputedStyle(seg).whiteSpace,
+      // Mobile Safari's text autosizing runs after justif has measured and
+      // can independently boost the nowrap fragments. Active output opts
+      // out without changing the host page's text-sizing policy.
+      supportsTextSizeAdjust:
+        CSS.supports("text-size-adjust", "100%") ||
+        CSS.supports("-webkit-text-size-adjust", "100%"),
+      textSizeAdjust: paragraphStyle === null
+        ? []
+        : [
+            paragraphStyle.getPropertyValue("text-size-adjust"),
+            paragraphStyle.getPropertyValue("-webkit-text-size-adjust"),
+          ],
       adopted: document.adoptedStyleSheets.length,
     };
   });
   expect(r.segs).toBeGreaterThan(0);
   expect(r.whiteSpace).toBe("nowrap");
+  if (r.supportsTextSizeAdjust) expect(r.textSizeAdjust).toContain("100%");
   expect(r.adopted).toBeGreaterThan(0);
   expect(cspViolations).toEqual([]);
 });

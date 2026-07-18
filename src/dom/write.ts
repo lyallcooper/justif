@@ -95,6 +95,19 @@ const SHEET_TEXT =
   '.justif-hyphen::after{content:"-"}' +
   '@supports (content:"-" / ""){.justif-hyphen::after{content:"-" / ""}}';
 
+/**
+ * Pin rendered text to the CSS font size. iOS Safari's automatic text
+ * autosizing is a post-CSS multiplier that can change after measurement and
+ * can differ between the nowrap fragments that make up adjacent lines.
+ * Inline !important is intentional: these metrics are as load-bearing as the
+ * emitted px spacing, and neither a more-specific host rule nor a declaration
+ * on an intervening cloned element may change them after measurement.
+ */
+export function disableTextAutosizing(el: HTMLElement): void {
+  el.style.setProperty("-webkit-text-size-adjust", "100%", "important");
+  el.style.setProperty("text-size-adjust", "100%", "important");
+}
+
 /** Roots (documents and shadow roots) that already carry the sheet. */
 const styledRoots = new WeakSet<Document | ShadowRoot>();
 
@@ -207,6 +220,7 @@ export function writeParagraph(
     if (segment.joint === "hyphen") {
       const hyphen = doc.createElement("span");
       hyphen.className = "justif-hyphen";
+      disableTextAutosizing(hyphen);
       // The line's trailing protrusion margin must sit AFTER the hyphen —
       // on the preceding text segment it would pull the hyphen glyph back
       // into the word it belongs to. (RTL paragraphs never hyphenate, so
@@ -235,6 +249,7 @@ export function writeParagraph(
     const container = containerFor(segment.ancestors);
     const el = doc.createElement("span");
     el.className = "justif-seg";
+    disableTextAutosizing(el);
     // Always written (even "0px"): an inherited word-spacing from ancestor
     // CSS must not leak into a segment whose computed adjustment is zero.
     el.style.wordSpacing = px(segment.wordSpacingPx);

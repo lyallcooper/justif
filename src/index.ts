@@ -42,6 +42,7 @@ import { contentWidthOf, type ParagraphScan, readParagraph } from "./dom/read.js
 import { buildRenderSegments, buildRunMetrics, measureFor, runTexts } from "./dom/segments.js";
 import {
   applyCorrections,
+  disableTextAutosizing,
   measureCorrections,
   type PendingParagraph,
   writeParagraph,
@@ -220,6 +221,19 @@ interface ParaState {
  * state carries the owner of the controller that created it. */
 const states = new WeakMap<HTMLElement, ParaState>();
 
+/** Restore an inline style attribute exactly after CSSOM writes. Chromium can
+ * rematerialize `style=""` when an element whose CSSStyleDeclaration handled
+ * text-size-adjust is later cloned, even after removeAttribute(). Resetting
+ * the attribute first severs that stale declaration before removal. */
+function restoreStyleAttribute(el: HTMLElement, style: string | null): void {
+  if (style === null) {
+    el.setAttribute("style", "");
+    el.removeAttribute("style");
+  } else {
+    el.setAttribute("style", style);
+  }
+}
+
 const DEFAULT_EXPANSION: ExpansionOptions = { max: 0.02, shrink: 0.02, step: 0.005 };
 const DEFAULT_SPACING = { stretch: 0.5, shrink: 1 / 3, pull: 0.7, boundaryShrink: 0 };
 /** Bringhurst's tolerance: letterspacing in justified text may vary ±3%. */
@@ -319,8 +333,41 @@ export function justify(
     boundaryShrink: spacing.boundaryShrink ?? defaultBuildOptions.boundaryShrink,
   };
 
-  /** Phase 1: DOM reads only — no measurement, no font dependence. */
+  /**
+   * Temporarily suppress text autosizing on every source run before the scan.
+   * WebKit exposes an already-active autosizing multiplier through computed
+   * font sizes; applying the permanent opt-out only when output was written
+   * would therefore measure boosted text and render it unboosted. Do all
+   * writes up front so the first computed-style read pays one batched style
+   * recalculation, then restore every style attribute byte-for-byte before
+   * measurement or user code can observe the temporary declarations.
+   */
+  const disableTextAutosizingForScan = (): (() => void) => {
+    const saved: Array<{ el: HTMLElement; style: string | null }> = [];
+    const seen = new WeakSet<HTMLElement>();
+    const disable = (el: HTMLElement): void => {
+      if (seen.has(el)) return;
+      seen.add(el);
+      saved.push({ el, style: el.getAttribute("style") });
+      disableTextAutosizing(el);
+    };
+    for (const p of paragraphs) {
+      if (states.get(p)?.enhanced) continue;
+      disable(p);
+      for (const el of p.querySelectorAll("*")) {
+        if (el instanceof HTMLElement) disable(el);
+      }
+    }
+    return () => {
+      for (const { el, style } of saved) {
+        restoreStyleAttribute(el, style);
+      }
+    };
+  };
+
+  /** Phase 1: normalized computed-style and DOM reads; no font measurement. */
   const scanned = new Map<HTMLElement, ParagraphScan>();
+  const pendingSkips: Array<{ p: HTMLElement; reason: string }> = [];
   const scanParagraph = (p: HTMLElement): boolean => {
     if (states.get(p)?.enhanced) return true; // idempotent (possibly foreign)
     if (bailed.has(p)) return false;
@@ -346,7 +393,9 @@ export function justify(
     }
     if (typeof scan === "string") {
       bailed.add(p);
-      emitSkip(p, scan);
+      // The batch's temporary autosizing declarations are still present;
+      // notify user code only after the finally block has restored them.
+      pendingSkips.push({ p, reason: scan });
       return false;
     }
     scanned.set(p, scan);
@@ -475,6 +524,7 @@ export function justify(
       state.original.append(...p.childNodes);
       state.enhanced = true;
       p.setAttribute("data-justif", "");
+      disableTextAutosizing(p);
       // Neutralize the author's text-align: justify (the browser must not
       // re-justify our exactly-filled lines) — toward the line-START edge,
       // which is the right edge in an RTL paragraph.
@@ -982,7 +1032,14 @@ export function justify(
   // document.fonts.check() is no arbiter either: WebKit answers true for
   // a still-loading face whenever the font string carries an available
   // fallback family. Probe advances are the only ground truth used here.)
-  const scannable = paragraphs.filter(scanParagraph);
+  const restoreScanStyles = disableTextAutosizingForScan();
+  let scannable: HTMLElement[];
+  try {
+    scannable = paragraphs.filter(scanParagraph);
+  } finally {
+    restoreScanStyles();
+  }
+  for (const { p, reason } of pendingSkips) emitSkip(p, reason);
   // Per-font samples: every DISTINCT code point the content sets in that
   // font, spaces included (they size the glue), plus a raw-text kerning
   // slice. No injected seed — foreign-script filler would force unrelated
@@ -1099,8 +1156,7 @@ function restore(p: HTMLElement): void {
   const state = states.get(p);
   if (state === undefined || !state.enhanced) return;
   p.replaceChildren(state.original);
-  if (state.originalStyleAttr === null) p.removeAttribute("style");
-  else p.setAttribute("style", state.originalStyleAttr);
+  restoreStyleAttribute(p, state.originalStyleAttr);
   p.removeAttribute("data-justif");
   states.delete(p);
 }

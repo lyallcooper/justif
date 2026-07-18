@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Fixed iOS Safari text autosizing some justified line fragments to different
+  font sizes after rotation. Enhanced paragraphs now opt out of automatic text
+  inflation before measurement and while rendered. On pages that rely on
+  Safari's inflation, enhanced prose may therefore render smaller than nearby
+  unenhanced text.
+
 ## 0.4.0 (2026-07-17)
 
 - No more re-layout flash on page load: load the drop-in script in

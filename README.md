@@ -302,7 +302,9 @@ attached directly to the original descendants are not copied to the clones;
 they work again after `destroy()`. Existing JavaScript references still point
 to the originals, not the rendered clones.
 
-## Browser requirements
+## Browser support
+
+### Requirements
 
 justif requires a modern browser with canvas text measurement, the CSS
 Font Loading API (`document.fonts`), and CSS logical margins.
@@ -311,6 +313,18 @@ re-layout; `IntersectionObserver` is an optimization used when available.
 Importing the package during SSR is safe, but `justify()` only enhances
 content in a browser. The DOM-free layout engine is available from
 `justif/core` for custom renderers.
+
+### iOS Safari text sizing
+
+On iOS Safari, justif disables automatic text inflation on enhanced
+paragraphs. Font boosting can change after measurement and uses fragment
+heuristics that measurement probes cannot reproduce, invalidating per-line
+spacing after rotation.
+
+The rest of the page keeps its own text-sizing policy. On desktop-layout pages
+that rely on Safari's inflation, enhanced prose may look smaller than
+surrounding unenhanced text. Use responsive font sizing or leave those
+paragraphs out of the justification target.
 
 ## License
 
