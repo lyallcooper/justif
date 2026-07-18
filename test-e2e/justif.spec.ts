@@ -188,6 +188,169 @@ test("lastLineMinWidth: 1 justifies paragraph endings flush (rectangular paragra
   }
 });
 
+test("one-line elements stay native unless full-width justification is requested and reachable", async ({
+  page,
+}) => {
+  const result = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    const text = "If you ever feel stuck…";
+    const make = (id: string, extraWidth: number, justifyAll = false) => {
+      const p = document.createElement("p");
+      p.id = id;
+      p.textContent = text;
+      p.style.cssText = "width: 1000px; text-align: justify;";
+      host.append(p);
+      const range = document.createRange();
+      range.selectNodeContents(p);
+      const natural = range.getBoundingClientRect().width;
+      p.style.width = `${natural + extraWidth}px`;
+      // Applying this before the natural-width read would make the native
+      // browser justify the probe line to its temporary 1000px measure.
+      if (justifyAll) p.style.textAlignLast = "justify";
+      return p;
+    };
+
+    // All four fit naturally on one line. Five extra pixels are reachable
+    // from their word-space pool; 100px deliberately is not.
+    const ordinary = make("single-ordinary", 5);
+    const rectangular = make("single-rectangle", 5);
+    const nearRectangle = make("single-near-rectangle", 5);
+    const unreachable = make("single-unreachable", 100);
+    const justifyAll = make("single-justify-all", 5, true);
+    const ordinaryBefore = ordinary.outerHTML;
+    const nearBefore = nearRectangle.outerHTML;
+    const unreachableBefore = unreachable.outerHTML;
+    const opts = {
+      protrusion: false,
+      expansion: false,
+      tracking: false,
+      spacing: { stretch: 1, shrink: 1 / 3 },
+    };
+    const controllers = [
+      window.__justif.justify(ordinary, opts),
+      window.__justif.justify(rectangular, { ...opts, lastLineMinWidth: 1 }),
+      window.__justif.justify(nearRectangle, { ...opts, lastLineMinWidth: 0.99 }),
+      window.__justif.justify(unreachable, { ...opts, lastLineMinWidth: 1 }),
+      window.__justif.justify(justifyAll, opts),
+    ];
+    await Promise.all(controllers.map((c) => c.ready));
+
+    const out = {
+      ordinaryNative: !ordinary.hasAttribute("data-justif"),
+      ordinaryUntouched: ordinary.outerHTML === ordinaryBefore,
+      rectangularEnhanced: rectangular.hasAttribute("data-justif"),
+      rectangularLines: rectangular.querySelectorAll(":scope > .justif-seg").length,
+      nearRectangleNative: !nearRectangle.hasAttribute("data-justif"),
+      nearRectangleUntouched: nearRectangle.outerHTML === nearBefore,
+      unreachableNative: !unreachable.hasAttribute("data-justif"),
+      unreachableUntouched: unreachable.outerHTML === unreachableBefore,
+      justifyAllEnhanced: justifyAll.hasAttribute("data-justif"),
+      justifyAllLines: justifyAll.querySelectorAll(":scope > .justif-seg").length,
+    };
+    for (const controller of controllers) controller.destroy();
+    for (const p of [ordinary, rectangular, nearRectangle, unreachable, justifyAll]) p.remove();
+    return out;
+  });
+
+  expect(result).toEqual({
+    ordinaryNative: true,
+    ordinaryUntouched: true,
+    rectangularEnhanced: true,
+    rectangularLines: 1,
+    nearRectangleNative: true,
+    nearRectangleUntouched: true,
+    unreachableNative: true,
+    unreachableUntouched: true,
+    justifyAllEnhanced: true,
+    justifyAllLines: 1,
+  });
+});
+
+test("one-line native elements promote and demote as their measure changes", async ({ page }) => {
+  const initial = await page.evaluate(async () => {
+    const wrapper = document.createElement("div");
+    wrapper.style.width = "1000px";
+    const p = document.createElement("p");
+    p.id = "responsive-single-line";
+    p.style.textAlign = "justify";
+    p.innerHTML =
+      "A responsive paragraph stays native while it fits, then uses total-fit breaking " +
+      "at a narrow measure.";
+    wrapper.append(p);
+    document.getElementById("host")!.append(wrapper);
+    const before = { html: p.innerHTML, style: p.getAttribute("style") };
+    let relayouts = 0;
+    const controller = window.__justif.justify(p, {
+      protrusion: false,
+      expansion: false,
+      onRelayout: () => relayouts++,
+    });
+    await controller.ready;
+    Object.assign(window, { __singleLineCase: { wrapper, p, controller, before, relayouts: () => relayouts } });
+    return {
+      enhanced: p.hasAttribute("data-justif"),
+      html: p.innerHTML,
+      style: p.getAttribute("style"),
+      before,
+      relayouts,
+    };
+  });
+  expect(initial.enhanced).toBe(false);
+  expect({ html: initial.html, style: initial.style }).toEqual(initial.before);
+  expect(initial.relayouts).toBe(0);
+
+  await page.evaluate(() => {
+    const c = (window as unknown as { __singleLineCase: { wrapper: HTMLElement } }).__singleLineCase;
+    c.wrapper.style.width = "230px";
+  });
+  await page.waitForFunction(() =>
+    document.getElementById("responsive-single-line")!.hasAttribute("data-justif"),
+  );
+  const narrow = await page.evaluate(() => {
+    const p = document.getElementById("responsive-single-line")!;
+    return {
+      lines: window.__justifLines(p).lines.length,
+      relayouts: (
+        window as unknown as { __singleLineCase: { relayouts(): number } }
+      ).__singleLineCase.relayouts(),
+    };
+  });
+  expect(narrow.lines).toBeGreaterThan(1);
+  expect(narrow.relayouts).toBe(1);
+
+  await page.evaluate(() => {
+    const c = (window as unknown as { __singleLineCase: { wrapper: HTMLElement } }).__singleLineCase;
+    c.wrapper.style.width = "1000px";
+  });
+  await page.waitForFunction(
+    () => !document.getElementById("responsive-single-line")!.hasAttribute("data-justif"),
+  );
+  const wideAgain = await page.evaluate(() => {
+    const c = (
+      window as unknown as {
+        __singleLineCase: {
+          wrapper: HTMLElement;
+          p: HTMLElement;
+          controller: { destroy(): void };
+          before: { html: string; style: string | null };
+          relayouts(): number;
+        };
+      }
+    ).__singleLineCase;
+    const out = {
+      html: c.p.innerHTML,
+      style: c.p.getAttribute("style"),
+      before: c.before,
+      relayouts: c.relayouts(),
+    };
+    c.controller.destroy();
+    c.wrapper.remove();
+    return out;
+  });
+  expect({ html: wideAgain.html, style: wideAgain.style }).toEqual(wideAgain.before);
+  expect(wideAgain.relayouts).toBe(2);
+});
+
 test("lastLineMinWidth never renders a shorter ending than OFF (real-text sweep)", async ({ page }) => {
   // Regression for the bounded-fallback plateau inversion: capped ending
   // costs tie, and before the compare-and-pick fallback the tie resolved

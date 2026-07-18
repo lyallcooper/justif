@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Naturally one-line elements now stay on native layout instead of having the
+  default short-ending rule widen labels or other paragraph-shaped UI. They
+  promote to justif when a narrower measure makes them wrap and return to
+  native layout when they fit again. `lastLineMinWidth: 1` and CSS
+  `text-align: justify-all` still fill a reachable one-line measure.
 - Fixed iOS Safari text autosizing some justified line fragments to different
   font sizes after rotation. Enhanced paragraphs now opt out of automatic text
   inflation before measurement and while rendered. On pages that rely on

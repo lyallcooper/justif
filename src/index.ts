@@ -91,8 +91,11 @@ export interface JustifyOptions {
    * off (the breaker compares and keeps the better solution). The top of
    * the range can still be non-monotone per paragraph — one may satisfy
    * `0.5` yet revert to its natural ending at `1`. At `1` every paragraph
-   * that can afford it sets as a perfect rectangle. Defaults to `0.33`
-   * (Bringhurst); pass `0` to disable.
+   * that can afford it sets as a perfect rectangle, including a one-line
+   * paragraph. Values below `1` apply only to multi-line paragraphs: a
+   * naturally one-line element stays in native layout because it has no
+   * short ending to repair. Defaults to `0.33` (Bringhurst); pass `0` to
+   * disable.
    */
   lastLineMinWidth?: number;
   /** true = built-in Latin table; an object merges over it; false disables. */
@@ -163,12 +166,13 @@ export interface JustifyOptions {
    */
   observeResize?: boolean;
   /**
-   * Called after a paragraph's lines are (re)patched into the DOM —
-   * initial enhancement, resize re-layout, refresh, and re-measures
+   * Called after a paragraph's rendered layout changes — initial
+   * enhancement, resize re-layout, promotion from a native one-line state,
+   * restoration when it fits on one line again, refresh, and re-measures
    * triggered by fonts finishing to load. Use it to keep overlays or
-   * annotations positioned over the text in sync. NOT fired for the
-   * deferred wrap-guarantee corrections: those only normalize trailing
-   * layout-advance margins and never move a glyph.
+   * annotations positioned over the text in sync. NOT fired for the deferred
+   * wrap-guarantee corrections: those only normalize trailing layout-advance
+   * margins and never move a glyph.
    */
   onRelayout?: (paragraph: HTMLElement) => void;
   /**
@@ -232,6 +236,20 @@ function restoreStyleAttribute(el: HTMLElement, style: string | null): void {
   } else {
     el.setAttribute("style", style);
   }
+}
+
+/** Put a managed paragraph back into its exact author DOM without releasing
+ * its measurements or controller ownership. A one-line paragraph uses this
+ * native state while ResizeObserver keeps watching for a narrower measure
+ * that makes total-fit line breaking useful again. */
+function restoreManagedOutput(p: HTMLElement, state: ParaState): boolean {
+  if (!state.enhanced) return false;
+  p.replaceChildren(state.original);
+  restoreStyleAttribute(p, state.originalStyleAttr);
+  p.removeAttribute("data-justif");
+  state.lastPatch = "";
+  state.enhanced = false;
+  return true;
 }
 
 const DEFAULT_EXPANSION: ExpansionOptions = { max: 0.02, shrink: 0.02, step: 0.005 };
@@ -468,14 +486,22 @@ export function justify(
    * fragment off-DOM and installs it atomically, so a throw cannot leave
    * partial segments behind; restore() covers the already-enhanced case.)
    */
-  const safePatch = (p: HTMLElement): PendingParagraph | null => {
+  interface PatchOutcome {
+    /** True when this call either installed line segments or restored native DOM. */
+    changed: boolean;
+    /** Installed segments awaiting the measured wrap-guarantee correction. */
+    pending: PendingParagraph | null;
+  }
+
+  const safePatch = (p: HTMLElement): PatchOutcome => {
     try {
       return patchOne(p);
     } catch (error) {
+      const changed = states.get(p)?.enhanced === true;
       restore(p);
       bailed.add(p);
       emitSkip(p, `threw while rendering: ${error instanceof Error ? error.message : String(error)}`);
-      return null;
+      return { changed, pending: null };
     }
   };
 
@@ -499,9 +525,9 @@ export function justify(
     }
   };
 
-  const patchOne = (p: HTMLElement): PendingParagraph | null => {
+  const patchOne = (p: HTMLElement): PatchOutcome => {
     const state = states.get(p);
-    if (state === undefined || state.owner !== owner) return null;
+    if (state === undefined || state.owner !== owner) return { changed: false, pending: null };
     // Percentage indents resolve against the LIVE width (the scan-time
     // resolution would go stale across resizes).
     const indentPx =
@@ -509,15 +535,52 @@ export function justify(
         ? state.scan.textIndentPct * state.width
         : state.scan.textIndent;
     const widths = indentPx !== 0 ? [state.width - indentPx, state.width] : state.width;
-    const result = breakParagraph(state.para, widths, breakOpts);
-    const lines = layoutLines(state.para, result, widths, buildOpts);
+    // `justify-all` is the CSS-level rectangular mode: it requests that
+    // even the final (or only) line fill the measure. The ordinary public
+    // default remains 0.33 for multi-line endings only.
+    const paragraphMinWidth = state.scan.justifyAll ? 1 : lastLineMinWidth;
+    const paragraphBreakOpts =
+      paragraphMinWidth === lastLineMinWidth
+        ? breakOpts
+        : { ...breakOpts, lastLineMinWidth: paragraphMinWidth };
+    const paragraphBuildOpts =
+      paragraphMinWidth === lastLineMinWidth
+        ? buildOpts
+        : { ...buildOpts, lastLineMinWidth: paragraphMinWidth };
+    const result = breakParagraph(state.para, widths, paragraphBreakOpts);
+    const lines = layoutLines(state.para, result, widths, paragraphBuildOpts);
+
+    if (lines.length === 1) {
+      // A normal one-line paragraph has no short ending to repair and gains
+      // nothing from DOM rewriting. Rectangular mode is the sole exception,
+      // and only when the breaker reached the FULL target rather than one
+      // of lastLineMinWidth's degraded fallback rungs. An unreachable line
+      // remains native instead of being partially widened.
+      const line = lines[0]!;
+      const adjusted =
+        Math.abs(line.glueRatio) > 1e-9 ||
+        Math.abs(line.trackRatio) > 1e-9 ||
+        Math.abs(line.fontStretch - 100) > 1e-9;
+      const reachedFullWidth =
+        paragraphMinWidth === 1 &&
+        (result.endingMinWidth ?? paragraphMinWidth) >= 1 - 1e-9 &&
+        line.overfull !== true &&
+        adjusted;
+      if (!reachedFullWidth) {
+        pendingWidths.delete(p);
+        pendingCorrections.delete(p);
+        hiddenCorrections.delete(p);
+        return { changed: restoreManagedOutput(p, state), pending: null };
+      }
+    }
+
     const rendered = buildRenderSegments(state.scan, state.runsMetrics, state.para, lines);
 
     const fingerprint =
       result.breakpoints.join(",") +
       "|" +
       lines.map((l) => `${l.glueRatio.toFixed(4)}:${l.fontStretch}`).join(",");
-    if (fingerprint === state.lastPatch) return null;
+    if (fingerprint === state.lastPatch) return { changed: false, pending: null };
     state.lastPatch = fingerprint;
 
     if (!state.enhanced) {
@@ -554,7 +617,10 @@ export function justify(
     hiddenCorrections.delete(p);
     // Per-line target widths: an indented first line has its own measure,
     // and the wrap-guarantee corrections must compare against it.
-    return writeParagraph(p, rendered, lines.map((l) => l.width));
+    return {
+      changed: true,
+      pending: writeParagraph(p, rendered, lines.map((l) => l.width)),
+    };
   };
 
   interface PatchEntry {
@@ -623,13 +689,15 @@ export function justify(
       }
     });
     const batch: PatchEntry[] = [];
+    const changed: HTMLElement[] = [];
     for (const p of scannable) {
       if (!prepare(p)) continue;
-      const pending = safePatch(p);
-      if (pending !== null) batch.push({ p, pending });
+      const outcome = safePatch(p);
+      if (outcome.pending !== null) batch.push({ p, pending: outcome.pending });
+      if (outcome.changed) changed.push(p);
     }
     flushPatches(batch);
-    for (const e of batch) emitRelayout(e.p);
+    for (const p of changed) emitRelayout(p);
   };
 
   /** One entry per ctx font the content needs. `sample` holds every
@@ -692,17 +760,19 @@ export function justify(
       }
     });
     const batch: PatchEntry[] = [];
+    const changed: HTMLElement[] = [];
     for (const p of mine) {
       const state = states.get(p)!;
       state.runsMetrics = buildRunMetrics(state.scan, expansion, spacing, protrusionCtx);
       state.para = buildPara(state.scan, state.runsMetrics, state.specByKey);
       state.width = widths.get(p)!;
       state.lastPatch = "";
-      const pending = safePatch(p);
-      if (pending !== null) batch.push({ p, pending });
+      const outcome = safePatch(p);
+      if (outcome.pending !== null) batch.push({ p, pending: outcome.pending });
+      if (outcome.changed) changed.push(p);
     }
     flushPatches(batch);
-    for (const e of batch) emitRelayout(e.p);
+    for (const p of changed) emitRelayout(p);
   };
 
   // Resize re-layouts run in frame-budgeted slices, paragraphs in (or
@@ -870,12 +940,12 @@ export function justify(
       if (width === undefined) continue;
       pendingWidths.delete(el);
       const state = states.get(el);
-      if (state === undefined || state.owner !== owner || !state.enhanced) continue;
+      if (state === undefined || state.owner !== owner) continue;
       if (Math.abs(width - state.width) < 0.05) continue;
       state.width = width;
-      const pending = safePatch(el);
-      if (pending !== null) {
-        pendingCorrections.set(el, pending);
+      const outcome = safePatch(el);
+      if (outcome.changed) {
+        if (outcome.pending !== null) pendingCorrections.set(el, outcome.pending);
         wrote = true;
         emitRelayout(el);
         // onRelayout may call destroy(); stop before touching anything else.
@@ -982,7 +1052,7 @@ export function justify(
     // measured wrap-guarantee would never fire at all.
     for (const p of paragraphs) {
       const s = states.get(p);
-      if (s !== undefined && s.owner === owner && s.enhanced) {
+      if (s !== undefined && s.owner === owner) {
         viewObserver?.observe(p);
         revealObserver?.observe(p);
       }
@@ -991,7 +1061,7 @@ export function justify(
       observer = createWidthObserver((widths) => {
         for (const [el, width] of widths) {
           const state = states.get(el as HTMLElement);
-          if (state === undefined || state.owner !== owner || !state.enhanced) continue;
+          if (state === undefined || state.owner !== owner) continue;
           if (Math.abs(width - state.width) < 0.05) {
             // Reverted to the current width: drop any queued intermediate
             // width, or a stale patch would land after the resize settled.
@@ -1012,7 +1082,7 @@ export function justify(
       });
       for (const p of paragraphs) {
         const s = states.get(p);
-        if (s !== undefined && s.owner === owner && s.enhanced) observer.observe(p);
+        if (s !== undefined && s.owner === owner) observer.observe(p);
       }
     }
     document.fonts.addEventListener("loadingdone", onFontsLoaded);
@@ -1154,9 +1224,7 @@ export function unjustify(targets: Element | Iterable<Element>): void {
 
 function restore(p: HTMLElement): void {
   const state = states.get(p);
-  if (state === undefined || !state.enhanced) return;
-  p.replaceChildren(state.original);
-  restoreStyleAttribute(p, state.originalStyleAttr);
-  p.removeAttribute("data-justif");
+  if (state === undefined) return;
+  restoreManagedOutput(p, state);
   states.delete(p);
 }

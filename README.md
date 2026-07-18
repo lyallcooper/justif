@@ -215,7 +215,7 @@ These are the options most applications need:
 | `expansion` | `{ max: 0.02, shrink: 0.02, step: 0.005 }` | Uses a variable font's `wdth` axis to improve line fit; ignored when unavailable |
 | `tracking` | `{ max: 0.03, shrink: 0.03 }` | Uses small letter-spacing adjustments to improve line fit; `false` disables |
 | `spacing` | `{ stretch: 0.5, shrink: 1/3, pull: 0.7, boundaryShrink: 0 }` | Sets how far word spaces may stretch or shrink |
-| `lastLineMinWidth` | `0.33` | Sets the target minimum ending length as a fraction of the measure; `0` disables, `1` means rectangular paragraphs whenever reasonable |
+| `lastLineMinWidth` | `0.33` | Sets the target minimum ending length for multi-line paragraphs as a fraction of the measure; `0` disables, `1` also fills reachable one-line paragraphs |
 | `lastLineFit` | `0` | Carries the paragraph's average spacing adjustment into the last line; `1` applies it fully |
 | `observeResize` | `true` | Reflows managed paragraphs when their width changes |
 | `cleanClipboard` | `true` | Removes layout-only characters from copied text while preserving author nonbreaking spaces |
@@ -224,7 +224,10 @@ These are the options most applications need:
 
 The default `lastLineMinWidth` follows the traditional “at least a third”
 guideline. Set it to `1` for rectangular paragraphs where the ending can reach
-the full measure without poor spacing.
+the full measure without poor spacing. Naturally one-line elements otherwise
+stay in native layout; they become enhanced if a narrower measure makes them
+wrap, and return to native layout when they fit again. CSS
+`text-align: justify-all` is treated like the rectangular `1` mode.
 
 ### Expansion, tracking, and spacing
 

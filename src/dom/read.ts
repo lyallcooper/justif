@@ -37,6 +37,11 @@ export interface ParagraphScan {
    * size (inert without containment — a standing signal for pages that
    * apply containment only transiently, e.g. while resizing). */
   pinIntrinsicSize: boolean;
+  /** The author explicitly requests justification of the final line.
+   * `text-align-last: justify` is the interoperable form; engines that
+   * preserve `text-align: justify-all` in computed style are recognized
+   * directly too. */
+  justifyAll: boolean;
   /** Paragraph direction. "rtl" only for PURE-RTL paragraphs (Hebrew/
    * Arabic with no strong-LTR content — see textSupported); anything
    * mixed bails to native rendering before a scan exists. */
@@ -318,6 +323,7 @@ export function readParagraph(p: HTMLElement): ParagraphScan | string {
     textIndentPct,
     lineHeightPx: Number.isFinite(lineHeightPx) ? lineHeightPx : null,
     pinIntrinsicSize,
+    justifyAll: cs.textAlign === "justify-all" || cs.textAlignLast === "justify",
     direction,
   };
 }
