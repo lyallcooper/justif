@@ -60,7 +60,7 @@ your `<head>`:
 <script
   type="module"
   blocking="render"
-  src="https://cdn.jsdelivr.net/npm/justif@0.4.1/dist/auto.js"
+  src="https://cdn.jsdelivr.net/npm/justif@0.4.2/dist/auto.js"
 ></script>
 ```
 
