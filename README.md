@@ -240,7 +240,7 @@ or `tracking` to `false` to disable that adjustment.
 | `expansion.shrink` | How far a variable font may narrow; `0.02` allows down to `98%` font stretch |
 | `expansion.step` | Size of each width adjustment; `0.005` gives 0.5% steps |
 | `tracking.max` | How much the text on a line may widen through added letter spacing; `0.03` allows 3% |
-| `tracking.shrink` | How much the text on a line may tighten through reduced letter spacing; `0.03` allows 3% |
+| `tracking.shrink` | How much the text on a line may normally tighten through reduced letter spacing; `0.03` allows 3% |
 | `spacing.stretch` | How much a word space may grow; `0.5` allows up to 150% of its natural width |
 | `spacing.shrink` | How much a word space may contract; `1/3` allows down to about 67% of its natural width |
 | `spacing.pull` | How strongly wider spaces from secondary fonts move toward the main font's space width; `0` preserves them and `1` matches the main font |
@@ -277,7 +277,25 @@ Horizontal padding and borders on `code`, `kbd`, badges, and other inline
 elements are included in the layout. When an inline element uses a different
 font family, the spaces beside it do not shrink. An element with
 `white-space: nowrap` never breaks inside. Padding follows
-`box-decoration-break: slice` when an element wraps.
+`box-decoration-break: slice` when an element wraps. A painted inline box
+(a nontransparent background/background image, or a visible outset shadow
+that reaches an inline side) defines the optical margin at its line fragments.
+Transparent shadow reservations, inset shadows, and sharp (zero-blur)
+vertical-only underline shadows keep ordinary glyph protrusion. A blurred
+vertical shadow can reach both horizontal sides and therefore counts as a
+halo. When protrusion is enabled, its side padding and border can hang outside
+the measure when the element opens or closes at a line edge, keeping the text
+inside aligned with the surrounding prose; glyphs do not protrude through an
+unpadded halo at those real outer edges. At an internal
+`box-decoration-break: slice` edge, the element has not actually closed, so
+terminal punctuation and inserted hyphens retain their ordinary character
+protrusion. With
+`protrusion: false`, the entire painted box stays inside the measure. If a
+single unbreakable painted token fits only without its fixed insets, enabled
+tracking may use up to one additional shrink budget (6% total under the
+default) to retain those insets instead of overflowing or inventing a break
+inside code. With tracking disabled—or a token still too wide after that
+bounded fallback—ordinary overfull-line behavior remains.
 
 ### Browser fallback
 

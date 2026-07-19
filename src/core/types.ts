@@ -74,6 +74,20 @@ export interface RunMetrics {
 export interface RunText {
   text: string;
   run: number;
+  /** Shorthand for suppressing character protrusion at both sides of every
+   * Box produced by this piece (kept for headless callers). */
+  paintedBox?: boolean;
+  /** Side-specific forms of `paintedBox`. DOM scans use the fixed actual-edge
+   * markers below instead, so internal slices retain glyph protrusion. */
+  paintedStart?: boolean;
+  paintedEnd?: boolean;
+  /** Fixed line-start protrusion for a painted inline box, normally the
+   * distance from its border edge through its inline-start padding to the
+   * text. Unlike character codes, this value is already in px. */
+  boxStartProtrusionPx?: number;
+  /** Fixed line-end counterpart of `boxStartProtrusionPx`. Defined as 0
+   * too: presence marks the actual final box of an unpadded painted inline. */
+  boxEndProtrusionPx?: number;
   /**
    * Inline padding+border px preceding this piece's first box / following
    * its last box (an inline element's side extras, resolved by the reader).
@@ -114,6 +128,10 @@ export interface Box {
   lpFirst: number;
   /** Protrusion credit (px) if this box ends a line. */
   rp: number;
+  /** This is the actual final box of a painted inline. Renderers use the
+   * marker (independent of rp, which may legitimately be zero) to keep
+   * wrap-safety margins outside the decoration instead of pinching it. */
+  paintedEnd?: boolean;
   /** Extra stretch/shrink available from font expansion (px). */
   expStretch: number;
   expShrink: number;
@@ -393,10 +411,12 @@ export interface Line {
   glueRatio: number;
   /**
    * Ratio applied to the boxes' letterfit tracking flex. Equals glueRatio
-   * within [−1, 1]; beyond that it SATURATES at ±1 — tracking is a hard
-   * budget (Bringhurst's ±3%), while spaces stretch on past their nominal
-   * flexibility (they just cost badness). glueRatio is recomputed over the
-   * glue-only pool for such lines so the line still fills exactly.
+   * within [−1, 1]; beyond that it normally SATURATES at ±1 — tracking is a
+   * hard budget (Bringhurst's ±3%), while spaces stretch on past their
+   * nominal flexibility (they just cost badness). The sole exception is an
+   * otherwise-overfull single painted token with protrusion disabled: it may
+   * close to −2 so fixed halo padding stays inside the measure. glueRatio is
+   * recomputed over the glue-only pool for ordinary saturated lines.
    * Fil (paragraph-ending) lines keep natural letterfit on the stretch
    * side (0 for a ragged or lastLineFit-colored ending) but equal
    * glueRatio when the ending shrinks — the breaker priced that shrink

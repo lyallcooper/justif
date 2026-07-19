@@ -979,6 +979,368 @@ test("protrusion hangs terminal punctuation past the margin", async ({ page }) =
   }
 });
 
+test("internal slices of painted inline halos retain glyph protrusion", async ({ page }) => {
+  const ids = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    const text =
+      "Alpha, beta, gamma, delta, epsilon, zeta, eta, theta, iota, kappa, lambda, " +
+      "mu, nu, xi, omicron, pi, rho, sigma, tau, upsilon, phi, chi, psi, omega.";
+    const variants = [
+      ["halo-bare", ""],
+      ["halo-background", "background: rgb(230, 230, 230); border-radius: 4px"],
+      ["halo-shadow", "box-shadow: 0 0 0 3px rgb(230, 230, 230); border-radius: 4px"],
+      ["halo-right-shadow", "box-shadow: 3px 0 0 rgb(230, 230, 230)"],
+      ["halo-transparent-shadow", "box-shadow: 0 0 0 3px transparent"],
+      ["halo-inset-shadow", "box-shadow: inset 0 0 0 3px rgb(80, 80, 80)"],
+      ["halo-underline-shadow", "box-shadow: 0 1px 0 rgb(80, 80, 80)"],
+    ] as const;
+    const paragraphs: HTMLElement[] = [];
+    for (const [id, style] of variants) {
+      const p = document.createElement("p");
+      p.id = id;
+      p.style.width = "210px";
+      p.innerHTML = `<code style="font-family: Georgia, serif; ${style}">${text}</code>`;
+      host.append(p);
+      paragraphs.push(p);
+    }
+    const ctl = window.__justif.justify(paragraphs, {
+      protrusion: true,
+      expansion: false,
+      tracking: false,
+    });
+    await ctl.ready;
+    return variants.map(([id]) => id);
+  });
+  await waitForQuiescence(page, "#host");
+
+  const out = await page.evaluate((paragraphIds) => {
+    const result: Record<string, number[]> = {};
+    for (const id of paragraphIds) {
+      const p = document.getElementById(id)!;
+      const geometry = window.__justifLines(p);
+      result[id] = geometry.lines
+        .slice(0, -1)
+        .filter((line) => /[.,]$/.test(line.texts.at(-1) ?? ""))
+        .map((line) => line.right - geometry.contentRight);
+    }
+    return result;
+  }, ids);
+
+  for (const id of ids) {
+    expect(out[id]!.length).toBeGreaterThan(1);
+    expect(Math.min(...out[id]!), id).toBeGreaterThan(0.5);
+  }
+});
+
+test("only visible real halo closes replace terminal glyph protrusion", async ({ page }) => {
+  const ids = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    const variants = [
+      ["close-bare", ""],
+      ["close-background", "background: rgb(230, 230, 230); border-radius: 4px"],
+      ["close-shadow", "box-shadow: 0 0 0 3px rgb(230, 230, 230)"],
+      ["close-right-shadow", "box-shadow: 3px 0 0 rgb(230, 230, 230)"],
+      ["close-transparent-shadow", "box-shadow: 0 0 0 3px transparent"],
+      ["close-inset-shadow", "box-shadow: inset 0 0 0 3px rgb(80, 80, 80)"],
+      ["close-underline-shadow", "box-shadow: 0 1px 0 rgb(80, 80, 80)"],
+      ["close-retracted-shadow", "box-shadow: 2px 0 0 -5px rgba(0, 0, 0, .3)"],
+    ] as const;
+    const paragraphs: HTMLElement[] = [];
+    for (const [id, style] of variants) {
+      const p = document.createElement("p");
+      p.id = id;
+      p.innerHTML =
+        `Alpha beta <code style="font-family: Georgia, serif; ${style}">edge,</code>` +
+        " suffix words continue onto another line.";
+      host.append(p);
+      const prefix = p.firstChild as Text;
+      const codeText = p.querySelector("code")!.firstChild as Text;
+      const range = document.createRange();
+      range.setStart(prefix, 0);
+      range.setEnd(codeText, codeText.length);
+      p.style.width = `${range.getBoundingClientRect().width - 1}px`;
+      paragraphs.push(p);
+    }
+    const ctl = window.__justif.justify(paragraphs, {
+      protrusion: true,
+      expansion: false,
+      tracking: false,
+      lastLineMinWidth: 0,
+    });
+    await ctl.ready;
+    return variants.map(([id]) => id);
+  });
+  await waitForQuiescence(page, "#host");
+
+  const out = await page.evaluate((paragraphIds) => {
+    const result: Record<string, number> = {};
+    for (const id of paragraphIds) {
+      const p = document.getElementById(id)!;
+      const geometry = window.__justifLines(p);
+      const line = geometry.lines.find((candidate) =>
+        candidate.texts.join("").trimEnd().endsWith(","),
+      )!;
+      result[id] = line.right - geometry.contentRight;
+    }
+    return result;
+  }, ids);
+
+  for (const id of [
+    "close-bare",
+    "close-transparent-shadow",
+    "close-inset-shadow",
+    "close-underline-shadow",
+    "close-retracted-shadow",
+  ] as const) {
+    expect(out[id], id).toBeGreaterThan(0.5);
+  }
+  for (const id of ["close-background", "close-shadow", "close-right-shadow"] as const) {
+    expect(Math.abs(out[id]!), id).toBeLessThan(0.5);
+  }
+});
+
+test("a line-end painted inline box hangs its end inset outside the margin", async ({ page }) => {
+  await page.evaluate(async () => {
+    const p = document.createElement("p");
+    p.id = "halo-insets";
+    p.innerHTML =
+      'prefix <code style="font-family: Georgia, serif; background: #ddd; padding: 0 7px">justify()</code>';
+    document.getElementById("host")!.append(p);
+    const prefix = p.firstChild as Text;
+    const codeText = p.querySelector("code")!.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(prefix, 0);
+    range.setEnd(codeText, codeText.length);
+    p.style.width = `${range.getBoundingClientRect().width - 1}px`;
+    p.style.textAlignLast = "justify";
+    const ctl = window.__justif.justify(p, {
+      protrusion: true,
+      expansion: false,
+      tracking: false,
+      lastLineMinWidth: 1,
+    });
+    await ctl.ready;
+  });
+  await waitForQuiescence(page, "#halo-insets");
+
+  const geometry = await page.evaluate(() => {
+    const p = document.getElementById("halo-insets")!;
+    const code = p.querySelector<HTMLElement>("code")!;
+    const seg = code.querySelector<HTMLElement>(".justif-seg")!;
+    const paragraphStyle = getComputedStyle(p);
+    const contentRight =
+      p.getBoundingClientRect().right -
+      parseFloat(paragraphStyle.paddingRight) -
+      parseFloat(paragraphStyle.borderRightWidth);
+    const halo = code.getBoundingClientRect();
+    const range = document.createRange();
+    range.selectNodeContents(seg);
+    const glyphs = range.getBoundingClientRect();
+    return {
+      contentRight,
+      haloRight: halo.right,
+      glyphRight: glyphs.right,
+    };
+  });
+
+  expect.soft(geometry.haloRight - geometry.glyphRight).toBeCloseTo(7, 0);
+  // The measured wrap guarantee deliberately keeps ~1px of safety slack;
+  // tolerate that correction while requiring the full painted inset to sit
+  // beyond the glyph edge and materially outside the paragraph measure.
+  expect.soft(Math.abs(geometry.glyphRight - geometry.contentRight)).toBeLessThan(1.5);
+  expect(geometry.haloRight - geometry.contentRight).toBeGreaterThan(5.5);
+});
+
+test("protrusion: false keeps a line-start halo inside the measure", async ({ page }) => {
+  await page.evaluate(async () => {
+    const p = document.createElement("p");
+    p.id = "halo-protrusion-off";
+    p.style.width = "210px";
+    p.innerHTML =
+      '<code style="font-family: Georgia, serif; background: #ddd; padding: 0 7px">justify()</code> ' +
+      "treats the paragraph as one problem and compares feasible sets of breaks.";
+    document.getElementById("host")!.append(p);
+    const ctl = window.__justif.justify(p, {
+      protrusion: false,
+      expansion: false,
+      tracking: false,
+    });
+    await ctl.ready;
+  });
+  await waitForQuiescence(page, "#halo-protrusion-off");
+
+  const geometry = await page.evaluate(() => {
+    const p = document.getElementById("halo-protrusion-off")!;
+    const code = p.querySelector<HTMLElement>("code")!;
+    const seg = code.querySelector<HTMLElement>(".justif-seg")!;
+    const paragraphStyle = getComputedStyle(p);
+    const contentLeft =
+      p.getBoundingClientRect().left +
+      parseFloat(paragraphStyle.paddingLeft) +
+      parseFloat(paragraphStyle.borderLeftWidth);
+    const range = document.createRange();
+    range.selectNodeContents(seg);
+    return {
+      contentLeft,
+      haloLeft: code.getBoundingClientRect().left,
+      glyphLeft: range.getBoundingClientRect().left,
+      marginStart: parseFloat(code.style.marginInlineStart) || 0,
+    };
+  });
+
+  expect(geometry.marginStart).toBe(0);
+  expect(Math.abs(geometry.haloLeft - geometry.contentLeft)).toBeLessThan(0.5);
+  expect(geometry.glyphLeft - geometry.contentLeft).toBeCloseTo(7, 0);
+});
+
+test("painted starts follow NBSP boxes and padding outside the painter", async ({ page }) => {
+  const ids = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    const nbsp = document.createElement("p");
+    nbsp.id = "halo-nbsp-start";
+    nbsp.style.width = "210px";
+    nbsp.innerHTML =
+      '<code style="background:#ddd;padding:0 7px"><span>&nbsp;</span>justify()</code> ' +
+      "treats the paragraph as one problem with several feasible breaks.";
+    const nested = document.createElement("p");
+    nested.id = "halo-ancestor-start";
+    nested.style.width = "210px";
+    nested.innerHTML =
+      '<a style="padding:0 4px"><code style="background:#ddd;padding:0 6px">justify()</code></a> ' +
+      "treats the paragraph as one problem with several feasible breaks.";
+    const nestedZero = document.createElement("p");
+    nestedZero.id = "halo-zero-inset-ancestor-start";
+    nestedZero.style.width = "210px";
+    nestedZero.innerHTML =
+      '<a style="padding:0 4px"><code style="background:#ddd">justify()</code></a> ' +
+      "treats the paragraph as one problem with several feasible breaks.";
+    host.append(nbsp, nested, nestedZero);
+    const ctl = window.__justif.justify([nbsp, nested, nestedZero], {
+      protrusion: true,
+      expansion: false,
+      tracking: false,
+    });
+    await ctl.ready;
+    return [nbsp.id, nested.id, nestedZero.id];
+  });
+  await waitForQuiescence(page, "#host");
+
+  const geometry = await page.evaluate((paragraphIds) =>
+    paragraphIds.map((id) => {
+      const p = document.getElementById(id)!;
+      const code = p.querySelector<HTMLElement>("code")!;
+      const paragraphStyle = getComputedStyle(p);
+      const contentLeft =
+        p.getBoundingClientRect().left +
+        parseFloat(paragraphStyle.paddingLeft) +
+        parseFloat(paragraphStyle.borderLeftWidth);
+      const range = document.createRange();
+      range.selectNodeContents(code);
+      return {
+        id,
+        contentLeft,
+        haloLeft: code.getBoundingClientRect().left,
+        glyphLeft: range.getBoundingClientRect().left,
+        cloneMargin: parseFloat(code.style.marginInlineStart) || 0,
+      };
+    }), ids);
+
+  const nbsp = geometry.find((entry) => entry.id === "halo-nbsp-start")!;
+  expect(nbsp.cloneMargin).toBeCloseTo(-7, 1);
+  expect(nbsp.contentLeft - nbsp.haloLeft).toBeCloseTo(7, 0);
+  expect(Math.abs(nbsp.glyphLeft - nbsp.contentLeft)).toBeLessThan(0.5);
+
+  const nested = geometry.find((entry) => entry.id === "halo-ancestor-start")!;
+  expect(nested.cloneMargin).toBeCloseTo(-10, 1);
+  expect(nested.contentLeft - nested.haloLeft).toBeCloseTo(6, 0);
+  expect(Math.abs(nested.glyphLeft - nested.contentLeft)).toBeLessThan(0.5);
+
+  const nestedZero = geometry.find(
+    (entry) => entry.id === "halo-zero-inset-ancestor-start",
+  )!;
+  expect(nestedZero.cloneMargin).toBeCloseTo(-4, 1);
+  expect(Math.abs(nestedZero.haloLeft - nestedZero.contentLeft)).toBeLessThan(0.5);
+  expect(Math.abs(nestedZero.glyphLeft - nestedZero.contentLeft)).toBeLessThan(0.5);
+});
+
+test("an ending NBSP carries a painted halo's end owner", async ({ page }) => {
+  await page.evaluate(async () => {
+    const p = document.createElement("p");
+    p.id = "halo-nbsp-end";
+    p.innerHTML =
+      'prefix <code style="background:#ddd;padding:0 7px">justify()<span>&nbsp;</span></code>';
+    document.getElementById("host")!.append(p);
+    const prefix = p.firstChild as Text;
+    const nbspText = p.querySelector("span")!.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(prefix, 0);
+    range.setEnd(nbspText, nbspText.length);
+    p.style.width = `${range.getBoundingClientRect().width - 1}px`;
+    p.style.textAlignLast = "justify";
+    const ctl = window.__justif.justify(p, {
+      protrusion: true,
+      expansion: false,
+      tracking: false,
+      lastLineMinWidth: 1,
+    });
+    await ctl.ready;
+  });
+  await waitForQuiescence(page, "#halo-nbsp-end");
+
+  const geometry = await page.evaluate(() => {
+    const p = document.getElementById("halo-nbsp-end")!;
+    const code = p.querySelector<HTMLElement>("code")!;
+    const segments = [...code.querySelectorAll<HTMLElement>(".justif-seg")];
+    const range = document.createRange();
+    range.selectNodeContents(code);
+    return {
+      haloRight: code.getBoundingClientRect().right,
+      glyphRight: range.getBoundingClientRect().right,
+      cloneMargin: parseFloat(code.style.marginInlineEnd) || 0,
+      segmentMargin: parseFloat(segments[segments.length - 1]!.style.marginInlineEnd) || 0,
+    };
+  });
+
+  expect(geometry.haloRight - geometry.glyphRight).toBeCloseTo(7, 0);
+  expect(geometry.cloneMargin).toBeLessThan(-6);
+  expect(geometry.segmentMargin).toBe(0);
+});
+
+test("an unpadded painted close keeps wrap-safety margin outside its halo", async ({
+  page,
+}) => {
+  await page.evaluate(async () => {
+    const p = document.createElement("p");
+    p.id = "halo-unpadded-close";
+    p.style.width = "210px";
+    p.innerHTML =
+      'Alpha beta gamma delta epsilon zeta eta theta iota kappa <code style="background:#ddd">justify()</code>';
+    document.getElementById("host")!.append(p);
+    const ctl = window.__justif.justify(p, {
+      protrusion: true,
+      expansion: false,
+      tracking: false,
+    });
+    await ctl.ready;
+  });
+  await waitForQuiescence(page, "#halo-unpadded-close");
+
+  const margins = await page.evaluate(() => {
+    const p = document.getElementById("halo-unpadded-close")!;
+    const code = p.querySelector<HTMLElement>("code")!;
+    const seg = code.querySelector<HTMLElement>(".justif-seg")!;
+    return {
+      enhanced: p.hasAttribute("data-justif"),
+      clone: parseFloat(code.style.marginInlineEnd) || 0,
+      segment: parseFloat(seg.style.marginInlineEnd) || 0,
+    };
+  });
+
+  expect(margins.enhanced).toBe(true);
+  expect(margins.clone).toBeLessThan(0);
+  expect(margins.segment).toBe(0);
+});
+
 test("hangingPunctuation preset hangs stops fully past the margin", async ({ page }) => {
   await enhance(page, { hyphenate: true, protrusion: "hanging", expansion: false });
   const paragraphs = await readGeometry(page);

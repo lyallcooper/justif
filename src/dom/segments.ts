@@ -11,6 +11,7 @@ import {
 } from "../core/protrusion.js";
 import { fontProtrusion } from "../core/protrusion-fonts.js";
 import {
+  type Box,
   type ExpansionOptions,
   ItemType,
   type Line,
@@ -103,6 +104,8 @@ export function runTexts(scan: ParagraphScan): RunText[] {
   return scan.runs.map((r, i) => ({
     text: r.text,
     run: i,
+    boxStartProtrusionPx: r.boxStartProtrusionPx,
+    boxEndProtrusionPx: r.boxEndProtrusionPx,
     padStartPx: r.padStartPx,
     padEndPx: r.padEndPx,
     atomicKey: r.atomicKey,
@@ -330,6 +333,12 @@ export function buildRenderSegments(
         decorPx,
         cjk: hasCJK,
         joint,
+        marginStartOwner:
+          first && line.leftHang > 0 ? srcRun.boxStartProtrusionOwner : undefined,
+        // Assigned only to the line's actual final segment below. Pointing
+        // multiple entries at one clone would make correction measurement
+        // count the clone's single margin more than once.
+        marginEndOwner: undefined,
       });
       if (srcRun.padEndPx !== undefined) lastSegForRun.set(run, segments.length - 1);
       joint = "none";
@@ -433,6 +442,21 @@ export function buildRenderSegments(
     // parked) correction lands.
     if (last !== undefined) {
       last.marginEndPx = -(line.rightHang + line.overflowPx + WRAP_SAFETY_PAD_PX);
+      // A zero fixed hang still marks an unpadded painted element's REAL
+      // close. Keep the safety/correction margin on that clone's outside;
+      // an internal wrap in the same source run has no marker and retains
+      // the ordinary per-line segment margin.
+      let endBox: Box | undefined;
+      for (let i = line.end - 1; i >= line.start; i--) {
+        const candidate = para.items[i]!;
+        if (candidate.type === ItemType.Box) {
+          endBox = candidate;
+          break;
+        }
+      }
+      if (endBox?.type === ItemType.Box && endBox.paintedEnd === true) {
+        last.marginEndOwner = scan.runs[endBox.run]?.boxEndProtrusionOwner;
+      }
     }
 
     // Decide the joint that separates this line from the next.

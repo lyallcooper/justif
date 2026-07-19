@@ -405,7 +405,9 @@ test("comparison views retain independent widths", async ({ page }) => {
   await expect(measure).toHaveValue("19");
 });
 
-test("inline code background follows protruded end punctuation", async ({ page }) => {
+test("line-start inline code halo protrudes while its text aligns to the measure", async ({
+  page,
+}) => {
   await page.goto("/demo/");
   await page.waitForFunction(
     () => !document.documentElement.classList.contains("fonts-loading"),
@@ -418,28 +420,209 @@ test("inline code background follows protruded end punctuation", async ({ page }
   });
 
   await page.waitForFunction(() =>
-    [...document.querySelectorAll<HTMLElement>("#enhanced code .justif-seg")].some(
-      (seg) =>
-        seg.textContent?.trim().endsWith(":") === true &&
-        parseFloat(getComputedStyle(seg).marginInlineEnd) < 0,
+    [...document.querySelectorAll<HTMLElement>("#enhanced p")].some(
+      (p) =>
+        p.textContent?.trim().startsWith("justify()") === true &&
+        p.querySelector("code .justif-seg") !== null,
     ),
   );
 
-  const paint = await page.evaluate(() => {
-    const seg = [...document.querySelectorAll<HTMLElement>("#enhanced code .justif-seg")].find(
-      (candidate) =>
-        candidate.textContent?.trim().endsWith(":") === true &&
-        parseFloat(getComputedStyle(candidate).marginInlineEnd) < 0,
+  const geometry = await page.evaluate(() => {
+    const p = [...document.querySelectorAll<HTMLElement>("#enhanced p")].find((candidate) =>
+      candidate.textContent?.trim().startsWith("justify()"),
     )!;
-    const code = seg.closest("code")!;
+    const code = p.querySelector<HTMLElement>("code")!;
+    const seg = code.querySelector<HTMLElement>(".justif-seg")!;
+    const paragraphStyle = getComputedStyle(p);
+    const codeStyle = getComputedStyle(code);
+    const contentLeft =
+      p.getBoundingClientRect().left +
+      parseFloat(paragraphStyle.paddingLeft) +
+      parseFloat(paragraphStyle.borderLeftWidth);
+    const firstHaloRect = [...code.getClientRects()].sort(
+      (a, b) => a.top - b.top || a.left - b.left,
+    )[0]!;
+    const range = document.createRange();
+    range.selectNodeContents(seg);
     return {
-      codeBackground: getComputedStyle(code).backgroundColor,
+      contentLeft,
+      haloLeft: firstHaloRect.left,
+      glyphLeft: range.getBoundingClientRect().left,
+      inset: parseFloat(codeStyle.paddingLeft) + parseFloat(codeStyle.borderLeftWidth),
+      cloneMargin: parseFloat(code.style.marginInlineStart),
       segmentBackground: getComputedStyle(seg).backgroundColor,
-      marginEnd: parseFloat(getComputedStyle(seg).marginInlineEnd),
     };
   });
 
-  expect(paint.marginEnd).toBeLessThan(-1);
-  expect(paint.codeBackground).not.toBe("rgba(0, 0, 0, 0)");
-  expect(paint.segmentBackground).toBe(paint.codeBackground);
+  expect(geometry.inset).toBeGreaterThan(3);
+  expect(geometry.cloneMargin).toBeCloseTo(-geometry.inset, 1);
+  expect(geometry.contentLeft - geometry.haloLeft).toBeCloseTo(geometry.inset, 0);
+  expect(Math.abs(geometry.glyphLeft - geometry.contentLeft)).toBeLessThan(0.5);
+  expect(geometry.segmentBackground).not.toBe("rgba(0, 0, 0, 0)");
+});
+
+test("punctuation protrudes at an internal slice of the technical code halo", async ({
+  page,
+  browserName,
+}) => {
+  await page.goto("/demo/");
+  await page.waitForFunction(
+    () => !document.documentElement.classList.contains("fonts-loading"),
+  );
+  await page.click("#dock-toggle");
+  await page.selectOption("#sample", "tech");
+  await page.locator("#measure").evaluate((el: HTMLInputElement) => {
+    el.value = "26";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+
+  await page.waitForFunction(() => {
+    const paragraph = [...document.querySelectorAll<HTMLElement>("#enhanced p")].find(
+      (candidate) => candidate.textContent?.includes("above supplies"),
+    );
+    const seg = paragraph
+      ? [...paragraph.querySelectorAll<HTMLElement>("code .justif-seg")].find(
+          (candidate) => candidate.textContent === "{ hyphenate:",
+        )
+      : undefined;
+    if (paragraph === undefined || seg === undefined) return false;
+    const paragraphStyle = getComputedStyle(paragraph);
+    const contentRight =
+      paragraph.getBoundingClientRect().right -
+      parseFloat(paragraphStyle.paddingRight) -
+      parseFloat(paragraphStyle.borderRightWidth);
+    // The width control updates before its asynchronous paragraph patch.
+    // Reject the transient old segment geometry (hundreds of px away).
+    return Math.abs(seg.getBoundingClientRect().right - contentRight) < 20;
+  });
+
+  const geometry = await page.evaluate(() => {
+    const paragraph = [...document.querySelectorAll<HTMLElement>("#enhanced p")].find(
+      (candidate) => candidate.textContent?.includes("above supplies"),
+    )!;
+    const seg = [...paragraph.querySelectorAll<HTMLElement>("code .justif-seg")].find(
+      (candidate) => candidate.textContent === "{ hyphenate:",
+    )!;
+    const paragraphStyle = getComputedStyle(paragraph);
+    const contentRight =
+      paragraph.getBoundingClientRect().right -
+      parseFloat(paragraphStyle.paddingRight) -
+      parseFloat(paragraphStyle.borderRightWidth);
+    return {
+      overhang: seg.getBoundingClientRect().right - contentRight,
+      background: getComputedStyle(seg).backgroundColor,
+    };
+  });
+
+  // The default colon code hangs half its advance. Leave room for the
+  // measured wrap correction while requiring a material optical hang.
+  // WebKit's corrective DOM measurement absorbs most of this particular
+  // Courier Prime colon's modeled 50% credit; the cross-font fixture in
+  // justif.spec verifies material internal-slice hangs in every engine.
+  expect(geometry.overhang).toBeGreaterThan(browserName === "webkit" ? 0.1 : 2);
+  expect(geometry.background).not.toBe("rgba(0, 0, 0, 0)");
+});
+
+test("protrusion off keeps the technical sample's 13em code halo inside", async ({ page }) => {
+  await page.goto("/demo/");
+  await page.waitForFunction(
+    () => !document.documentElement.classList.contains("fonts-loading"),
+  );
+  await page.click("#dock-toggle");
+  await page.selectOption("#sample", "tech");
+  await page.locator("#measure").evaluate((el: HTMLInputElement) => {
+    el.value = "13";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.locator("#protrusion").uncheck();
+  await page.waitForFunction(() => {
+    const code = [...document.querySelectorAll<HTMLElement>("#enhanced code")].find((el) =>
+      el.textContent?.includes("getBoundingClientRect()"),
+    );
+    return (
+      code !== undefined &&
+      code.querySelector(".justif-seg") !== null &&
+      (parseFloat(code.style.marginInlineStart) || 0) === 0
+    );
+  });
+
+  const geometry = await page.evaluate(() => {
+    const p = [...document.querySelectorAll<HTMLElement>("#enhanced p")].find((candidate) =>
+      candidate.textContent?.includes("getBoundingClientRect()"),
+    )!;
+    const code = [...p.querySelectorAll<HTMLElement>("code")].find((candidate) =>
+      candidate.textContent?.includes("getBoundingClientRect()"),
+    )!;
+    const paragraphStyle = getComputedStyle(p);
+    const contentLeft =
+      p.getBoundingClientRect().left +
+      parseFloat(paragraphStyle.paddingLeft) +
+      parseFloat(paragraphStyle.borderLeftWidth);
+    const contentRight =
+      p.getBoundingClientRect().right -
+      parseFloat(paragraphStyle.paddingRight) -
+      parseFloat(paragraphStyle.borderRightWidth);
+    const halo = code.getBoundingClientRect();
+    return {
+      contentLeft,
+      contentRight,
+      haloLeft: halo.left,
+      haloRight: halo.right,
+      codeMarginStart: parseFloat(code.style.marginInlineStart) || 0,
+    };
+  });
+
+  expect(geometry.codeMarginStart).toBe(0);
+  expect(geometry.haloLeft).toBeGreaterThanOrEqual(geometry.contentLeft - 0.5);
+  expect(
+    geometry.haloRight - geometry.contentRight,
+    JSON.stringify(geometry),
+  ).toBeLessThanOrEqual(0.5);
+});
+
+test("a code chip continuing across a line repaints its internal slice edge", async ({
+  page,
+}) => {
+  await page.goto("/demo/");
+  await page.waitForFunction(
+    () => !document.documentElement.classList.contains("fonts-loading"),
+  );
+  await page.click("#dock-toggle");
+  await page.selectOption("#sample", "rfc2324");
+  await page.locator("#measure").evaluate((el: HTMLInputElement) => {
+    el.value = "10";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+
+  await page.waitForFunction(() => {
+    const code = [...document.querySelectorAll<HTMLElement>("#enhanced code")].find((el) =>
+      el.textContent?.includes("418 I’m a teapot"),
+    );
+    if (code === undefined) return false;
+    const tops = [...code.querySelectorAll<HTMLElement>(".justif-seg")].map(
+      (seg) => seg.getBoundingClientRect().top,
+    );
+    return tops.some((top) => Math.abs(top - tops[0]!) > 5);
+  });
+
+  const paint = await page.evaluate(() => {
+    const code = [...document.querySelectorAll<HTMLElement>("#enhanced code")].find((el) =>
+      el.textContent?.includes("418 I’m a teapot"),
+    )!;
+    const segments = [...code.querySelectorAll<HTMLElement>(".justif-seg")];
+    const finalTop = segments[segments.length - 1]!.getBoundingClientRect().top;
+    // The correction pass may legitimately settle this slice's end margin
+    // at zero or above when the rendered line underfills the model. Its
+    // earlier line position—not the transient correction sign—is what
+    // proves this is an internal slice.
+    const sliced = segments.find((seg) => seg.getBoundingClientRect().top < finalTop - 5)!;
+    return {
+      hasInternalSlice: sliced !== undefined,
+      codeBackground: getComputedStyle(code).backgroundColor,
+      sliceBackground: sliced === undefined ? "" : getComputedStyle(sliced).backgroundColor,
+    };
+  });
+
+  expect(paint.hasInternalSlice).toBe(true);
+  expect(paint.sliceBackground).toBe(paint.codeBackground);
 });

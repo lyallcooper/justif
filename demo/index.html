@@ -727,15 +727,11 @@
        ~0.58em; scale the symbol to the keycap letters' cap height. */
     font-size: 0.78em;
   }
-  /* Protrusion uses a negative margin on the final generated segment. That
-     shortens the parent code fragment's decoration box while its glyph still
-     paints into the margin. Repaint the same opaque chip on the segment so
-     the background follows the glyph without changing layout width. Kept
-     SQUARE: it only ever shows where it extends past the sliced clone edge
-     (a chip wrapped mid-element, its hyphen hanging into the margin), and
-     box-decoration-break: slice keeps those break edges square — a rounded
-     corner there would disagree with the flush square edge that starts the
-     chip's next fragment. */
+  /* Wrap-safety/correction margins live on a generated segment when a
+     sliced code element CONTINUES onto the next line. Repaint the same chip
+     color there so the clone's fragment edge cannot stop a sub-pixel before
+     its trailing glyph. The square repaint only covers that sliced edge;
+     the code clone retains the rounded corners at its real open/close. */
   .article p code .justif-seg {
     background: var(--code-chip);
   }

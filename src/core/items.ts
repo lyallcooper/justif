@@ -33,6 +33,16 @@ const BREAKABLE_SPACE = /[^\S\u00A0\u202F]/;
 const BREAKABLE_SPLIT = /([^\S\u00A0\u202F]+)/;
 
 /**
+ * Whether `text` can produce at least one Box under this module's tokenizer.
+ * Shared with the DOM reader so padded/painted edge ownership cannot drift
+ * on no-break spaces (JS `\s` includes U+00A0 and U+202F; we intentionally
+ * keep both inside boxes).
+ */
+export function textMakesBox(text: string): boolean {
+  return /[^\s\u00AD]|[\u00A0\u202F]/u.test(text);
+}
+
+/**
  * Right-protrusion credit when a line breaks at item `b`: the materialized
  * hyphen's for width-carrying penalties, otherwise the line's LAST BOX —
  * found by walking back over unbroken penalties and glue, so the paragraph-
@@ -135,25 +145,43 @@ export function buildItems(
   let pendingSpaceRun = -1;
   let hasBox = false;
 
-  // Inline box extras and no-break scopes (RunText.padStartPx/padEndPx/
-  // atomicKey). pendingPad accumulates until the element's first box exists
-  // (its own first piece may be whitespace-only); lastBox is patched
-  // retroactively when a piece marked padEndPx finishes. Boxes at a padded
-  // edge drop their protrusion: the visual boundary there is the box
-  // decoration, not the glyph.
+  // Inline box extras, painted-box scopes and no-break scopes
+  // (RunText.padStartPx/padEndPx/paintedBox/atomicKey). pendingPad
+  // accumulates until the element's first box exists (its own first piece
+  // may be whitespace-only); lastBox is patched retroactively when a piece
+  // marked padEndPx finishes. At a painted inline's REAL open/close, its
+  // side inset replaces glyph protrusion so the enclosed glyph can meet the
+  // measure while the decoration itself hangs outside it. Ordinary boxes
+  // between those markers retain glyph protrusion at internal line slices.
   let pendingPad = 0;
   let lastBox: Box | null = null;
   let lastBoxRun = -1;
   let lastBoxKey: number | undefined;
   let pieceKey: number | undefined;
+  let piecePaintedStart = false;
+  let piecePaintedEnd = false;
+  let pendingBoxStartProtrusion = 0;
+  let pendingPaintedStart = false;
 
   const emitBox = (box: Box, runIndex: number): void => {
-    if (pendingPad > 0) {
-      box.width += pendingPad;
-      box.padPx = (box.padPx ?? 0) + pendingPad;
-      box.lp = 0;
-      box.lpFirst = 0;
+    if (pendingPad > 0 || pendingPaintedStart) {
+      if (pendingPad > 0) {
+        box.width += pendingPad;
+        box.padPx = (box.padPx ?? 0) + pendingPad;
+      }
+      // Every pending side decoration precedes this same first glyph. A
+      // painted descendant's own inset may have been recorded before an
+      // unpainted padded ancestor closes in the DOM walk, so the complete
+      // pending padding is the authoritative border-to-glyph distance.
+      const boxHang =
+        pendingPaintedStart
+          ? Math.max(pendingBoxStartProtrusion, pendingPad)
+          : 0;
+      box.lp = boxHang;
+      box.lpFirst = boxHang;
       pendingPad = 0;
+      pendingBoxStartProtrusion = 0;
+      pendingPaintedStart = false;
     }
     items.push(box);
     hasBox = true;
@@ -163,7 +191,7 @@ export function buildItems(
   };
 
   const hyphenRp = (run: RunMetrics): number =>
-    protrusionHang(opts, measure, "-", run, run.hyphenWidth, "r");
+    piecePaintedEnd ? 0 : protrusionHang(opts, measure, "-", run, run.hyphenWidth, "r");
 
   const makeBox = (text: string, runIndex: number, width: number): Box => {
     const run = runs[runIndex]!;
@@ -174,13 +202,17 @@ export function buildItems(
       const chars = Array.from(text);
       const first = chars[0]!;
       const last = chars[chars.length - 1]!;
-      const firstAdv = measure.charAdvance(first, run);
-      lp = protrusionHang(opts, measure, first, run, firstAdv, "l");
-      lpFirst =
-        (run.protrusionFirst ?? opts.protrusionFirst) === undefined
-          ? lp
-          : protrusionHang(opts, measure, first, run, firstAdv, "l", true);
-      rp = protrusionHang(opts, measure, last, run, measure.charAdvance(last, run), "r");
+      if (!piecePaintedStart) {
+        const firstAdv = measure.charAdvance(first, run);
+        lp = protrusionHang(opts, measure, first, run, firstAdv, "l");
+        lpFirst =
+          (run.protrusionFirst ?? opts.protrusionFirst) === undefined
+            ? lp
+            : protrusionHang(opts, measure, first, run, firstAdv, "l", true);
+      }
+      if (!piecePaintedEnd) {
+        rp = protrusionHang(opts, measure, last, run, measure.charAdvance(last, run), "r");
+      }
     }
     let expStretch = 0;
     let expShrink = 0;
@@ -461,7 +493,13 @@ export function buildItems(
   for (const piece of texts) {
     const { text, run } = piece;
     pieceKey = piece.atomicKey;
+    piecePaintedStart = piece.paintedBox === true || piece.paintedStart === true;
+    piecePaintedEnd = piece.paintedBox === true || piece.paintedEnd === true;
     if (piece.padStartPx !== undefined) pendingPad += piece.padStartPx;
+    if (opts.protrusion !== false && piece.boxStartProtrusionPx !== undefined) {
+      pendingPaintedStart = true;
+      pendingBoxStartProtrusion += piece.boxStartProtrusionPx;
+    }
     const parts = text.split(BREAKABLE_SPLIT);
     for (const part of parts) {
       if (part.length === 0) continue;
@@ -480,13 +518,35 @@ export function buildItems(
     // cast: lastBox is only ever assigned inside emitBox, which TS's
     // narrowing can't see.)
     const lb = lastBox as Box | null;
-    if (piece.padEndPx !== undefined && lb !== null) {
-      lb.width += piece.padEndPx;
-      lb.padPx = (lb.padPx ?? 0) + piece.padEndPx;
-      lb.rp = 0;
+    if ((piece.padEndPx !== undefined || piece.boxEndProtrusionPx !== undefined) && lb !== null) {
+      if (piece.padEndPx !== undefined) {
+        lb.width += piece.padEndPx;
+        lb.padPx = (lb.padPx ?? 0) + piece.padEndPx;
+      }
+      if (piece.boxEndProtrusionPx !== undefined) {
+        // Presence marks the real close even when the painted box is
+        // unpadded (fixed hang 0). Padding accumulated on this same raw run
+        // can include unpainted ancestors outside the painter.
+        lb.paintedEnd = true;
+        lb.rp =
+          opts.protrusion === false
+            ? 0
+            : Math.max(piece.boxEndProtrusionPx, piece.padEndPx ?? 0);
+      } else if (lb.paintedEnd === true) {
+        // A later whitespace-only run may carry an unpainted ancestor's
+        // closing padding while still referring to the painted descendant's
+        // last box. Extend that already-established optical inset.
+        if (opts.protrusion !== false) lb.rp += piece.padEndPx ?? 0;
+      } else {
+        // Ordinary padded inline: its decoration, not glyph punctuation,
+        // remains the boundary, but no painted-box hanging is requested.
+        lb.rp = 0;
+      }
     }
   }
   pieceKey = undefined;
+  piecePaintedStart = false;
+  piecePaintedEnd = false;
 
   // \penalty10000 \parfillskip \penalty-10000
   pushPenalty({ penalty: INF_PENALTY, width: 0, flagged: false, hyphen: false, rp: 0, run: 0 });

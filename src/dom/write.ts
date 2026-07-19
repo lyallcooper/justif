@@ -40,12 +40,17 @@ export interface RenderSegment {
    * the left edge in LTR and the right edge in RTL — line starts hang into
    * the correct margin in both directions. */
   marginStartPx: number;
+  /** Painted source inline whose clone receives `marginStartPx`, moving its
+   * halo into the margin along with its contents. */
+  marginStartOwner?: Element;
   /** Negative line-end protrusion + wrap-safety margin on a line's last
    * segment (shrinks layout advance only; glyphs paint unchanged). LOGICAL:
    * emitted as margin-inline-end (right in LTR, left in RTL), so the
    * corrective trailing margin always shrinks the line's advance at its
    * END edge. */
   marginEndPx: number;
+  /** Painted source inline whose clone receives `marginEndPx`. */
+  marginEndOwner?: Element;
   /** Edge spaces excluded from corrective measurement (position-dependent
    * rendering) and re-added as exact model widths. */
   edgeTrim: { lead: number; trail: number; modelPx: number };
@@ -153,6 +158,7 @@ function ensureStylesheet(root: Document | ShadowRoot): void {
 interface LineEntry {
   el: HTMLElement;
   seg: RenderSegment | null;
+  marginEndEl: HTMLElement;
 }
 
 /**
@@ -215,6 +221,15 @@ export function writeParagraph(
     return containerAt(chain.length);
   };
 
+  const cloneFor = (
+    src: Element | undefined,
+    chain: readonly Element[],
+  ): HTMLElement | undefined => {
+    if (src === undefined) return undefined;
+    const depth = chain.indexOf(src);
+    return depth < 0 ? undefined : (stack[depth]?.clone as HTMLElement | undefined);
+  };
+
   let prevContainer: ParentNode = fragment;
   for (const segment of segments) {
     if (segment.joint === "hyphen") {
@@ -228,12 +243,12 @@ export function writeParagraph(
       // direction-correct regardless.)
       const entries = lineElements[lineElements.length - 1]!;
       const prevEntry = entries[entries.length - 1];
-      if (prevEntry !== undefined && prevEntry.el.style.marginInlineEnd !== "") {
-        hyphen.style.marginInlineEnd = prevEntry.el.style.marginInlineEnd;
-        prevEntry.el.style.marginInlineEnd = "";
+      if (prevEntry !== undefined && prevEntry.marginEndEl.style.marginInlineEnd !== "") {
+        hyphen.style.marginInlineEnd = prevEntry.marginEndEl.style.marginInlineEnd;
+        prevEntry.marginEndEl.style.marginInlineEnd = "";
       }
       prevContainer.append(hyphen);
-      entries.push({ el: hyphen, seg: null });
+      entries.push({ el: hyphen, seg: null, marginEndEl: hyphen });
     }
     if (segment.joint !== "none") {
       lineElements.push([]);
@@ -263,8 +278,12 @@ export function writeParagraph(
     if (segment.fontStretchPct !== 100) {
       el.style.fontStretch = `${Math.round(segment.fontStretchPct * 100) / 100}%`;
     }
-    if (segment.marginStartPx !== 0) el.style.marginInlineStart = px(segment.marginStartPx);
-    if (segment.marginEndPx !== 0) el.style.marginInlineEnd = px(segment.marginEndPx);
+    const marginStartEl = cloneFor(segment.marginStartOwner, segment.ancestors) ?? el;
+    const marginEndEl = cloneFor(segment.marginEndOwner, segment.ancestors) ?? el;
+    if (segment.marginStartPx !== 0) {
+      marginStartEl.style.marginInlineStart = px(segment.marginStartPx);
+    }
+    if (segment.marginEndPx !== 0) marginEndEl.style.marginInlineEnd = px(segment.marginEndPx);
     if (segment.cjk === true) {
       // Match the measurement model (isolated cluster advances, no
       // cross-cluster kerning — see RenderSegment.cjk).
@@ -277,7 +296,7 @@ export function writeParagraph(
     el.textContent = segment.text;
     container.append(el);
     prevContainer = container;
-    lineElements[lineElements.length - 1]!.push({ el, seg: segment });
+    lineElements[lineElements.length - 1]!.push({ el, seg: segment, marginEndEl });
   }
 
   p.replaceChildren(fragment);
@@ -286,6 +305,8 @@ export function writeParagraph(
 
 export interface Correction {
   el: HTMLElement;
+  /** Element currently carrying the provisional end margin. */
+  marginEl: HTMLElement;
   marginPx: number;
 }
 
@@ -334,7 +355,7 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
       let rectPx = 0;
       let modelPx = 0;
       let ownMargins = 0;
-      for (const { el, seg } of entries) {
+      for (const { el, seg, marginEndEl } of entries) {
         if (seg === null || (seg.edgeTrim.lead === 0 && seg.edgeTrim.trail === 0)) {
           rectPx += el.getBoundingClientRect().width;
         } else {
@@ -347,8 +368,11 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
           modelPx += seg.edgeTrim.modelPx;
         }
         if (seg !== null && seg.decorPx !== undefined) modelPx += seg.decorPx;
-        modelPx += parseFloat(el.style.marginInlineStart) || 0;
-        const me = parseFloat(el.style.marginInlineEnd) || 0;
+        // Start margins are never relocated; the exact modeled value is
+        // already on the segment (unlike end margins, whose carrier can be
+        // transferred to a hyphen or hoisted out of a closing clone).
+        modelPx += seg?.marginStartPx ?? 0;
+        const me = parseFloat(marginEndEl.style.marginInlineEnd) || 0;
         modelPx += me;
         ownMargins += me;
       }
@@ -359,8 +383,12 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
       const layout = rectPx + modelPx;
       const overflow = layout - availableWidth;
       if (overflow > CORRECTION_WINDOW_PX) {
-        const last = entries[entries.length - 1]!.el;
-        paraCorrections.push({ el: last, marginPx: ownMargins - (overflow + WRAP_SPARE_PX) });
+        const last = entries[entries.length - 1]!;
+        paraCorrections.push({
+          el: last.el,
+          marginEl: last.marginEndEl,
+          marginPx: ownMargins - (overflow + WRAP_SPARE_PX),
+        });
       }
     }
     if (!sawInk) hidden.push(i);
@@ -390,7 +418,7 @@ export function applyCorrections(corrections: readonly Correction[]): void {
     ) {
       target = parent;
     }
-    if (target !== c.el) c.el.style.marginInlineEnd = "0px";
+    if (c.marginEl !== target) c.marginEl.style.marginInlineEnd = "0px";
     target.style.marginInlineEnd = px(c.marginPx);
   }
 }

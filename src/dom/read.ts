@@ -1,3 +1,4 @@
+import { textMakesBox } from "../core/items.js";
 import { type FontSpec, fontSpecOf } from "./measure.js";
 
 /** One text node's worth of content with its resolved styling context. */
@@ -7,6 +8,13 @@ export interface StyledRun {
   spec: number;
   /** Inline ancestor chain within the paragraph, outermost → innermost. */
   ancestors: readonly Element[];
+  /** Px of painted-box protrusion carried by this run's first/last box. */
+  boxStartProtrusionPx?: number;
+  boxEndProtrusionPx?: number;
+  /** Source inline whose clone must receive the protrusion/safety margin so
+   * its paint moves into the margin without pinching its decoration. */
+  boxStartProtrusionOwner?: Element;
+  boxEndProtrusionOwner?: Element;
   /**
    * Inline padding+border px opening before this run / closing after it
    * (this run holds the first/last content of one or more padded inline
@@ -140,6 +148,87 @@ export function textSupported(text: string, direction: "ltr" | "rtl"): boolean {
  * element's first/last box). */
 const MARGIN_PROPS = ["marginLeft", "marginRight"] as const;
 
+/** CSSOM serializations of a fully transparent computed color. */
+function transparentColor(color: string): boolean {
+  const value = color.trim().toLowerCase();
+  if (value === "transparent") return true;
+  // Legacy computed-color form: rgba(r, g, b, 0).
+  if (/^rgba\([^)]*,\s*0(?:\.0*)?%?\s*\)$/.test(value)) return true;
+  // Modern color functions (rgb(), hsl(), color(), …): ... / 0.
+  return /\/\s*0(?:\.0*)?%?\s*\)$/.test(value);
+}
+
+interface PaintedEdges {
+  start: boolean;
+  end: boolean;
+}
+
+/** Split a computed CSS list/token stream without cutting inside colors. */
+function splitCss(value: string, commas: boolean): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < value.length; i++) {
+    const ch = value[i]!;
+    if (ch === "(") depth++;
+    else if (ch === ")") depth = Math.max(0, depth - 1);
+    else if (depth === 0 && (commas ? ch === "," : /\s/.test(ch))) {
+      const token = value.slice(start, i).trim();
+      if (token.length > 0) out.push(token);
+      start = i + 1;
+    }
+  }
+  const tail = value.slice(start).trim();
+  if (tail.length > 0) out.push(tail);
+  return out;
+}
+
+/** Visible OUTSET shadows that actually reach past a horizontal side.
+ * Inset shadows, transparent hover-ring reservations, and vertical-only
+ * zero-blur shadows (the common `0 1px 0` underline idiom) are not halos. */
+function shadowPaintedEdges(value: string, direction: "ltr" | "rtl"): PaintedEdges {
+  let left = false;
+  let right = false;
+  if (value === "none") return { start: false, end: false };
+  for (const shadow of splitCss(value, true)) {
+    const tokens = splitCss(shadow, false);
+    if (tokens.some((token) => token.toLowerCase() === "inset")) continue;
+    const color = tokens.find(
+      (token) => token === "transparent" || /^[a-z-]+\(/i.test(token),
+    );
+    if (color !== undefined && transparentColor(color)) continue;
+    const lengths = tokens
+      .filter((token) => /^[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?(?:px)?$/i.test(token))
+      .map((token) => parseFloat(token));
+    if (lengths.length < 2) continue;
+    const offsetX = lengths[0]!;
+    const blur = Math.max(0, lengths[2] ?? 0);
+    const spread = lengths[3] ?? 0;
+    // Preserve negative net reach: a sufficiently negative spread can
+    // retract even an offset shadow fully inside the border box. Flooring
+    // here would let the offset alone manufacture a painted side.
+    const reach = blur + spread;
+    if (offsetX - reach < 0) left = true;
+    if (offsetX + reach > 0) right = true;
+  }
+  return direction === "rtl" ? { start: right, end: left } : { start: left, end: right };
+}
+
+function paintedInlineEdges(
+  style: CSSStyleDeclaration,
+  direction: "ltr" | "rtl",
+): PaintedEdges {
+  // Backgrounds are box-shaped on both sides. A background clipped to text
+  // is still glyph-shaped and keeps ordinary character protrusion.
+  const clips = style.backgroundClip.split(",").map((clip) => clip.trim());
+  const clippedToText = clips.length > 0 && clips.every((clip) => clip === "text");
+  const background =
+    !clippedToText &&
+    (style.backgroundImage !== "none" || !transparentColor(style.backgroundColor));
+  if (background) return { start: true, end: true };
+  return shadowPaintedEdges(style.boxShadow, direction);
+}
+
 /**
  * Reads a paragraph into styled runs plus its available measure. Returns
  * a human-readable skip reason (string) when the content or styling is out
@@ -190,7 +279,9 @@ export function readParagraph(p: HTMLElement): ParagraphScan | string {
       if (skip !== null) return;
       if (child.nodeType === 3 /* TEXT_NODE */) {
         const text = child.nodeValue ?? "";
-        if (text.length > 0) runs.push({ text, spec, ancestors: chain, atomicKey });
+        if (text.length > 0) {
+          runs.push({ text, spec, ancestors: chain, atomicKey });
+        }
       } else if (child.nodeType === 1 /* ELEMENT_NODE */) {
         const el = child as Element;
         // Foreign elements (SVG/MathML) keep case-preserved tagNames, so
@@ -267,16 +358,26 @@ export function readParagraph(p: HTMLElement): ParagraphScan | string {
           return;
         }
         const before = runs.length;
+        const paintedHere = paintedInlineEdges(elStyle, direction);
         walk(el, [...chain, el], indexSpec(elStyle), childKey);
         if (skip !== null) return;
+        // Only padded or locally-painted elements need an edge scan/copy.
+        const inspectEdges = padded || paintedHere.start || paintedHere.end;
+        const inside = inspectEdges ? runs.slice(before) : [];
+        let firstBoxAt = -1;
+        let lastBoxAt = -1;
+        for (let i = 0; i < inside.length; i++) {
+          if (!textMakesBox(inside[i]!.text)) continue;
+          if (firstBoxAt < 0) firstBoxAt = i;
+          lastBoxAt = i;
+        }
         if (padded) {
           // The extras attach to the element's first/last runs. An element
           // with no box-worthy content would strand them (nothing to widen;
           // the writer would drop the empty element entirely) — bail.
           // Soft hyphens count as empty: the item builder emits no box for
           // them either.
-          const inside = runs.slice(before);
-          if (inside.every((r) => !/[^\s\u00AD]/.test(r.text))) {
+          if (firstBoxAt < 0) {
             skip = `padded <${el.tagName.toLowerCase()}> with no text content`;
             return;
           }
@@ -284,6 +385,38 @@ export function readParagraph(p: HTMLElement): ParagraphScan | string {
           const last = runs[runs.length - 1]!;
           first.padStartPx = (first.padStartPx ?? 0) + padStart;
           last.padEndPx = (last.padEndPx ?? 0) + padEnd;
+        }
+        if ((paintedHere.start || paintedHere.end) && firstBoxAt >= 0) {
+          // This painted box owns the distance from its border to the edge
+          // glyph, including padded descendants (already attached by the
+          // post-order walk). If an UNPAINTED padded ancestor shares that
+          // same edge, the core completes the inset from all pending pads.
+          if (paintedHere.start) {
+            let startInset = 0;
+            for (let i = 0; i <= firstBoxAt; i++) {
+              startInset += inside[i]!.padStartPx ?? 0;
+            }
+            const firstBoxRun = inside[firstBoxAt]!;
+            // Keep the zero marker too. It identifies the real open of an
+            // unpadded painted inline, where the decoration edge replaces
+            // character protrusion. Internal line slices have no marker,
+            // so their edge glyphs retain ordinary optical alignment.
+            firstBoxRun.boxStartProtrusionPx = startInset;
+            firstBoxRun.boxStartProtrusionOwner = el;
+          }
+          if (paintedHere.end) {
+            let endInset = 0;
+            for (let i = lastBoxAt; i < inside.length; i++) {
+              endInset += inside[i]!.padEndPx ?? 0;
+            }
+            // The core patches the last box when the element's raw final
+            // run is consumed (which may be whitespace-only), while the
+            // renderer finds the owner from the actual last box's run.
+            // Keep the zero marker: it distinguishes the real close of an
+            // unpadded painted inline from an internal wrap in that inline.
+            inside[inside.length - 1]!.boxEndProtrusionPx = endInset;
+            inside[lastBoxAt]!.boxEndProtrusionOwner = el;
+          }
         }
       }
       // Comments and other node types are ignored.

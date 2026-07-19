@@ -67,3 +67,39 @@ describe("fil-line letterfit accounting", () => {
     }
   });
 });
+
+describe("painted-token overfull fallback", () => {
+  it("uses exact emergency letterfit when protrusion is off and padding alone exceeds the measure", () => {
+    const opts = {
+      ...defaultBuildOptions,
+      protrusion: false as const,
+      tracking: { max: 0.03, shrink: 0.03 },
+    };
+    const para = buildItems(
+      [
+        {
+          text: "getBoundingClientRect()",
+          run: 0,
+          paintedBox: true,
+          padStartPx: 5,
+          padEndPx: 5,
+          // Presence (including zero) identifies the actual painted close.
+          boxEndProtrusionPx: 0,
+        },
+      ],
+      [mockRun()],
+      opts,
+      mockMeasure,
+    );
+    const box = para.items.find((item) => item.type === ItemType.Box)!;
+    const width = box.width - box.trackShrink - 2;
+    const result = breakParagraph(para, width, defaultBreakOptions);
+    const line = layoutLines(para, result, width, opts)[0]!;
+
+    expect(line.trackRatio).toBeLessThan(-1);
+    expect(line.trackRatio).toBeGreaterThanOrEqual(-2);
+    expect(line.overfull).toBe(false);
+    expect(line.overflowPx).toBe(0);
+    expect(box.width + line.trackRatio * box.trackShrink).toBeCloseTo(width, 6);
+  });
+});

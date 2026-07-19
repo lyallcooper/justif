@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- Inline backgrounds and box-shadow halos now participate in optical margin
+  alignment. Their side padding/border can hang outside the measure so the
+  enclosed text stays aligned with surrounding prose; at a true outer edge,
+  the decoration replaces glyph protrusion for unpadded code chips, badges,
+  and highlighted text. Punctuation and inserted hyphens at an internal
+  `box-decoration-break: slice` edge still receive ordinary character
+  protrusion. `protrusion: false` keeps the complete painted box inside the
+  measure. Shadow detection ignores transparent reservations, inset
+  shadows, and sharp (zero-blur) vertical-only underline shadows; blurred
+  vertical shadows still count when their blur reaches an inline side.
+  No-break-space and nested padding edges share the core tokenizer's exact
+  box ownership. When protrusion is off, a single painted token made overfull
+  only by its fixed insets can use bounded emergency letterfit (at most twice
+  the configured tracking shrink) rather than leaking its halo past the
+  measure.
+
 ## 0.4.1 (2026-07-18)
 
 - Naturally one-line elements now stay on native layout instead of having the

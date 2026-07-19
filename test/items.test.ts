@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildItems } from "../src/core/items.js";
+import { buildItems, textMakesBox } from "../src/core/items.js";
 import {
   type BuildOptions,
   defaultBuildOptions,
@@ -308,6 +308,12 @@ describe("buildItems", () => {
 });
 
 describe("inline box extras (padding/border)", () => {
+  it("shares box-worthiness with the tokenizer for no-break spaces", () => {
+    expect(textMakesBox(" \t\n\u00AD")).toBe(false);
+    expect(textMakesBox("\u00A0")).toBe(true);
+    expect(textMakesBox("\u202F")).toBe(true);
+  });
+
   const protrusionOpts: Partial<BuildOptions> = { protrusion: latinProtrusion };
 
   it("folds padStart/padEnd into the element's first/last box widths", () => {
@@ -387,6 +393,160 @@ describe("inline box extras (padding/border)", () => {
     expect(box.width).toBeCloseTo(w + 20);
     expect(box.expStretch).toBeCloseTo(w * (mockRun().ratioAtMax - 1));
     expect(box.trackStretch).toBeCloseTo(w * 0.03);
+  });
+
+  it("suppresses glyph and inserted-hyphen protrusion inside a painted inline box", () => {
+    const para = buildItems(
+      [{ text: '"beautiful,"', run: 0, paintedBox: true }],
+      [mockRun()],
+      {
+        ...defaultBuildOptions,
+        protrusion: { '"': { l: 300 }, ",": { r: 500 }, "-": { r: 500 } },
+        hyphenate: () => ["beau", "tiful"],
+      },
+      mockMeasure,
+    );
+    const boxes = para.items.filter((it) => it.type === ItemType.Box);
+    const hyphen = para.items.find(
+      (it) => it.type === ItemType.Penalty && it.width > 0,
+    );
+    expect(boxes[0]!.lp).toBe(0);
+    expect(boxes[0]!.lpFirst).toBe(0);
+    expect(boxes[boxes.length - 1]!.rp).toBe(0);
+    expect(hyphen?.type).toBe(ItemType.Penalty);
+    if (hyphen?.type !== ItemType.Penalty) throw new Error("expected hyphen penalty");
+    expect(hyphen.rp).toBe(0);
+  });
+
+  it("suppresses character protrusion only on a side actually painted", () => {
+    const opts = {
+      ...defaultBuildOptions,
+      protrusion: { '"': { l: 300 }, ",": { r: 500 } },
+    };
+    const start = buildItems(
+      [{ text: '"edge,', run: 0, paintedStart: true }],
+      [mockRun()],
+      opts,
+      mockMeasure,
+    ).items.find((it) => it.type === ItemType.Box)!;
+    expect(start.lp).toBe(0);
+    expect(start.rp).toBeGreaterThan(0);
+
+    const end = buildItems(
+      [{ text: '"edge,', run: 0, paintedEnd: true }],
+      [mockRun()],
+      opts,
+      mockMeasure,
+    ).items.find((it) => it.type === ItemType.Box)!;
+    expect(end.lp).toBeGreaterThan(0);
+    expect(end.rp).toBe(0);
+  });
+
+  it("retains character protrusion at an internal slice of a painted inline", () => {
+    const para = buildItems(
+      [
+        {
+          text: "{ edge: next }",
+          run: 0,
+          // Zero-valued markers identify the painter's REAL open/close.
+          // Boxes between them can end an internal line slice and should
+          // still use their glyph protrusion.
+          boxStartProtrusionPx: 0,
+          boxEndProtrusionPx: 0,
+        },
+      ],
+      [mockRun()],
+      { ...defaultBuildOptions, protrusion: latinProtrusion },
+      mockMeasure,
+    );
+    const boxes = para.items.filter((it) => it.type === ItemType.Box);
+    expect(boxes.map((box) => box.text)).toEqual(["{", "edge:", "next", "}"]);
+    expect(boxes[0]!.lp).toBe(0);
+    expect(boxes[1]!.rp).toBeGreaterThan(0);
+    expect(boxes[boxes.length - 1]!.rp).toBe(0);
+  });
+
+  it("hangs a painted box's side insets while keeping its glyphs on the measure", () => {
+    const texts = [
+      {
+        text: '"halo."',
+        run: 0,
+        paintedBox: true,
+        padStartPx: 6,
+        padEndPx: 8,
+        boxStartProtrusionPx: 6,
+        boxEndProtrusionPx: 8,
+      },
+    ];
+    const para = buildItems(
+      texts,
+      [mockRun()],
+      { ...defaultBuildOptions, protrusion: latinProtrusion },
+      mockMeasure,
+    );
+    const box = para.items.find((it) => it.type === ItemType.Box)!;
+    expect(box.width).toBeCloseTo(mockMeasure.width('"halo."', mockRun()) + 14);
+    expect(box.lp).toBe(6);
+    expect(box.lpFirst).toBe(6);
+    expect(box.rp).toBe(8);
+
+    const disabled = buildItems(
+      texts,
+      [mockRun()],
+      { ...defaultBuildOptions, protrusion: false },
+      mockMeasure,
+    );
+    const disabledBox = disabled.items.find((it) => it.type === ItemType.Box)!;
+    expect(disabledBox.lp).toBe(0);
+    expect(disabledBox.lpFirst).toBe(0);
+    expect(disabledBox.rp).toBe(0);
+  });
+
+  it("includes padded ancestors outside a painted descendant on both edges", () => {
+    const para = buildItems(
+      [
+        {
+          text: "halo",
+          run: 0,
+          paintedBox: true,
+          // Painted child = 6px; an unpainted ancestor contributes 4px
+          // on the same raw run after the child's reader pass.
+          padStartPx: 10,
+          padEndPx: 10,
+          boxStartProtrusionPx: 6,
+          boxEndProtrusionPx: 6,
+        },
+      ],
+      [mockRun()],
+      { ...defaultBuildOptions, protrusion: latinProtrusion },
+      mockMeasure,
+    );
+    const box = para.items.find((it) => it.type === ItemType.Box)!;
+    expect(box.lp).toBe(10);
+    expect(box.rp).toBe(10);
+    expect(box.paintedEnd).toBe(true);
+  });
+
+  it("preserves a painted end through an ancestor's whitespace-only close", () => {
+    const para = buildItems(
+      [
+        {
+          text: "halo",
+          run: 0,
+          paintedBox: true,
+          padEndPx: 6,
+          boxEndProtrusionPx: 6,
+        },
+        { text: " ", run: 1, padEndPx: 4 },
+      ],
+      [mockRun(), mockRun()],
+      { ...defaultBuildOptions, protrusion: latinProtrusion },
+      mockMeasure,
+    );
+    const box = para.items.find((it) => it.type === ItemType.Box)!;
+    expect(box.width).toBeCloseTo(mockMeasure.width("halo", mockRun()) + 10);
+    expect(box.rp).toBe(10);
+    expect(box.paintedEnd).toBe(true);
   });
 });
 

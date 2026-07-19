@@ -1,6 +1,7 @@
 import { maxEndingStretch } from "./badness.js";
 import { breakRp, endingFloorRatio } from "./items.js";
 import {
+  type Box,
   type BreakResult,
   type BuildOptions,
   ItemType,
@@ -133,6 +134,11 @@ export function layoutLines(
     let glueRatio = 0;
     let overflowPx = 0;
     let overfull = breaks.overfull[i] ?? false;
+    /** Emergency letterfit for one otherwise-overfull painted token when
+     * protrusion is disabled. Normal tracking remains capped at −1; this
+     * exceptional ratio absorbs only the residual needed to keep the fixed
+     * decoration inside the measure. */
+    let paintedTokenTrackRatio: number | null = null;
     /** Ending letterfit recruited by the lastLineMinWidth floor; null =
      * the default fil behavior (natural on the stretch side). */
     let filTrack: number | null = null;
@@ -254,6 +260,43 @@ export function layoutLines(
       // reported 0 and starved the renderer's wrap guard.
       overflowPx = Math.max(0, -need - Zg);
       if (overflowPx > 1e-6) overfull = true;
+
+      // A token whose GLYPHS fit after ordinary tracking can still become
+      // overfull solely because its painted padding is fixed layout width.
+      // With protrusion disabled there is nowhere legitimate for that halo
+      // to hang. For the tightly-scoped, unambiguous case of ONE painted
+      // ending box, close only its letterfit by the exact residual. This is
+      // preferable to either violating the no-protrusion contract or
+      // inventing a break inside code. Multi-box lines and tracking:false
+      // retain ordinary TeX overfull behavior.
+      if (
+        overflowPx > 1e-6 &&
+        opts.protrusion === false &&
+        opts.tracking !== false
+      ) {
+        let soleBox: Box | null = null;
+        for (let j = start; j < end; j++) {
+          const candidate = items[j]!;
+          if (candidate.type !== ItemType.Box) continue;
+          if (soleBox !== null) {
+            soleBox = null;
+            break;
+          }
+          soleBox = candidate;
+        }
+        if (
+          soleBox?.paintedEnd === true &&
+          soleBox.trackShrink > 0 &&
+          // Never reverse/collapse a pathological token just to honor a
+          // huge author inset: emergency letterfit may at most double the
+          // configured shrink budget (−6% under the public default).
+          overflowPx <= soleBox.trackShrink + 1e-9
+        ) {
+          paintedTokenTrackRatio = -1 - overflowPx / soleBox.trackShrink;
+          overflowPx = 0;
+          overfull = false;
+        }
+      }
     }
 
     // Spaces never shrink past their limit (TeX: overfull lines overflow
@@ -261,9 +304,11 @@ export function layoutLines(
     // can sub-pixel slips from expansion quantization.
     if (glueRatio < -1) glueRatio = -1;
 
-    // Tracking saturates at its budget: beyond ratio 1 the letterfit stops
-    // opening (±3% is a hard cap, not a hint) and the SPACES stretch on
-    // alone. Re-derive the glue-only ratio so the line still fills: the
+    // Tracking normally saturates at its budget: beyond ratio 1 the
+    // letterfit stops opening and the SPACES stretch on alone. The one
+    // negative-side exception was computed above for an overfull single
+    // painted token with protrusion disabled. Re-derive the glue-only ratio
+    // for ordinary stretch saturation so the line still fills: the
     // residual R satisfied R = (Yg − Yt)·s + Yt·min(s, 1); when the pooled
     // s exceeds 1, solve the saturated form for the spaces' s.
     // Fil lines keep natural letterfit on the STRETCH side (both the
@@ -272,7 +317,9 @@ export function layoutLines(
     // branch above against the POOLED Zg, tracking included, so the
     // letterfit share must render or the ending sets wider than modeled
     // and overflows the measure.
-    let trackRatio = Yfil > 0 ? (filTrack ?? Math.min(glueRatio, 0)) : glueRatio;
+    let trackRatio =
+      paintedTokenTrackRatio ??
+      (Yfil > 0 ? (filTrack ?? Math.min(glueRatio, 0)) : glueRatio);
     if (Yfil === 0 && glueRatio > 1 && Yt > 0) {
       trackRatio = 1;
       const glueOnly = Yg - Yt;
