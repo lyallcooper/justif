@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.2 (2026-07-19)
 
 - Inline backgrounds and box-shadow halos now participate in optical margin
   alignment. Their side padding/border can hang outside the measure so the
