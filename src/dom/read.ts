@@ -1,7 +1,7 @@
 import { textMakesBox } from "../core/items.js";
 import { type FontSpec, fontSpecOf } from "./measure.js";
 
-/** One text node's worth of content with its resolved styling context. */
+/** One resolved styling run; adjacent sibling text nodes may be coalesced. */
 export interface StyledRun {
   text: string;
   /** Index into ParagraphScan.specs. */
@@ -275,14 +275,28 @@ export function readParagraph(p: HTMLElement): ParagraphScan | string {
     spec: number,
     atomicKey: number | undefined,
   ): void => {
+    // JSX expressions such as {" "} can produce a text node separate from
+    // the prose beside it; server renderers may also put empty comments
+    // between those adjacent text children. They still form one browser
+    // shaping/style run. Coalesce them here so the renderer does not treat
+    // the literal space as a cross-run boundary and replace it with NBSP.
+    // An intervening element resets the candidate even when it is empty:
+    // element boundaries remain meaningful to DOM reconstruction.
+    let adjacentTextRun: StyledRun | null = null;
     for (let child = node.firstChild; child !== null; child = child.nextSibling) {
       if (skip !== null) return;
       if (child.nodeType === 3 /* TEXT_NODE */) {
         const text = child.nodeValue ?? "";
         if (text.length > 0) {
-          runs.push({ text, spec, ancestors: chain, atomicKey });
+          if (adjacentTextRun === null) {
+            adjacentTextRun = { text, spec, ancestors: chain, atomicKey };
+            runs.push(adjacentTextRun);
+          } else {
+            adjacentTextRun.text += text;
+          }
         }
       } else if (child.nodeType === 1 /* ELEMENT_NODE */) {
+        adjacentTextRun = null;
         const el = child as Element;
         // Foreign elements (SVG/MathML) keep case-preserved tagNames, so
         // match case-insensitively.

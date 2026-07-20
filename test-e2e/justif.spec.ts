@@ -1463,6 +1463,103 @@ test("links wrap across lines as single elements with exact text", async ({ page
   expect(links[1]).toEqual({ href: "#well", id: "link2", text: "the deep well" });
 });
 
+test("coalesces JSX-style literal-space text nodes", async ({ page }) => {
+  const results = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    const paragraphs: HTMLElement[] = [];
+    const originals = new Map<string, string>();
+    const link = (): HTMLAnchorElement => {
+      const a = document.createElement("a");
+      a.href = "https://magit.vc/";
+      a.textContent = "Magit";
+      return a;
+    };
+    const add = (p: HTMLElement): void => {
+      p.style.width = "280px";
+      host.append(p);
+      paragraphs.push(p);
+      originals.set(p.id, p.textContent ?? "");
+    };
+
+    for (const comments of [false, true]) {
+      const p = document.createElement("p");
+      p.id = comments ? "jsx-space-comment" : "jsx-space-adjacent";
+      p.append(
+        document.createTextNode(
+          "Magritte is a fast, keyboard-first git client imbued with the spirit of",
+        ),
+      );
+      // Server-rendered JSX may delimit adjacent text children with comments.
+      if (comments) p.append(document.createComment(""));
+      // JSX's {" "} is emitted as its own text node.
+      p.append(
+        document.createTextNode(" "),
+        link(),
+        document.createTextNode(", no Emacs required."),
+      );
+      add(p);
+    }
+
+    // Exercise the mirrored form too. At a real element boundary the
+    // renderer may still need NBSP for deterministic wrapping, but splitting
+    // the following prose into JSX text children must not create another run.
+    for (const explicit of [false, true]) {
+      const p = document.createElement("p");
+      p.id = explicit ? "jsx-space-after-explicit" : "jsx-space-after-merged";
+      p.append(
+        document.createTextNode(
+          "Magritte is a fast, keyboard-first git client inspired by ",
+        ),
+        link(),
+      );
+      const suffix = "and designed for fast work without requiring Emacs.";
+      if (explicit) {
+        p.append(
+          document.createComment(""),
+          document.createTextNode(" "),
+          document.createTextNode(suffix),
+        );
+      } else {
+        p.append(document.createTextNode(` ${suffix}`));
+      }
+      add(p);
+    }
+
+    const controller = window.__justif.justify(paragraphs, {
+      expansion: false,
+      protrusion: false,
+    });
+    await controller.ready;
+    return paragraphs.map((p) => ({
+      id: p.id,
+      enhanced: p.hasAttribute("data-justif"),
+      original: originals.get(p.id),
+      rendered: p.textContent,
+      linkText: p.querySelector("a")?.textContent,
+      lines: window.__justifLines(p).lines.length,
+      segments: [...p.querySelectorAll<HTMLElement>(".justif-seg")].map((s) => s.textContent),
+    }));
+  });
+
+  for (const result of results) {
+    expect(result.enhanced, result.id).toBe(true);
+    expect(result.lines, result.id).toBeGreaterThan(1);
+    expect(result.linkText, result.id).toBe("Magit");
+  }
+
+  const adjacent = results.find((r) => r.id === "jsx-space-adjacent")!;
+  const comment = results.find((r) => r.id === "jsx-space-comment")!;
+  expect(adjacent.rendered).toBe(adjacent.original);
+  expect(comment.rendered).toBe(comment.original);
+  expect(comment.segments).toEqual(adjacent.segments);
+
+  const mergedAfter = results.find((r) => r.id === "jsx-space-after-merged")!;
+  const explicitAfter = results.find((r) => r.id === "jsx-space-after-explicit")!;
+  expect(explicitAfter.rendered?.replace(/\u00a0/g, " ")).toBe(explicitAfter.original);
+  expect(explicitAfter.rendered).toBe(mergedAfter.rendered);
+  expect(explicitAfter.segments).toEqual(mergedAfter.segments);
+});
+
 test("selection across a line break copies a space, not a newline", async ({ page }) => {
   await enhance(page, { hyphenate: true, protrusion: false });
   const copied = await page.evaluate(() => {
