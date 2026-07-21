@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fixed spaces emitted as separate JSX text nodes, such as `{" "}`, being
+  treated as non-breaking spaces during justification. JSX and equivalent
+  plain HTML now wrap identically around links and other inline content.
 - The drop-in `dist/auto.js` script is now minified in release builds, reducing
   its uncompressed size by roughly 44% while keeping the existing CDN URL.
 
