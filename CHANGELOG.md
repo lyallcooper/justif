@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- The drop-in `dist/auto.js` script is now minified in release builds, reducing
+  its uncompressed size by roughly 44% while keeping the existing CDN URL.
+
 ## 0.4.2 (2026-07-19)
 
 - Fixed optical margin alignment for inline code, badges, and highlighted

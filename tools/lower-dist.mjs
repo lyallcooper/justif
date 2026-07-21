@@ -11,7 +11,10 @@
  * destructuring transform gives those pipelines nothing to touch.
  *
  * The esbuild verification pass below is the regression gate: every dist
- * file must transform cleanly at Vite 6's default target list.
+ * file must transform cleanly at Vite 6's default target list. Once that
+ * compatibility lowering is complete, the browser-facing auto.js bundle is
+ * minified in place so the documented drop-in URL stays small without
+ * introducing a second release artifact or URL.
  */
 import { transformAsync } from "@babel/core";
 import { readdirSync, readFileSync, statSync, writeFileSync, existsSync } from "node:fs";
@@ -71,3 +74,28 @@ for (const path of files) {
 }
 
 console.log(`dist lowered for ${VERIFY_TARGET.join(",")} (${lowered}/${files.length} files rewritten)`);
+
+// auto.js is loaded directly by browsers rather than passed through an
+// application's bundler, so it is the one entry that needs to ship minified.
+// Minify only after Babel has lowered destructuring: doing this in tsup would
+// make Babel expand the bundle again during the compatibility pass above.
+const autoPath = join(dist, "auto.js");
+const autoSource = readFileSync(autoPath, "utf8");
+const minifiedAuto = await esbuildTransform(autoSource, {
+  target: VERIFY_TARGET,
+  format: "esm",
+  loader: "js",
+  minify: true,
+});
+
+const sourceBytes = Buffer.byteLength(autoSource);
+const minifiedBytes = Buffer.byteLength(minifiedAuto.code);
+if (minifiedBytes >= sourceBytes) {
+  throw new Error(
+    `lower-dist: minifying auto.js did not reduce its size (${sourceBytes} -> ${minifiedBytes} bytes)`,
+  );
+}
+writeFileSync(autoPath, minifiedAuto.code);
+console.log(
+  `dist/auto.js minified (${(sourceBytes / 1024).toFixed(1)} KiB -> ${(minifiedBytes / 1024).toFixed(1)} KiB)`,
+);

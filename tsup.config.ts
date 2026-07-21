@@ -21,7 +21,8 @@ export default defineConfig([
   {
     // The drop-in script: fully self-contained (own config block, single
     // entry, so nothing chunk-splits — one file works from any CDN/static
-    // host with zero companion requests).
+    // host with zero companion requests). tools/lower-dist.mjs minifies this
+    // bundle after its compatibility transforms have run.
     ...shared,
     entry: { auto: "src/auto.ts" },
     sourcemap: false,
