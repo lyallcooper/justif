@@ -979,6 +979,7 @@
           <option value="tale">Frog Prince</option>
           <option value="frankenstein">Frankenstein</option>
           <option value="alice">Alice in Wonderland (long)</option>
+          <option value="longParagraph">Ulysses (long paragraph)</option>
         </optgroup>
         <optgroup label="Technical">
           <option value="tech">Technical post</option>
@@ -1112,9 +1113,11 @@
   // comparison especially visible at the default measure. "alice":
   // Carroll's chapters I–VI complete (~13,400 words, ~300 paragraphs;
   // Project Gutenberg #11, public domain) — a long-document performance
-  // stress test. Verse (the crocodile poem, Father William) keeps its <br>
-  // line structure, which justif deliberately bails on: those paragraphs
-  // render natively in both columns.
+  // stress test. "longParagraph" is a naturally long, 4,401-word paragraph
+  // from Ulysses that stresses one large line-breaking problem. Verse (the
+  // crocodile poem, Father William) keeps its <br> line structure in "alice",
+  // which justif deliberately bails on: those paragraphs render natively in
+  // both columns.
   const SAMPLES = {
     tale: `
       <p>In olden times when wishing still helped one, there lived a king
@@ -1317,6 +1320,283 @@ await controller.ready;</code></pre>
       <p>Any attempt to brew coffee with a teapot should result in the error
       code “<code>418 I’m a teapot</code>”. The resulting entity body
       <span class="smcp">may</span> be short and stout.</p>`,
+
+    // James Joyce, Ulysses, Episode 18 (Project Gutenberg #4300). This
+    // naturally occurring paragraph contains 4,401 words in the source.
+    longParagraph: `
+      <p>theyre all so different Boylan talking about the shape of my foot he noticed
+      at once even before he was introduced when I was in the D B C with Poldy
+      laughing and trying to listen I was waggling my foot we both ordered 2 teas and
+      plain bread and butter I saw him looking with his two old maids of sisters when
+      I stood up and asked the girl where it was what do I care with it dropping out
+      of me and that black closed breeches he made me buy takes you half an hour to
+      let them down wetting all myself always with some brandnew fad every other week
+      such a long one I did I forgot my suede gloves on the seat behind that I never
+      got after some robber of a woman and he wanted me to put it in the Irish times
+      lost in the ladies lavatory D B C Dame street finder return to Mrs Marion Bloom
+      and I saw his eyes on my feet going out through the turning door he was looking
+      when I looked back and I went there for tea 2 days after in the hope but he
+      wasnt now how did that excite him because I was crossing them when we were in
+      the other room first he meant the shoes that are too tight to walk in my hand is
+      nice like that if I only had a ring with the stone for my month a nice
+      aquamarine Ill stick him for one and a gold bracelet I dont like my foot so much
+      still I made him spend once with my foot the night after Goodwins botchup of a
+      concert so cold and windy it was well we had that rum in the house to mull and
+      the fire wasnt black out when he asked to take off my stockings lying on the
+      hearthrug in Lombard street west and another time it was my muddy boots hed like
+      me to walk in all the horses dung I could find but of course hes not natural
+      like the rest of the world that I what did he say I could give 9 points in 10 to
+      Katty Lanner and beat her what does that mean I asked him I forget what he said
+      because the stoppress edition just passed and the man with the curly hair in the
+      Lucan dairy thats so polite I think I saw his face before somewhere I noticed
+      him when I was tasting the butter so I took my time Bartell DArcy too that he
+      used to make fun of when he commenced kissing me on the choir stairs after I
+      sang Gounods <em>Ave Maria</em> what are we waiting for O my heart kiss me
+      straight on the brow and part which is my brown part he was pretty hot for all
+      his tinny voice too my low notes he was always raving about if you can believe
+      him I liked the way he used his mouth singing then he said wasnt it terrible to
+      do that there in a place like that I dont see anything so terrible about it Ill
+      tell him about that some day not now and surprise him ay and Ill take him there
+      and show him the very place too we did it so now there you are like it or lump
+      it he thinks nothing can happen without him knowing he hadnt an idea about my
+      mother till we were engaged otherwise hed never have got me so cheap as he did
+      he was 10 times worse himself anyhow begging me to give him a tiny bit cut off
+      my drawers that was the evening coming along Kenilworth square he kissed me in
+      the eye of my glove and I had to take it off asking me questions is it permitted
+      to enquire the shape of my bedroom so I let him keep it as if I forgot it to
+      think of me when I saw him slip it into his pocket of course hes mad on the
+      subject of drawers thats plain to be seen always skeezing at those brazenfaced
+      things on the bicycles with their skirts blowing up to their navels even when
+      Milly and I were out with him at the open air fete that one in the cream muslin
+      standing right against the sun so he could see every atom she had on when he saw
+      me from behind following in the rain I saw him before he saw me however standing
+      at the corner of the Harolds cross road with a new raincoat on him with the
+      muffler in the Zingari colours to show off his complexion and the brown hat
+      looking slyboots as usual what was he doing there where hed no business they can
+      go and get whatever they like from anything at all with a skirt on it and were
+      not to ask any questions but they want to know where were you where are you
+      going I could feel him coming along skulking after me his eyes on my neck he had
+      been keeping away from the house he felt it was getting too warm for him so I
+      halfturned and stopped then he pestered me to say yes till I took off my glove
+      slowly watching him he said my openwork sleeves were too cold for the rain
+      anything for an excuse to put his hand anear me drawers drawers the whole
+      blessed time till I promised to give him the pair off my doll to carry about in
+      his waistcoat pocket <em>O Maria Santisima</em> he did look a big fool dreeping
+      in the rain splendid set of teeth he had made me hungry to look at them and
+      beseeched of me to lift the orange petticoat I had on with the sunray pleats
+      that there was nobody he said hed kneel down in the wet if I didnt so
+      persevering he would too and ruin his new raincoat you never know what freak
+      theyd take alone with you theyre so savage for it if anyone was passing so I
+      lifted them a bit and touched his trousers outside the way I used to Gardner
+      after with my ring hand to keep him from doing worse where it was too public I
+      was dying to find out was he circumcised he was shaking like a jelly all over
+      they want to do everything too quick take all the pleasure out of it and father
+      waiting all the time for his dinner he told me to say I left my purse in the
+      butchers and had to go back for it what a Deceiver then he wrote me that letter
+      with all those words in it how could he have the face to any woman after his
+      company manners making it so awkward after when we met asking me have I offended
+      you with my eyelids down of course he saw I wasnt he had a few brains not like
+      that other fool Henny Doyle he was always breaking or tearing something in the
+      charades I hate an unlucky man and if I knew what it meant of course I had to
+      say no for form sake dont understand you I said and wasnt it natural so it is of
+      course it used to be written up with a picture of a womans on that wall in
+      Gibraltar with that word I couldnt find anywhere only for children seeing it too
+      young then writing every morning a letter sometimes twice a day I liked the way
+      he made love then he knew the way to take a woman when he sent me the 8 big
+      poppies because mine was the 8th then I wrote the night he kissed my heart at
+      Dolphins barn I couldnt describe it simply it makes you feel like nothing on
+      earth but he never knew how to embrace well like Gardner I hope hell come on
+      Monday as he said at the same time four I hate people who come at all hours
+      answer the door you think its the vegetables then its somebody and you all
+      undressed or the door of the filthy sloppy kitchen blows open the day old
+      frostyface Goodwin called about the concert in Lombard street and I just after
+      dinner all flushed and tossed with boiling old stew dont look at me professor I
+      had to say Im a fright yes but he was a real old gent in his way it was
+      impossible to be more respectful nobody to say youre out you have to peep out
+      through the blind like the messengerboy today I thought it was a putoff first
+      him sending the port and the peaches first and I was just beginning to yawn with
+      nerves thinking he was trying to make a fool of me when I knew his tattarrattat
+      at the door he must have been a bit late because it was 1/4 after 3 when I saw
+      the 2 Dedalus girls coming from school I never know the time even that watch he
+      gave me never seems to go properly Id want to get it looked after when I threw
+      the penny to that lame sailor for England home and beauty when I was whistling
+      there is a charming girl I love and I hadnt even put on my clean shift or
+      powdered myself or a thing then this day week were to go to Belfast just as well
+      he has to go to Ennis his fathers anniversary the 27th it wouldnt be pleasant if
+      he did suppose our rooms at the hotel were beside each other and any fooling
+      went on in the new bed I couldnt tell him to stop and not bother me with him in
+      the next room or perhaps some protestant clergyman with a cough knocking on the
+      wall then hed never believe the next day we didnt do something its all very well
+      a husband but you cant fool a lover after me telling him we never did anything
+      of course he didnt believe me no its better hes going where he is besides
+      something always happens with him the time going to the Mallow concert at
+      Maryborough ordering boiling soup for the two of us then the bell rang out he
+      walks down the platform with the soup splashing about taking spoonfuls of it
+      hadnt he the nerve and the waiter after him making a holy show of us screeching
+      and confusion for the engine to start but he wouldnt pay till he finished it the
+      two gentlemen in the 3rd class carriage said he was quite right so he was too
+      hes so pigheaded sometimes when he gets a thing into his head a good job he was
+      able to open the carriage door with his knife or theyd have taken us on to Cork
+      I suppose that was done out of revenge on him O I love jaunting in a train or a
+      car with lovely soft cushions I wonder will he take a 1st class for me he might
+      want to do it in the train by tipping the guard well O I suppose therell be the
+      usual idiots of men gaping at us with their eyes as stupid as ever they can
+      possibly be that was an exceptional man that common workman that left us alone
+      in the carriage that day going to Howth Id like to find out something about him
+      1 or 2 tunnels perhaps then you have to look out of the window all the nicer
+      then coming back suppose I never came back what would they say eloped with him
+      that gets you on on the stage the last concert I sang at where its over a year
+      ago when was it St Teresas hall Clarendon St little chits of missies they have
+      now singing Kathleen Kearney and her like on account of father being in the army
+      and my singing the absentminded beggar and wearing a brooch for Lord Roberts
+      when I had the map of it all and Poldy not Irish enough was it him managed it
+      this time I wouldnt put it past him like he got me on to sing in the <em>Stabat
+      Mater</em> by going around saying he was putting Lead Kindly Light to music I
+      put him up to that till the jesuits found out he was a freemason thumping the
+      piano lead Thou me on copied from some old opera yes and he was going about with
+      some of them Sinner Fein lately or whatever they call themselves talking his
+      usual trash and nonsense he says that little man he showed me without the neck
+      is very intelligent the coming man Griffiths is he well he doesnt look it thats
+      all I can say still it must have been him he knew there was a boycott I hate the
+      mention of their politics after the war that Pretoria and Ladysmith and
+      Bloemfontein where Gardner lieut Stanley G 8th Bn 2nd East Lancs Rgt of enteric
+      fever he was a lovely fellow in khaki and just the right height over me Im sure
+      he was brave too he said I was lovely the evening we kissed goodbye at the canal
+      lock my Irish beauty he was pale with excitement about going away or wed be seen
+      from the road he couldnt stand properly and I so hot as I never felt they could
+      have made their peace in the beginning or old oom Paul and the rest of the other
+      old Krugers go and fight it out between them instead of dragging on for years
+      killing any finelooking men there were with their fever if he was even decently
+      shot it wouldnt have been so bad I love to see a regiment pass in review the
+      first time I saw the Spanish cavalry at La Roque it was lovely after looking
+      across the bay from Algeciras all the lights of the rock like fireflies or those
+      sham battles on the 15 acres the Black Watch with their kilts in time at the
+      march past the 10th hussars the prince of Wales own or the lancers O the lancers
+      theyre grand or the Dublins that won Tugela his father made his money over
+      selling the horses for the cavalry well he could buy me a nice present up in
+      Belfast after what I gave him theyve lovely linen up there or one of those nice
+      kimono things I must buy a mothball like I had before to keep in the drawer with
+      them it would be exciting going round with him shopping buying those things in a
+      new city better leave this ring behind want to keep turning and turning to get
+      it over the knuckle there or they might bell it round the town in their papers
+      or tell the police on me but theyd think were married O let them all go and
+      smother themselves for the fat lot I care he has plenty of money and hes not a
+      marrying man so somebody better get it out of him if I could find out whether he
+      likes me I looked a bit washy of course when I looked close in the handglass
+      powdering a mirror never gives you the expression besides scrooching down on me
+      like that all the time with his big hipbones hes heavy too with his hairy chest
+      for this heat always having to lie down for them better for him put it into me
+      from behind the way Mrs Mastiansky told me her husband made her like the dogs do
+      it and stick out her tongue as far as ever she could and he so quiet and mild
+      with his tingating cither can you ever be up to men the way it takes them lovely
+      stuff in that blue suit he had on and stylish tie and socks with the skyblue
+      silk things on them hes certainly welloff I know by the cut his clothes have and
+      his heavy watch but he was like a perfect devil for a few minutes after he came
+      back with the stoppress tearing up the tickets and swearing blazes because he
+      lost 20 quid he said he lost over that outsider that won and half he put on for
+      me on account of Lenehans tip cursing him to the lowest pits that sponger he was
+      making free with me after the Glencree dinner coming back that long joult over
+      the featherbed mountain after the lord Mayor looking at me with his dirty eyes
+      Val Dillon that big heathen I first noticed him at dessert when I was cracking
+      the nuts with my teeth I wished I could have picked every morsel of that chicken
+      out of my fingers it was so tasty and browned and as tender as anything only for
+      I didnt want to eat everything on my plate those forks and fishslicers were
+      hallmarked silver too I wish I had some I could easily have slipped a couple
+      into my muff when I was playing with them then always hanging out of them for
+      money in a restaurant for the bit you put down your throat we have to be
+      thankful for our mangy cup of tea itself as a great compliment to be noticed the
+      way the world is divided in any case if its going to go on I want at least two
+      other good chemises for one thing and but I dont know what kind of drawers he
+      likes none at all I think didnt he say yes and half the girls in Gibraltar never
+      wore them either naked as God made them that Andalusian singing her Manola she
+      didnt make much secret of what she hadnt yes and the second pair of silkette
+      stockings is laddered after one days wear I could have brought them back to
+      Lewers this morning and kicked up a row and made that one change them only not
+      to upset myself and run the risk of walking into him and ruining the whole thing
+      and one of those kidfitting corsets Id want advertised cheap in the Gentlewoman
+      with elastic gores on the hips he saved the one I have but thats no good what
+      did they say they give a delightful figure line 11/6 obviating that unsightly
+      broad appearance across the lower back to reduce flesh my belly is a bit too big
+      Ill have to knock off the stout at dinner or am I getting too fond of it the
+      last they sent from ORourkes was as flat as a pancake he makes his money easy
+      Larry they call him the old mangy parcel he sent at Xmas a cottage cake and a
+      bottle of hogwash he tried to palm off as claret that he couldnt get anyone to
+      drink God spare his spit for fear hed die of the drouth or I must do a few
+      breathing exercises I wonder is that antifat any good might overdo it the thin
+      ones are not so much the fashion now garters that much I have the violet pair I
+      wore today thats all he bought me out of the cheque he got on the first O no
+      there was the face lotion I finished the last of yesterday that made my skin
+      like new I told him over and over again get that made up in the same place and
+      dont forget it God only knows whether he did after all I said to him Ill know by
+      the bottle anyway if not I suppose Ill only have to wash in my piss like beeftea
+      or chickensoup with some of that opoponax and violet I thought it was beginning
+      to look coarse or old a bit the skin underneath is much finer where it peeled
+      off there on my finger after the burn its a pity it isnt all like that and the
+      four paltry handkerchiefs about 6/- in all sure you cant get on in this world
+      without style all going in food and rent when I get it Ill lash it around I tell
+      you in fine style I always want to throw a handful of tea into the pot measuring
+      and mincing if I buy a pair of old brogues itself do you like those new shoes
+      yes were they Ive no clothes at all the brown costume and the skirt and jacket
+      and the one at the cleaners 3 whats that for any woman cutting up this old hat
+      and patching up the other the men wont look at you and women try to walk on you
+      because they know youve no man then with all the things getting dearer every day
+      for the 4 years more I have of life up to 35 no Im what am I at all Ill be 33 in
+      September will I what O well look at that Mrs Galbraith shes much older than me
+      I saw her when I was out last week her beautys on the wane she was a lovely
+      woman magnificent head of hair on her down to her waist tossing it back like
+      that like Kitty OShea in Grantham street 1st thing I did every morning to look
+      across see her combing it as if she loved it and was full of it pity I only got
+      to know her the day before we left and that Mrs Langtry the jersey lily the
+      prince of Wales was in love with I suppose hes like the first man going the
+      roads only for the name of a king theyre all made the one way only a black mans
+      Id like to try a beauty up to what was she 45 there was some funny story about
+      the jealous old husband what was it at all and an oyster knife he went no he
+      made her wear a kind of a tin thing round her and the prince of Wales yes he had
+      the oyster knife cant be true a thing like that like some of those books he
+      brings me the works of Master Francois Somebody supposed to be a priest about a
+      child born out of her ear because her bumgut fell out a nice word for any priest
+      to write and her a—e as if any fool wouldnt know what that meant I hate that
+      pretending of all things with that old blackguards face on him anybody can see
+      its not true and that Ruby and Fair Tyrants he brought me that twice I remember
+      when I came to page 50 the part about where she hangs him up out of a hook with
+      a cord flagellate sure theres nothing for a woman in that all invention made up
+      about he drinking the champagne out of her slipper after the ball was over like
+      the infant Jesus in the crib at Inchicore in the Blessed Virgins arms sure no
+      woman could have a child that big taken out of her and I thought first it came
+      out of her side because how could she go to the chamber when she wanted to and
+      she a rich lady of course she felt honoured H R H he was in Gibraltar the year I
+      was born I bet he found lilies there too where he planted the tree he planted
+      more than that in his time he might have planted me too if hed come a bit sooner
+      then I wouldnt be here as I am he ought to chuck that Freeman with the paltry
+      few shillings he knocks out of it and go into an office or something where hed
+      get regular pay or a bank where they could put him up on a throne to count the
+      money all the day of course he prefers plottering about the house so you cant
+      stir with him any side whats your programme today I wish hed even smoke a pipe
+      like father to get the smell of a man or pretending to be mooching about for
+      advertisements when he could have been in Mr Cuffes still only for what he did
+      then sending me to try and patch it up I could have got him promoted there to be
+      the manager he gave me a great mirada once or twice first he was as stiff as the
+      mischief really and truly Mrs Bloom only I felt rotten simply with the old
+      rubbishy dress that I lost the leads out of the tails with no cut in it but
+      theyre coming into fashion again I bought it simply to please him I knew it was
+      no good by the finish pity I changed my mind of going to Todd and Burns as I
+      said and not Lees it was just like the shop itself rummage sale a lot of trash I
+      hate those rich shops get on your nerves nothing kills me altogether only he
+      thinks he knows a great lot about a womans dress and cooking mathering
+      everything he can scour off the shelves into it if I went by his advices every
+      blessed hat I put on does that suit me yes take that thats alright the one like
+      a weddingcake standing up miles off my head he said suited me or the dishcover
+      one coming down on my backside on pins and needles about the shopgirl in that
+      place in Grafton street I had the misfortune to bring him into and she as
+      insolent as ever she could be with her smirk saying Im afraid were giving you
+      too much trouble what shes there for but I stared it out of her yes he was
+      awfully stiff and no wonder but he changed the second time he looked Poldy
+      pigheaded as usual like the soup but I could see him looking very hard at my
+      chest when he stood up to open the door for me it was nice of him to show me out
+      in any case Im extremely sorry Mrs Bloom believe me without making it too marked
+      the first time after him being insulted and me being supposed to be his wife I
+      just half smiled I know my chest was out that way at the door when he said Im
+      extremely sorry and Im sure you were</p>`,
 
     // Lewis Carroll, Alice’s Adventures in Wonderland, Chapter II. The
     // opening paragraph gives the clearest comparison at the 13em default.
@@ -2567,6 +2847,9 @@ await controller.ready;</code></pre>
 
   const native = document.getElementById("native");
   const enhanced = document.getElementById("enhanced");
+  const panes = document.querySelector(".panes");
+  const nativePane = native.closest(".pane");
+  const enhancedPane = enhanced.closest(".pane");
 
   // Remember control settings across refreshes. Restore before the first
   // setSample()/apply() so the initial render already uses them.
@@ -3062,6 +3345,20 @@ await controller.ready;</code></pre>
   /** Each block's own stylesheet margin-bottom (a <pre> differs from a
    * <p>), captured by alignStack while inline margins are cleared. */
   const naturalGap = new WeakMap();
+  /** The browser pane is absolute in flicker mode, so it cannot contribute
+   * to document flow. Reserve the taller pane's height explicitly; otherwise
+   * a longer browser rendering can continue underneath the fleuron. */
+  function fitFlickerHeight() {
+    panes.style.minHeight = "";
+    if (!document.body.classList.contains("flicker-mode")) return;
+    const top = panes.getBoundingClientRect().top;
+    const bottom = Math.max(
+      nativePane.getBoundingClientRect().bottom,
+      enhancedPane.getBoundingClientRect().bottom,
+    );
+    const padding = parseFloat(getComputedStyle(panes).paddingBottom) || 0;
+    panes.style.minHeight = Math.ceil(bottom - top + padding) + "px";
+  }
   /**
    * Flicker mode: the BROWSER column is the layout authority. It carries no
    * margins and is never touched; each justif paragraph is pinned (via
@@ -3075,15 +3372,22 @@ await controller.ready;</code></pre>
    */
   function alignStack() {
     const on = document.body.classList.contains("flicker-mode");
-    if (!on && !stackAligned) return; // nothing to clear: skip the writes
+    if (!on && !stackAligned && panes.style.minHeight === "") return;
     const eBlocks = blocksOf(enhanced);
     if (!on) {
       for (const b of eBlocks) b.style.marginBottom = "";
+      fitFlickerHeight();
       stackAligned = false;
       return;
     }
+    // A previous reservation must not prop up the measurement used to
+    // calculate its replacement after content or width changes.
+    panes.style.minHeight = "";
     const nBlocks = blocksOf(native);
-    if (nBlocks.length !== eBlocks.length || eBlocks.length === 0) return;
+    if (nBlocks.length !== eBlocks.length || eBlocks.length === 0) {
+      fitFlickerHeight();
+      return;
+    }
     stackAligned = true;
     // Clear, then one batched read of pristine geometry (fractional rects:
     // offsetTop/Height round to integers and the drift accumulates). The
@@ -3101,6 +3405,7 @@ await controller.ready;</code></pre>
       eBlocks[i].style.marginBottom = next - eBottom + "px";
       eTop = next;
     }
+    fitFlickerHeight();
   }
 
   function analysisVisible() {
@@ -3131,7 +3436,10 @@ await controller.ready;</code></pre>
     if (!document.body.classList.contains("flicker-mode")) return;
     const nBlocks = blocksOf(native);
     const eBlocks = blocksOf(enhanced);
-    if (nBlocks.length !== eBlocks.length) return;
+    if (nBlocks.length !== eBlocks.length) {
+      fitFlickerHeight();
+      return;
+    }
     let i0 = -1;
     let i1 = -1;
     const eR = [];
@@ -3145,7 +3453,10 @@ await controller.ready;</code></pre>
       eR[i] = r;
       if (i + 1 < nBlocks.length) nTop[i + 1] = nBlocks[i + 1].getBoundingClientRect().top;
     }
-    if (i0 === -1) return;
+    if (i0 === -1) {
+      fitFlickerHeight();
+      return;
+    }
     let eTop = eR[i0].top;
     for (let i = i0; i <= i1 && i + 1 < eBlocks.length; i++) {
       const eBottom = eTop + eR[i].height;
@@ -3153,6 +3464,7 @@ await controller.ready;</code></pre>
       eBlocks[i].style.marginBottom = next - eBottom + "px";
       eTop = next;
     }
+    fitFlickerHeight();
     stackAligned = true;
   }
 

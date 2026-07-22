@@ -101,6 +101,55 @@ test("short Alice excerpt is available as a sample", async ({ page }) => {
   );
 });
 
+test("long-paragraph stress sample is one very long paragraph", async ({ page }) => {
+  await page.goto("/demo/");
+  await page.click("#dock-toggle");
+  await page.selectOption("#sample", "longParagraph");
+
+  await expect(page.locator("#native > p")).toHaveCount(1);
+  await expect(page.locator("#enhanced > p")).toHaveCount(1);
+  await expect(page.locator("#enhanced > p")).toHaveAttribute("data-justif", "", {
+    timeout: 15_000,
+  });
+  await expect(page.locator("#native br")).toHaveCount(0);
+  await expect(page.locator("#native > p")).toContainText(
+    "theyre all so different Boylan",
+  );
+  expect(await page.locator("#native").evaluate((element) =>
+    (element.textContent ?? "").trim().split(/\s+/).length,
+  )).toBe(4_401);
+});
+
+test("flicker mode places the fleuron below both text layers", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 844 });
+  await page.goto("/demo/");
+  await page.click("#dock-toggle");
+  await page.selectOption("#sample", "longParagraph");
+  await expect(page.locator("#enhanced > p")).toHaveAttribute("data-justif", "", {
+    timeout: 15_000,
+  });
+  await page.click("#view-flicker");
+
+  const geometry = await page.evaluate(() => {
+    const panes = [...document.querySelectorAll<HTMLElement>(".pane")];
+    const ornament = document.querySelector<HTMLElement>(".ornament")!;
+    return {
+      browserBottom: panes[0].getBoundingClientRect().bottom,
+      justifBottom: panes[1].getBoundingClientRect().bottom,
+      fleuronTop: ornament.getBoundingClientRect().top,
+    };
+  });
+  expect(
+    geometry.fleuronTop - Math.max(geometry.browserBottom, geometry.justifBottom),
+    JSON.stringify(geometry),
+  ).toBeGreaterThan(0);
+
+  await page.click("#view-side");
+  expect(await page.locator(".panes").evaluate((element: HTMLElement) =>
+    element.style.minHeight,
+  )).toBe("");
+});
+
 test("Frankenstein excerpt is available as a sample", async ({ page }) => {
   await page.goto("/demo/");
   await page.click("#dock-toggle");
@@ -140,7 +189,7 @@ test("sample menu groups entries by type", async ({ page }) => {
     "Typography",
     "Other scripts",
   ]);
-  await expect(page.locator('#sample optgroup[label="Prose"] option')).toHaveCount(4);
+  await expect(page.locator('#sample optgroup[label="Prose"] option')).toHaveCount(5);
   await expect(page.locator('#sample optgroup[label="Technical"] option')).toHaveCount(2);
 });
 
