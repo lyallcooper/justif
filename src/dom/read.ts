@@ -1,5 +1,6 @@
+import { graphemes } from "../core/cjk.js";
 import { textMakesBox } from "../core/items.js";
-import { type FontSpec, fontSpecOf } from "./measure.js";
+import { type FontSpec, fontSpecOf, measureWidth } from "./measure.js";
 
 /** One resolved styling run; adjacent sibling text nodes may be coalesced. */
 export interface StyledRun {
@@ -23,9 +24,27 @@ export interface StyledRun {
    */
   padStartPx?: number;
   padEndPx?: number;
+  /** Outermost inline whose clone owns the closing padding/border edge. */
+  padEndOwner?: Element;
   /** Innermost `white-space: nowrap` inline element containing this run
    * (one id per element instance): no break opportunity inside. */
   atomicKey?: number;
+  /** UTF-16 range rendered by the paragraph's floated `::first-letter`
+   * box rather than by normal inline flow. */
+  flowExclusion?: { start: number; end: number };
+  /** Inherited visual style that differs from the paragraph and must be
+   * restored on this fragment inside the reconstructed first-letter box. */
+  floatInnerStyle?: readonly (readonly [property: string, value: string])[];
+}
+
+export interface FloatIntrusion {
+  /** Physical inline width removed from each overlapping line. */
+  inlineSize: number;
+  /** Consecutive line boxes, from the paragraph start, that overlap it. */
+  lines: number;
+  /** Computed ::first-letter presentation copied onto the real float used
+   * by the enhanced DOM. */
+  style: readonly (readonly [property: string, value: string])[];
 }
 
 export interface ParagraphScan {
@@ -54,6 +73,8 @@ export interface ParagraphScan {
    * Arabic with no strong-LTR content — see textSupported); anything
    * mixed bails to native rendering before a scan exists. */
   direction: "ltr" | "rtl";
+  /** A floated `::first-letter` (drop cap), measured in its native layout. */
+  floatIntrusion: FloatIntrusion | null;
 }
 
 /** Content the v1 walker cannot lay out; the paragraph keeps native rendering. */
@@ -229,6 +250,500 @@ function paintedInlineEdges(
   return shadowPaintedEdges(style.boxShadow, direction);
 }
 
+/** CSS ::first-letter includes the first typographic character together
+ * with punctuation immediately before and after it. Return UTF-16 offsets
+ * into the paragraph's flattened text (leading collapsible whitespace is
+ * outside the pseudo-element). */
+function firstLetterRange(text: string): { start: number; end: number } | null {
+  const punctuation = /^[\p{Ps}\p{Pe}\p{Pi}\p{Pf}\p{Po}]$/u;
+  const clusters = graphemes(text);
+  let offset = 0;
+  let i = 0;
+  while (i < clusters.length && /^\s+$/u.test(clusters[i]!)) {
+    offset += clusters[i]!.length;
+    i++;
+  }
+  if (i === clusters.length) return null;
+
+  const start = offset;
+  while (i < clusters.length && punctuation.test(clusters[i]!)) {
+    offset += clusters[i]!.length;
+    i++;
+  }
+  if (i === clusters.length || /^\s+$/u.test(clusters[i]!)) return null;
+  offset += clusters[i]!.length;
+  i++;
+  while (i < clusters.length && punctuation.test(clusters[i]!)) {
+    offset += clusters[i]!.length;
+    i++;
+  }
+  return { start, end: offset };
+}
+
+interface TextPoint {
+  node: Text;
+  offset: number;
+}
+
+/** Locate a UTF-16 offset in p.textContent without mutating the DOM. */
+function textPointAt(nodes: readonly Text[], target: number): TextPoint | null {
+  let offset = 0;
+  for (const node of nodes) {
+    const end = offset + node.data.length;
+    if (target <= end) return { node, offset: target - offset };
+    offset = end;
+  }
+  const last = nodes[nodes.length - 1];
+  return last === undefined ? null : { node: last, offset: last.data.length };
+}
+
+function pxValue(value: string): number {
+  const parsed = parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/** Properties CSS permits (or engines commonly honor) on ::first-letter.
+ * The enhanced DOM turns that pseudo float into a real span so browser line
+ * boxes stay stable around nowrap segments; copying the computed longhands
+ * preserves the author's drop-cap presentation. */
+const FIRST_LETTER_PROPERTIES = [
+  "float",
+  "box-sizing",
+  "width",
+  "height",
+  "min-width",
+  "max-width",
+  "min-height",
+  "max-height",
+  "margin-top",
+  "margin-right",
+  "margin-bottom",
+  "margin-left",
+  "padding-top",
+  "padding-right",
+  "padding-bottom",
+  "padding-left",
+  "border-top-width",
+  "border-right-width",
+  "border-bottom-width",
+  "border-left-width",
+  "border-top-style",
+  "border-right-style",
+  "border-bottom-style",
+  "border-left-style",
+  "border-top-color",
+  "border-right-color",
+  "border-bottom-color",
+  "border-left-color",
+  "border-top-left-radius",
+  "border-top-right-radius",
+  "border-bottom-right-radius",
+  "border-bottom-left-radius",
+  "font-family",
+  "font-size",
+  "font-style",
+  "font-weight",
+  "font-stretch",
+  "font-kerning",
+  "font-optical-sizing",
+  "font-feature-settings",
+  "font-variation-settings",
+  "font-variant-caps",
+  "font-variant-east-asian",
+  "font-variant-ligatures",
+  "font-variant-numeric",
+  "font-variant-position",
+  "font-synthesis",
+  "line-height",
+  "letter-spacing",
+  "word-spacing",
+  "color",
+  "background-color",
+  "background-image",
+  "background-position",
+  "background-size",
+  "background-repeat",
+  "background-origin",
+  "background-clip",
+  "text-decoration-line",
+  "text-decoration-color",
+  "text-decoration-style",
+  "text-decoration-thickness",
+  "text-shadow",
+  "text-transform",
+  "vertical-align",
+  "direction",
+  "writing-mode",
+  "-webkit-text-fill-color",
+  "-webkit-text-stroke-color",
+  "-webkit-text-stroke-width",
+] as const;
+
+/** Inherited/propagated styling an inline descendant can contribute inside
+ * `::first-letter`. Box decorations stay on the one real cloned ancestor;
+ * copying them onto an anonymous fragment would double padding/backgrounds.
+ * Values equal to the paragraph are omitted so the pseudo's own longhands
+ * still control the drop cap. */
+const FIRST_LETTER_INNER_PROPERTIES = [
+  "font-family",
+  "font-size",
+  "font-style",
+  "font-weight",
+  "font-stretch",
+  "font-kerning",
+  "font-optical-sizing",
+  "font-feature-settings",
+  "font-variation-settings",
+  "font-variant-caps",
+  "font-variant-east-asian",
+  "font-variant-ligatures",
+  "font-variant-numeric",
+  "font-variant-position",
+  "font-synthesis",
+  "line-height",
+  "letter-spacing",
+  "word-spacing",
+  "color",
+  "text-decoration-line",
+  "text-decoration-color",
+  "text-decoration-style",
+  "text-decoration-thickness",
+  "text-shadow",
+  "text-transform",
+  "vertical-align",
+  "-webkit-text-fill-color",
+  "-webkit-text-stroke-color",
+  "-webkit-text-stroke-width",
+] as const;
+
+function firstLetterStyle(style: CSSStyleDeclaration): FloatIntrusion["style"] {
+  return FIRST_LETTER_PROPERTIES.map((property) => [
+    property,
+    style.getPropertyValue(property),
+  ] as const).filter((entry) => entry[1] !== "");
+}
+
+function firstLetterInnerStyle(
+  style: CSSStyleDeclaration,
+  paragraph: CSSStyleDeclaration,
+): FloatIntrusion["style"] {
+  return FIRST_LETTER_INNER_PROPERTIES.map((property) => [
+    property,
+    style.getPropertyValue(property),
+  ] as const).filter(
+    ([property, value]) =>
+      value !== "" && value !== paragraph.getPropertyValue(property),
+  );
+}
+
+/** Resolve logical float values against the paragraph's inline direction.
+ * Browsers preserve `inline-start`/`inline-end` as the computed value even
+ * though they actively place the float at a physical edge. */
+function physicalFloatSide(
+  value: string,
+  direction: "ltr" | "rtl",
+): "left" | "right" | null {
+  if (value === "left" || value === "right") return value;
+  if (value === "inline-start") return direction === "rtl" ? "right" : "left";
+  if (value === "inline-end") return direction === "rtl" ? "left" : "right";
+  return null;
+}
+
+/** Properties on a non-floated ::first-letter that can change glyph
+ * advances or the first line box. Compare them with the actual source
+ * inline, not merely the paragraph: an ordinary paragraph beginning in
+ * <strong> legitimately has a bold computed first-letter with no pseudo
+ * rule, and its run is already modeled by the normal walker. */
+const FIRST_LETTER_METRIC_PROPERTIES = [
+  "font-family",
+  "font-size",
+  "font-style",
+  "font-weight",
+  "font-stretch",
+  "font-kerning",
+  "font-optical-sizing",
+  "font-feature-settings",
+  "font-variation-settings",
+  "font-variant-alternates",
+  "font-variant-caps",
+  "font-variant-east-asian",
+  "font-variant-emoji",
+  "font-variant-ligatures",
+  "font-variant-numeric",
+  "font-variant-position",
+  "font-synthesis",
+  "line-height",
+  "letter-spacing",
+  "word-spacing",
+  "text-transform",
+  "vertical-align",
+] as const;
+
+const FIRST_LETTER_INLINE_BOX_PROPERTIES = [
+  "margin-top",
+  "margin-right",
+  "margin-bottom",
+  "margin-left",
+  "padding-top",
+  "padding-right",
+  "padding-bottom",
+  "padding-left",
+  "border-top-width",
+  "border-right-width",
+  "border-bottom-width",
+  "border-left-width",
+] as const;
+
+function nonFloatedFirstLetterChangesLayout(
+  p: HTMLElement,
+  paragraphStyle: CSSStyleDeclaration,
+  style: CSSStyleDeclaration,
+  text: string,
+): boolean {
+  const differsFromParagraph = FIRST_LETTER_METRIC_PROPERTIES.some(
+    (property) => style.getPropertyValue(property) !== paragraphStyle.getPropertyValue(property),
+  );
+  const hasBox = FIRST_LETTER_INLINE_BOX_PROPERTIES.some(
+    (property) => Math.abs(parseFloat(style.getPropertyValue(property)) || 0) > 1e-6,
+  );
+  if (!differsFromParagraph && !hasBox) return false;
+
+  const span = firstLetterRange(text);
+  if (span === null) return false;
+  const nodes: Text[] = [];
+  const walker = p.ownerDocument.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    nodes.push(node as Text);
+  }
+  const point = textPointAt(nodes, span.start);
+  const source = point?.node.parentElement ?? p;
+  const sourceStyle = p.ownerDocument.defaultView?.getComputedStyle(source);
+  if (sourceStyle === undefined) return false;
+  return (
+    hasBox ||
+    FIRST_LETTER_METRIC_PROPERTIES.some(
+      (property) => style.getPropertyValue(property) !== sourceStyle.getPropertyValue(property),
+    )
+  );
+}
+
+/** Group Range fragments into visual line boxes. Inline descendants can
+ * yield several fragments for one line, so top coordinates within half a
+ * paragraph line-height coalesce. */
+function visualLines(
+  rects: readonly DOMRect[],
+  lineHeight: number,
+): Array<{ top: number; left: number; right: number }> {
+  const lines: Array<{ top: number; left: number; right: number }> = [];
+  const threshold = Math.max(2, lineHeight * 0.45);
+  for (const rect of [...rects].sort((a, b) => a.top - b.top || a.left - b.left)) {
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    const line = lines.find((candidate) => Math.abs(candidate.top - rect.top) < threshold);
+    if (line === undefined) lines.push({ top: rect.top, left: rect.left, right: rect.right });
+    else {
+      line.left = Math.min(line.left, rect.left);
+      line.right = Math.max(line.right, rect.right);
+    }
+  }
+  lines.sort((a, b) => a.top - b.top);
+  return lines;
+}
+
+/**
+ * Measure a floated ::first-letter while the author's native DOM is still
+ * present. CSSOM exposes used width/height for the pseudo-element only in
+ * Chromium; Range geometry supplies its auto inline size everywhere else.
+ * Native line fragments directly tell us how many consecutive line boxes
+ * overlap the float, with a block-size fallback for layout-skipped content.
+ */
+function floatedFirstLetter(
+  p: HTMLElement,
+  paragraphStyle: CSSStyleDeclaration,
+  style: CSSStyleDeclaration,
+  floatSide: "left" | "right",
+  text: string,
+  span: { start: number; end: number },
+): FloatIntrusion | null {
+  const nodes: Text[] = [];
+  const walker = p.ownerDocument.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    nodes.push(node as Text);
+  }
+  const start = textPointAt(nodes, span.start);
+  const end = textPointAt(nodes, span.end);
+  if (start === null || end === null) return null;
+
+  const range = p.ownerDocument.createRange();
+  range.setStart(start.node, start.offset);
+  range.setEnd(end.node, end.offset);
+  const glyphRect = range.getBoundingClientRect();
+  const specifiedWidth = parseFloat(style.width);
+  const pseudoLineHeight = parseFloat(style.lineHeight) || pxValue(style.fontSize) * 1.2;
+  // Safari reports the normal 17px inline fragment for a 70px floated
+  // first letter. Its height exposes that the Range missed the pseudo box;
+  // measure with the pseudo's resolved font instead. Firefox's compact
+  // 49px Range and Chromium's used pseudo geometry pass this guard.
+  const rangeRepresentsPseudo =
+    glyphRect.width > 0 && glyphRect.height >= pseudoLineHeight * 0.5;
+  const glyphWidth =
+    rangeRepresentsPseudo
+      ? glyphRect.width
+      : measureWidth(text.slice(span.start, span.end), fontSpecOf(style));
+  const contentWidth = Number.isFinite(specifiedWidth) ? specifiedWidth : glyphWidth;
+  const inlineExtras =
+    pxValue(style.paddingLeft) +
+    pxValue(style.paddingRight) +
+    pxValue(style.borderLeftWidth) +
+    pxValue(style.borderRightWidth);
+  const borderBoxWidth =
+    style.boxSizing === "border-box" && Number.isFinite(specifiedWidth)
+      ? contentWidth
+      : contentWidth + inlineExtras;
+  const inlineSize = Math.max(
+    0,
+    borderBoxWidth + pxValue(style.marginLeft) + pxValue(style.marginRight),
+  );
+  if (inlineSize <= 0) return null;
+
+  const paragraphRect = p.getBoundingClientRect();
+  const contentLeft =
+    paragraphRect.left + pxValue(paragraphStyle.borderLeftWidth) + pxValue(paragraphStyle.paddingLeft);
+  const contentRight =
+    paragraphRect.right - pxValue(paragraphStyle.borderRightWidth) - pxValue(paragraphStyle.paddingRight);
+  const contentTop =
+    paragraphRect.top + pxValue(paragraphStyle.borderTopWidth) + pxValue(paragraphStyle.paddingTop);
+  const paragraphLineHeight =
+    parseFloat(paragraphStyle.lineHeight) || pxValue(paragraphStyle.fontSize) * 1.2;
+
+  const tail = p.ownerDocument.createRange();
+  tail.setStart(end.node, end.offset);
+  const last = nodes[nodes.length - 1]!;
+  tail.setEnd(last, last.data.length);
+  const lines = visualLines([...tail.getClientRects()], paragraphLineHeight);
+  let affected = 0;
+  for (const line of lines) {
+    const observed =
+      floatSide === "left" ? line.left - contentLeft : contentRight - line.right;
+    // An ordinary first-line indent can move one line, but not by anything
+    // close to the whole float. Half the measured margin-box width cleanly
+    // separates the intruded lines from the full-width lines below it.
+    if (observed > inlineSize * 0.5) affected++;
+    else break;
+  }
+
+  // Predict the overlap from vertical geometry too. This matters when the
+  // paragraph initially ends before the float does: after a later resize it
+  // can gain additional lines that still need the narrow measure. Chromium
+  // exposes the pseudo's used height. Firefox/WebKit return `auto`; in that
+  // case Firefox's Range rect is its compact float content box, while a tall
+  // ink rect (WebKit) is not layout geometry and the computed line-height is.
+  const specifiedHeight = parseFloat(style.height);
+  const compactAutoBox =
+    !Number.isFinite(specifiedHeight) &&
+    glyphRect.height > 0 &&
+    glyphRect.height <= pseudoLineHeight * 1.2;
+  const contentHeight = Number.isFinite(specifiedHeight)
+    ? specifiedHeight
+    : compactAutoBox
+      ? glyphRect.height
+      : pseudoLineHeight;
+  const blockExtras =
+    pxValue(style.paddingTop) +
+    pxValue(style.paddingBottom) +
+    pxValue(style.borderTopWidth) +
+    pxValue(style.borderBottomWidth);
+  const borderBoxHeight =
+    style.boxSizing === "border-box" && Number.isFinite(specifiedHeight)
+      ? contentHeight
+      : contentHeight + blockExtras;
+  const floatBottom = compactAutoBox
+    ? glyphRect.bottom +
+      pxValue(style.paddingBottom) +
+      pxValue(style.borderBottomWidth) +
+      pxValue(style.marginBottom)
+    : contentTop +
+      pxValue(style.marginTop) +
+      borderBoxHeight +
+      pxValue(style.marginBottom);
+  const firstTextTop = lines[0]?.top ?? contentTop;
+  const geometricLines = Math.max(
+    1,
+    Math.ceil((floatBottom - firstTextTop) / paragraphLineHeight - 1e-6),
+  );
+  affected = Math.max(affected, geometricLines);
+
+  return { inlineSize, lines: affected, style: firstLetterStyle(style) };
+}
+
+function floatDetailsOf(
+  p: HTMLElement,
+  text: string,
+  paragraphStyle?: CSSStyleDeclaration,
+): { intrusion: FloatIntrusion; span: { start: number; end: number } } | string | null {
+  const view = p.ownerDocument.defaultView;
+  if (view === null) return null;
+  let style: CSSStyleDeclaration;
+  try {
+    style = view.getComputedStyle(p, "::first-letter");
+  } catch {
+    return "could not inspect ::first-letter style";
+  }
+  // This cheap pseudo-style read makes the ordinary path stop here: only
+  // actual drop caps pay for Range geometry. A metric-changing inline
+  // first letter is still unsafe because the normal run model cannot see
+  // its pseudo-only font/box, so leave that paragraph native too.
+  if (style.float === "none") {
+    return nonFloatedFirstLetterChangesLayout(
+      p,
+      paragraphStyle ?? view.getComputedStyle(p),
+      style,
+      text,
+    )
+      ? "layout-changing non-floated ::first-letter"
+      : null;
+  }
+  const cs = paragraphStyle ?? view.getComputedStyle(p);
+  const direction: "ltr" | "rtl" = cs.direction === "rtl" ? "rtl" : "ltr";
+  const floatSide = physicalFloatSide(style.float, direction);
+  if (floatSide === null) return `unsupported ::first-letter float: ${style.float}`;
+  const span = firstLetterRange(text);
+  if (span === null) return "could not locate floated ::first-letter text";
+  const intrusion = floatedFirstLetter(
+    p,
+    cs,
+    style,
+    floatSide,
+    text,
+    span,
+  );
+  return intrusion === null ? "could not measure floated ::first-letter" : { intrusion, span };
+}
+
+/** Re-read a live paragraph's floated first-letter geometry. Exported for
+ * font-driven remeasurement after the original DOM has been enhanced. */
+export function floatIntrusionOf(
+  p: HTMLElement,
+  text = p.textContent ?? "",
+): FloatIntrusion | null {
+  const details = floatDetailsOf(p, text);
+  return typeof details === "object" && details !== null ? details.intrusion : null;
+}
+
+/** Live inline size of either the real enhanced float or a native
+ * ::first-letter. The overlap count remains the scan-time value: enhanced
+ * nowrap fragments are not reliable evidence for native float geometry. */
+export function floatInlineSizeOf(p: HTMLElement): number | null {
+  const rendered = p.querySelector<HTMLElement>(":scope .justif-float-source");
+  if (rendered !== null) {
+    const rect = rendered.getBoundingClientRect();
+    const style = rendered.ownerDocument.defaultView?.getComputedStyle(rendered);
+    if (style === undefined) return rect.width > 0 ? rect.width : null;
+    const size = rect.width + pxValue(style.marginLeft) + pxValue(style.marginRight);
+    return size > 0 ? size : null;
+  }
+  return floatIntrusionOf(p)?.inlineSize ?? null;
+}
+
 /**
  * Reads a paragraph into styled runs plus its available measure. Returns
  * a human-readable skip reason (string) when the content or styling is out
@@ -274,6 +789,7 @@ export function readParagraph(p: HTMLElement): ParagraphScan | string {
     chain: readonly Element[],
     spec: number,
     atomicKey: number | undefined,
+    floatInnerStyle: FloatIntrusion["style"],
   ): void => {
     // JSX expressions such as {" "} can produce a text node separate from
     // the prose beside it; server renderers may also put empty comments
@@ -289,7 +805,13 @@ export function readParagraph(p: HTMLElement): ParagraphScan | string {
         const text = child.nodeValue ?? "";
         if (text.length > 0) {
           if (adjacentTextRun === null) {
-            adjacentTextRun = { text, spec, ancestors: chain, atomicKey };
+            adjacentTextRun = {
+              text,
+              spec,
+              ancestors: chain,
+              atomicKey,
+              floatInnerStyle: floatInnerStyle.length > 0 ? floatInnerStyle : undefined,
+            };
             runs.push(adjacentTextRun);
           } else {
             adjacentTextRun.text += text;
@@ -373,7 +895,13 @@ export function readParagraph(p: HTMLElement): ParagraphScan | string {
         }
         const before = runs.length;
         const paintedHere = paintedInlineEdges(elStyle, direction);
-        walk(el, [...chain, el], indexSpec(elStyle), childKey);
+        walk(
+          el,
+          [...chain, el],
+          indexSpec(elStyle),
+          childKey,
+          firstLetterInnerStyle(elStyle, cs),
+        );
         if (skip !== null) return;
         // Only padded or locally-painted elements need an edge scan/copy.
         const inspectEdges = padded || paintedHere.start || paintedHere.end;
@@ -399,6 +927,10 @@ export function readParagraph(p: HTMLElement): ParagraphScan | string {
           const last = runs[runs.length - 1]!;
           first.padStartPx = (first.padStartPx ?? 0) + padStart;
           last.padEndPx = (last.padEndPx ?? 0) + padEnd;
+          // The walk is post-order, so nested closing edges overwrite this
+          // from inner to outer. The final owner is the clone whose border
+          // edge represents the complete closing decoration.
+          last.padEndOwner = el;
         }
         if ((paintedHere.start || paintedHere.end) && firstBoxAt >= 0) {
           // This painted box owns the distance from its border to the edge
@@ -436,12 +968,30 @@ export function readParagraph(p: HTMLElement): ParagraphScan | string {
       // Comments and other node types are ignored.
     }
   };
-  walk(p, [], baseSpec, undefined);
+  walk(p, [], baseSpec, undefined, []);
 
   if (skip !== null) return skip;
   if (runs.length === 0) return "no text content";
-  if (!textSupported(runs.map((r) => r.text).join(""), direction)) {
+  const text = runs.map((r) => r.text).join("");
+  if (!textSupported(text, direction)) {
     return "unsupported text (bidi controls, mixed direction, or a script without break support)";
+  }
+
+  const floatDetails = floatDetailsOf(p, text, cs);
+  if (typeof floatDetails === "string") return floatDetails;
+  const floatIntrusion = floatDetails?.intrusion ?? null;
+  if (floatDetails !== null) {
+    const firstSpan = floatDetails.span;
+    let offset = 0;
+    for (const run of runs) {
+      const runEnd = offset + run.text.length;
+      const start = Math.max(firstSpan.start, offset);
+      const end = Math.min(firstSpan.end, runEnd);
+      if (start < end) {
+        run.flowExclusion = { start: start - offset, end: end - offset };
+      }
+      offset = runEnd;
+    }
   }
 
   const contentWidth = contentWidthOf(p);
@@ -472,6 +1022,7 @@ export function readParagraph(p: HTMLElement): ParagraphScan | string {
     pinIntrinsicSize,
     justifyAll: cs.textAlign === "justify-all" || cs.textAlignLast === "justify",
     direction,
+    floatIntrusion,
   };
 }
 

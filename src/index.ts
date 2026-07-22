@@ -38,7 +38,13 @@ import {
   supportsSpec,
 } from "./dom/measure.js";
 import { createWidthObserver, type WidthObserver } from "./dom/observe.js";
-import { contentWidthOf, type ParagraphScan, readParagraph } from "./dom/read.js";
+import {
+  contentWidthOf,
+  floatIntrusionOf,
+  floatInlineSizeOf,
+  type ParagraphScan,
+  readParagraph,
+} from "./dom/read.js";
 import { buildRenderSegments, buildRunMetrics, measureFor, runTexts } from "./dom/segments.js";
 import {
   applyCorrections,
@@ -171,8 +177,9 @@ export interface JustifyOptions {
    * restoration when it fits on one line again, refresh, and re-measures
    * triggered by fonts finishing to load. Use it to keep overlays or
    * annotations positioned over the text in sync. NOT fired for the deferred
-   * wrap-guarantee corrections: those only normalize trailing layout-advance
-   * margins and never move a glyph.
+   * wrap-guarantee corrections: those reconcile sub-pixel painted-edge drift
+   * with small spacing changes but do not alter chosen breaks or paragraph
+   * structure.
    */
   onRelayout?: (paragraph: HTMLElement) => void;
   /**
@@ -247,6 +254,7 @@ function restoreManagedOutput(p: HTMLElement, state: ParaState): boolean {
   p.replaceChildren(state.original);
   restoreStyleAttribute(p, state.originalStyleAttr);
   p.removeAttribute("data-justif");
+  p.removeAttribute("data-justif-dropcap");
   state.lastPatch = "";
   state.enhanced = false;
   return true;
@@ -256,6 +264,10 @@ const DEFAULT_EXPANSION: ExpansionOptions = { max: 0.02, shrink: 0.02, step: 0.0
 const DEFAULT_SPACING = { stretch: 0.5, shrink: 1 / 3, pull: 0.7, boundaryShrink: 0 };
 /** Bringhurst's tolerance: letterspacing in justified text may vary ±3%. */
 const DEFAULT_TRACKING: TrackingOptions = { max: 0.03, shrink: 0.03 };
+/** Below this residual measure, a native float must push its line box below
+ * itself. The breaker has no equivalent vertical escape, so keep the whole
+ * paragraph native until a resize restores usable space beside the float. */
+const MIN_FLOAT_LINE_WIDTH_PX = 1;
 
 function noopController(): JustifyController {
   return { ready: Promise.resolve(), refresh() {}, destroy() {}, paragraphs: [] };
@@ -534,7 +546,29 @@ export function justify(
       state.scan.textIndentPct !== null
         ? state.scan.textIndentPct * state.width
         : state.scan.textIndent;
-    const widths = indentPx !== 0 ? [state.width - indentPx, state.width] : state.width;
+    const intrusion = state.scan.floatIntrusion;
+    const varyingLines = Math.max(indentPx !== 0 ? 1 : 0, intrusion?.lines ?? 0);
+    const rawWidths =
+      varyingLines > 0
+        ? Array.from({ length: varyingLines + 1 }, (_, line) =>
+            state.width -
+            (line === 0 ? indentPx : 0) -
+            (intrusion !== null && line < intrusion.lines ? intrusion.inlineSize : 0),
+          )
+        : state.width;
+    if (
+      intrusion !== null &&
+      Array.isArray(rawWidths) &&
+      rawWidths.slice(0, intrusion.lines).some((width) => width < MIN_FLOAT_LINE_WIDTH_PX)
+    ) {
+      pendingWidths.delete(p);
+      pendingCorrections.delete(p);
+      hiddenCorrections.delete(p);
+      return { changed: restoreManagedOutput(p, state), pending: null };
+    }
+    const widths = Array.isArray(rawWidths)
+      ? rawWidths.map((width) => Math.max(0, width))
+      : rawWidths;
     // `justify-all` is the CSS-level rectangular mode: it requests that
     // even the final (or only) line fill the measure. The ordinary public
     // default remains 0.33 for multi-line endings only.
@@ -587,6 +621,7 @@ export function justify(
       state.original.append(...p.childNodes);
       state.enhanced = true;
       p.setAttribute("data-justif", "");
+      if (state.scan.floatIntrusion !== null) p.setAttribute("data-justif-dropcap", "");
       disableTextAutosizing(p);
       // Neutralize the author's text-align: justify (the browser must not
       // re-justify our exactly-filled lines) — toward the line-START edge,
@@ -619,7 +654,12 @@ export function justify(
     // and the wrap-guarantee corrections must compare against it.
     return {
       changed: true,
-      pending: writeParagraph(p, rendered, lines.map((l) => l.width)),
+      pending: writeParagraph(
+        p,
+        rendered,
+        lines.map((l) => l.width),
+        intrusion?.lines ?? 0,
+      ),
     };
   };
 
@@ -737,8 +777,83 @@ export function justify(
         Math.abs(probeAdvance(f.font, f.kernSample) - f.kernBaseline) > 0.01,
     );
 
-  const remeasureAll = (): void => {
+  const refreshFloatIntrusions = (): boolean => {
+    let changed = false;
+    for (const p of paragraphs) {
+      const state = states.get(p);
+      if (
+        state === undefined ||
+        state.owner !== owner ||
+        state.scan.floatIntrusion === null
+      ) {
+        continue;
+      }
+      const nextInlineSize = floatInlineSizeOf(p);
+      if (nextInlineSize === null) continue;
+      // With unchanged font probes, only the live inline size needs this
+      // cheap refresh. Enhanced nowrap fragments are not an independent
+      // source of truth for native overlap count: Safari can push a wide
+      // provisional segment below the float and report one affected line,
+      // creating a self-reinforcing re-break. Font changes take the native
+      // restoration path below and re-read both dimensions instead.
+      if (Math.abs(nextInlineSize - state.scan.floatIntrusion.inlineSize) > 0.05) {
+        state.scan.floatIntrusion = {
+          inlineSize: nextInlineSize,
+          lines: state.scan.floatIntrusion.lines,
+          style: state.scan.floatIntrusion.style,
+        };
+        changed = true;
+      }
+    }
+    return changed;
+  };
+
+  /** Font changes can alter an auto-height first-letter's overlap count,
+   * which the enhanced nowrap fragments cannot reveal. Restore all managed
+   * drop caps to their author DOM in one write phase, then measure the same
+   * native geometry used by the initial scan. Re-enhancement happens in the
+   * immediately following remeasureAll call, before the browser can paint. */
+  const refreshNativeFloatIntrusions = (): boolean => {
+    if (destroyed) return false;
+    const candidates = paragraphs.flatMap((p) => {
+      const state = states.get(p);
+      return state !== undefined && state.owner === owner && state.scan.floatIntrusion !== null
+        ? [{ p, state }]
+        : [];
+    });
+    let changed = false;
+    for (const { p, state } of candidates) {
+      pendingWidths.delete(p);
+      pendingCorrections.delete(p);
+      hiddenCorrections.delete(p);
+      if (restoreManagedOutput(p, state)) changed = true;
+    }
+    for (const { p, state } of candidates) {
+      const next = floatIntrusionOf(
+        p,
+        state.scan.runs.map((run) => run.text).join(""),
+      );
+      if (next === null) {
+        states.delete(p);
+        bailed.add(p);
+        emitSkip(p, "could not remeasure floated ::first-letter after font change");
+        emitRelayout(p);
+        continue;
+      }
+      if (
+        Math.abs(next.inlineSize - state.scan.floatIntrusion!.inlineSize) > 0.05 ||
+        next.lines !== state.scan.floatIntrusion!.lines
+      ) {
+        changed = true;
+      }
+      state.scan.floatIntrusion = next;
+    }
+    return changed;
+  };
+
+  const remeasureAll = (floatGeometryFresh = false): void => {
     if (destroyed) return;
+    if (!floatGeometryFresh) refreshFloatIntrusions();
     clearMeasureCache();
     clearCalibrationCache();
     reprobeBaselines();
@@ -1041,7 +1156,11 @@ export function justify(
    * still-loading face as available (WebKit with a loaded fallback in the
    * font string; it also fires no loadingdone for CSS-initiated loads). */
   const onFontsLoaded = (): void => {
-    if (probesChanged()) remeasureAll();
+    const metricsChanged = probesChanged();
+    const floatChanged = metricsChanged
+      ? refreshNativeFloatIntrusions()
+      : refreshFloatIntrusions();
+    if (metricsChanged || floatChanged) remeasureAll(true);
   };
 
   const attachObservers = (): void => {
@@ -1184,7 +1303,10 @@ export function justify(
   return {
     ready,
     paragraphs,
-    refresh: remeasureAll,
+    refresh() {
+      refreshNativeFloatIntrusions();
+      remeasureAll(true);
+    },
     destroy() {
       destroyed = true;
       // Destroyed before the faces settled: the module-level measure

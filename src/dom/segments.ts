@@ -104,6 +104,7 @@ export function runTexts(scan: ParagraphScan): RunText[] {
   return scan.runs.map((r, i) => ({
     text: r.text,
     run: i,
+    flowExclusion: r.flowExclusion,
     boxStartProtrusionPx: r.boxStartProtrusionPx,
     boxEndProtrusionPx: r.boxEndProtrusionPx,
     padStartPx: r.padStartPx,
@@ -244,8 +245,10 @@ export function buildRenderSegments(
   // outside the clone), and corrections only need per-line totals.
   const decorStartSeen = new Set<number>();
   const lastSegForRun = new Map<number, number>();
+  let floatStyleEmitted = false;
 
-  for (const line of lines) {
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const line = lines[lineIndex]!;
     // Absolute word-spacing per run on this line: the author's own
     // word-spacing, the offset from the space glyph's advance to the glue
     // width the engine assigned (nonzero for pressured oversized spaces),
@@ -274,10 +277,20 @@ export function buildRenderSegments(
     let cjkZ = 0;
     let hasCJK = false;
     let boxChars = 0;
+    let flowExclusion: { start: number; end: number } | undefined;
     /** Set while flushing a rigid boundary glue's own segment. */
     let rigidFlex: { stretch: number; shrink: number } | null = null;
     const flush = (): void => {
       if (run < 0 || text.length === 0) return;
+      // A first-letter exclusion can only occupy the paragraph's initial
+      // source range. Item grouping can extend that first box across runs,
+      // but the exclusion entering a rendered segment therefore still
+      // starts at offset zero; leading collapsible whitespace was emitted
+      // as glue before the box. Keep the prefix in source-text space.
+      const floatedPrefix =
+        flowExclusion === undefined ? undefined : text.slice(0, flowExclusion.end);
+      const flowText =
+        flowExclusion === undefined ? text : text.slice(flowExclusion.end);
       // Letterfit tracking: this segment's boxes budgeted glueRatio × track
       // flex px of letterfit change; spread it as uniform letter-spacing
       // over the box characters. Spaces receive the same increment by CSS,
@@ -300,13 +313,14 @@ export function buildRenderSegments(
       // (they collapse when a retreated segment sits at a line start, making
       // rect widths position-dependent); their widths are modeled exactly:
       // stretched space advance plus this segment's word-spacing.
-      const lead = text.length - text.trimStart().length;
+      const lead = flowText.length - flowText.trimStart().length;
       // Compute trail on the post-lead remainder: a whitespace-only
       // segment (bare space between two inline elements of different
       // runs) must not count its single character as BOTH lead and trail
       // — modelPx would double and the corrective measurement would run
       // an inverted Range.
-      const trail = lead < text.length ? text.length - text.trimEnd().length : 0;
+      const trail =
+        lead < flowText.length ? flowText.length - flowText.trimEnd().length : 0;
       const spec = scan.specs[scan.runs[run]!.spec]!;
       const table = runsMetrics[run]!.expansionRatios;
       const key = Math.round(line.fontStretch * 1000) / 1000;
@@ -320,10 +334,18 @@ export function buildRenderSegments(
         decorPx = srcRun.padStartPx;
       }
       segments.push({
-        text,
+        text: flowText,
+        floatedPrefix,
+        floatedStyle:
+          floatedPrefix !== undefined && !floatStyleEmitted
+            ? scan.floatIntrusion?.style
+            : undefined,
+        floatedInnerStyle:
+          floatedPrefix !== undefined ? srcRun.floatInnerStyle : undefined,
         ancestors: srcRun.ancestors,
         wordSpacingPx: wordSpacing - ls,
         letterSpacingPx: ls !== 0 ? spec.letterSpacingPx + ls : null,
+        resolvedLetterSpacingPx: spec.letterSpacingPx + ls,
         fontFeatureSettings: trackingFeatureSettings(spec, ls !== 0),
         isolateShaping: spec.variantPosition !== "normal",
         fontStretchPct: line.fontStretch,
@@ -340,9 +362,12 @@ export function buildRenderSegments(
         // count the clone's single margin more than once.
         marginEndOwner: undefined,
       });
+      if (floatedPrefix !== undefined) floatStyleEmitted = true;
       if (srcRun.padEndPx !== undefined) lastSegForRun.set(run, segments.length - 1);
-      joint = "none";
-      first = false;
+      if (flowText.length > 0) {
+        joint = "none";
+        first = false;
+      }
       text = "";
       run = -1;
       trackY = 0;
@@ -351,6 +376,7 @@ export function buildRenderSegments(
       cjkZ = 0;
       hasCJK = false;
       boxChars = 0;
+      flowExclusion = undefined;
     };
 
     for (let i = line.start; i < line.end; i++) {
@@ -369,10 +395,19 @@ export function buildRenderSegments(
           text = risky ? "\u2060" : "";
         }
         run = it.run;
+        const textOffset = text.length;
         text += it.text;
+        if (it.flowExclusion !== undefined) {
+          const shifted = {
+            start: textOffset + it.flowExclusion.start,
+            end: textOffset + it.flowExclusion.end,
+          };
+          if (flowExclusion === undefined) flowExclusion = shifted;
+          else flowExclusion.end = shifted.end;
+        }
         trackY += it.trackStretch;
         trackZ += it.trackShrink;
-        boxChars += Array.from(it.text).length;
+        boxChars += it.flowChars ?? Array.from(it.text).length;
         if (!hasCJK && CJK_CHAR.test(it.text)) hasCJK = true;
       } else if (it.type === ItemType.Glue) {
         if (it.cjk === true) {
@@ -436,16 +471,10 @@ export function buildRenderSegments(
     }
     flush();
     const last = segments[segments.length - 1];
-    // Provisional margin; the measured correction pass finalizes it so the
-    // line's layout width always fits the measure with 1px spare. The pad
-    // keeps the line from re-wrapping before its (possibly deferred/
-    // parked) correction lands.
+    // Provisional margin; the measured correction pass replaces its safety
+    // component with physical spacing correction. The pad keeps the line
+    // from re-wrapping before its (possibly deferred/parked) correction.
     if (last !== undefined) {
-      last.marginEndPx = -(line.rightHang + line.overflowPx + WRAP_SAFETY_PAD_PX);
-      // A zero fixed hang still marks an unpadded painted element's REAL
-      // close. Keep the safety/correction margin on that clone's outside;
-      // an internal wrap in the same source run has no marker and retains
-      // the ordinary per-line segment margin.
       let endBox: Box | undefined;
       for (let i = line.end - 1; i >= line.start; i--) {
         const candidate = para.items[i]!;
@@ -454,6 +483,34 @@ export function buildRenderSegments(
           break;
         }
       }
+      // Firefox evaluates a later nowrap fragment beside a float from its
+      // physical typographic width, ignoring an end margin that would make
+      // the same fragment fit elsewhere. Encode a terminal glyph's hang as
+      // reduced letter advance there: its glyph stays joined to the word,
+      // but its ink can paint beyond the shortened line box. Hyphen pseudo-
+      // content and painted inline boxes retain the ordinary margin
+      // representation: their overhang is not a terminal glyph advance.
+      const physicalEndHang =
+        lineIndex < (scan.floatIntrusion?.lines ?? 0) &&
+        !line.hyphenated &&
+        endBox?.paintedEnd !== true &&
+        line.rightHang > 0 &&
+        last.text.trimEnd().length > 0
+          ? line.rightHang
+          : 0;
+      if (physicalEndHang > 0) last.physicalEndHangPx = physicalEndHang;
+      last.marginEndPx = -(
+        line.rightHang -
+        physicalEndHang +
+        line.overflowPx +
+        WRAP_SAFETY_PAD_PX
+      );
+      last.rightHangPx = line.rightHang;
+      last.overflowPx = line.overflowPx;
+      // A zero fixed hang still marks an unpadded painted element's REAL
+      // close. Keep the safety/correction margin on that clone's outside;
+      // an internal wrap in the same source run has no marker and retains
+      // the ordinary per-line segment margin.
       if (endBox?.type === ItemType.Box && endBox.paintedEnd === true) {
         last.marginEndOwner = scan.runs[endBox.run]?.boxEndProtrusionOwner;
       }
@@ -486,6 +543,7 @@ export function buildRenderSegments(
   for (const [runIndex, segIndex] of lastSegForRun) {
     const seg = segments[segIndex]!;
     seg.decorPx = (seg.decorPx ?? 0) + scan.runs[runIndex]!.padEndPx!;
+    seg.decorEndOwner = scan.runs[runIndex]!.padEndOwner;
   }
 
   return segments;

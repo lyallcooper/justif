@@ -148,6 +148,500 @@ test("justified lines end flush within 0.5px (no protrusion/expansion)", async (
   }
 });
 
+test("floated ::first-letter drop caps use the remaining width on every intruded line", async ({
+  page,
+}) => {
+  const original = await page.evaluate(() => {
+    const style = document.createElement("style");
+    style.textContent = `
+      #dropcap-fixture,
+      #dropcap-control,
+      #dropcap-punctuation {
+        width: 356px;
+        margin: 0;
+        font: 17.6px/24.3px Georgia, serif;
+        text-align: justify;
+      }
+      #dropcap-fixture::first-letter,
+      #dropcap-punctuation::first-letter {
+        float: left;
+        padding-right: 6px;
+        font-size: 70px;
+        line-height: 0.8;
+      }
+    `;
+    document.head.append(style);
+
+    const p = document.createElement("p");
+    p.id = "dropcap-fixture";
+    p.textContent =
+      "Among the numerous advantages promised by a well constructed Union, " +
+      "none deserves to be more accurately developed than its tendency to " +
+      "break and control the violence of faction.";
+    const control = document.createElement("p");
+    control.id = "dropcap-control";
+    control.textContent = p.textContent;
+    const punctuation = document.createElement("p");
+    punctuation.id = "dropcap-punctuation";
+    punctuation.textContent =
+      "Among the numerous advantages promised by a well constructed Union, " +
+      "extraordinarily careful setting keeps punctuation in the margin.";
+    const text = p.textContent;
+    const punctuationText = punctuation.firstChild as Text;
+    const commaAt = punctuationText.data.indexOf("Union,") + "Union".length;
+    const nativeBeforeComma = document.createRange();
+    nativeBeforeComma.setStart(punctuationText, commaAt - 1);
+    nativeBeforeComma.setEnd(punctuationText, commaAt);
+    const nativeComma = document.createRange();
+    nativeComma.setStart(punctuationText, commaAt);
+    nativeComma.setEnd(punctuationText, commaAt + 1);
+    const nativeCommaGap =
+      nativeComma.getBoundingClientRect().left - nativeBeforeComma.getBoundingClientRect().right;
+    document.getElementById("host")!.replaceChildren(p, control, punctuation);
+    const before = [p.outerHTML, control.outerHTML, punctuation.outerHTML];
+    const box = p.getBoundingClientRect();
+    const range = document.createRange();
+    range.setStart(p.firstChild!, 1);
+    range.setEnd(p.firstChild!, p.firstChild!.textContent!.length);
+    const nativeLines: Array<{ top: number; left: number }> = [];
+    for (const rect of range.getClientRects()) {
+      let line = nativeLines.find((candidate) => Math.abs(candidate.top - rect.top) < 10);
+      if (line === undefined) {
+        line = { top: rect.top, left: rect.left };
+        nativeLines.push(line);
+      } else {
+        line.left = Math.min(line.left, rect.left);
+      }
+    }
+    nativeLines.sort((a, b) => a.top - b.top);
+    let nativeIntruded = 0;
+    for (const line of nativeLines) {
+      if (line.left > box.left + 40) nativeIntruded++;
+      else break;
+    }
+    window.__justif.controller = window.__justif.justify([p, control, punctuation], {
+      onSkip: (_paragraph: HTMLElement, reason: string) => {
+        p.dataset.skipReason = reason;
+      },
+    });
+    return { html: before, text, nativeIntruded, nativeCommaGap };
+  });
+  await page.evaluate(() => window.__justif.controller!.ready);
+  await waitForQuiescence(page, "#dropcap-fixture");
+
+  const result = await page.evaluate(() => {
+    const p = document.getElementById("dropcap-fixture")!;
+    const control = document.getElementById("dropcap-control")!;
+    const punctuation = document.getElementById("dropcap-punctuation")!;
+    const box = p.getBoundingClientRect();
+    const controlBox = control.getBoundingClientRect();
+    const lines = [...p.querySelectorAll<HTMLElement>(":scope > .justif-seg")].map((segment) => {
+      const rect = segment.getBoundingClientRect();
+      return { left: rect.left, right: rect.right, text: segment.textContent };
+    });
+    const commaAt = punctuation.textContent!.indexOf("Union,") + "Union".length;
+    const textNodes: Text[] = [];
+    const walker = document.createTreeWalker(punctuation, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      textNodes.push(node as Text);
+    }
+    const pointAt = (offset: number): { node: Text; offset: number } => {
+      let seen = 0;
+      for (const node of textNodes) {
+        if (offset <= seen + node.data.length) return { node, offset: offset - seen };
+        seen += node.data.length;
+      }
+      const node = textNodes[textNodes.length - 1]!;
+      return { node, offset: node.data.length };
+    };
+    const beforeStart = pointAt(commaAt - 1);
+    const commaStart = pointAt(commaAt);
+    const commaEnd = pointAt(commaAt + 1);
+    const beforeComma = document.createRange();
+    beforeComma.setStart(beforeStart.node, beforeStart.offset);
+    beforeComma.setEnd(commaStart.node, commaStart.offset);
+    const comma = document.createRange();
+    comma.setStart(commaStart.node, commaStart.offset);
+    comma.setEnd(commaEnd.node, commaEnd.offset);
+    const beforeCommaRect = beforeComma.getBoundingClientRect();
+    const commaRect = comma.getBoundingClientRect();
+    const hangingEnd = punctuation.querySelector<HTMLElement>(".justif-hanging-end");
+    const physicalHang =
+      hangingEnd === null
+        ? 0
+        : (parseFloat(getComputedStyle(hangingEnd.parentElement!).letterSpacing) || 0) -
+          (parseFloat(getComputedStyle(hangingEnd).letterSpacing) || 0);
+    return {
+      enhanced: p.hasAttribute("data-justif"),
+      skipReason: p.dataset.skipReason,
+      text: p.textContent,
+      floatedText: p.querySelector(".justif-float-source")?.textContent,
+      hangingCommaRight: commaRect.right + physicalHang,
+      commaGap: commaRect.left - beforeCommaRect.right,
+      physicalHang,
+      punctuationRight: punctuation.getBoundingClientRect().right,
+      left: box.left,
+      right: box.right,
+      lines,
+      control: {
+        right: controlBox.right,
+        lines: [...control.querySelectorAll<HTMLElement>(":scope > .justif-seg")].map(
+          (segment) => ({ right: segment.getBoundingClientRect().right, text: segment.textContent }),
+        ),
+      },
+    };
+  });
+
+  expect(result.enhanced).toBe(true);
+  expect(result.skipReason).toBeUndefined();
+  expect(result.text).toBe(original.text);
+  // The floated source stays outside the nowrap measurement span and is a
+  // real float, avoiding engine-specific ::first-letter line-box behavior.
+  expect(result.floatedText).toBe("A");
+  expect(result.physicalHang).toBeGreaterThan(0.5);
+  expect(result.hangingCommaRight).toBeGreaterThan(result.punctuationRight + 0.5);
+  // Splitting the final grapheme into its own CSS spacing unit can change a
+  // sub-pixel boundary rect, but must not introduce a visible hanging gap.
+  expect(Math.abs(result.commaGap - original.nativeCommaGap)).toBeLessThan(1.1);
+  expect(result.lines.length).toBeGreaterThan(3);
+  // Engines differ in the exact first-letter line box (Firefox overlaps two
+  // lines here; Chromium/WebKit overlap three). Every line the native float
+  // intrudes must stay beside it and set flush to the ordinary right edge.
+  expect(original.nativeIntruded).toBeGreaterThanOrEqual(2);
+  for (const [i, line] of result.lines.slice(0, original.nativeIntruded).entries()) {
+    expect.soft(line.left, `intruded line ${i + 1} starts beside the float`).toBeGreaterThan(
+      result.left + 40,
+    );
+    expect.soft(line.right, `intruded line ${i + 1} does not overflow`).toBeLessThanOrEqual(
+      result.right + 0.5,
+    );
+    expect.soft(result.right - line.right, `intruded line ${i + 1} remains justified`).toBeLessThan(
+      2,
+    );
+  }
+  expect(result.lines[original.nativeIntruded]!.left).toBeLessThan(result.left + 1);
+  for (const line of result.control.lines.slice(0, -1)) {
+    expect
+      .soft(line.right - result.control.right, `control line "${line.text}" has no false overflow`)
+      .toBeLessThanOrEqual(0.75);
+    expect
+      .soft(result.control.right - line.right, `control line "${line.text}" remains set flush`)
+      .toBeLessThanOrEqual(0.75);
+  }
+
+  await page.evaluate(() => {
+    document.getElementById("dropcap-fixture")!.style.width = "300px";
+  });
+  await waitForQuiescence(page, "#dropcap-fixture");
+  const resized = await page.evaluate(() => {
+    const p = document.getElementById("dropcap-fixture")!;
+    const box = p.getBoundingClientRect();
+    return {
+      left: box.left,
+      right: box.right,
+      lines: [...p.querySelectorAll<HTMLElement>(":scope > .justif-seg")].map((segment) => {
+        const rect = segment.getBoundingClientRect();
+        return { left: rect.left, right: rect.right };
+      }),
+    };
+  });
+  for (const [i, line] of resized.lines.slice(0, original.nativeIntruded).entries()) {
+    expect.soft(line.left, `resized intruded line ${i + 1} starts beside the float`).toBeGreaterThan(
+      resized.left + 40,
+    );
+    expect.soft(line.right, `resized intruded line ${i + 1} does not overflow`).toBeLessThanOrEqual(
+      resized.right + 0.5,
+    );
+  }
+  expect(resized.lines[original.nativeIntruded]!.left).toBeLessThan(resized.left + 1);
+
+  const restored = await page.evaluate(() => {
+    document.getElementById("dropcap-fixture")!.style.width = "";
+    window.__justif.controller!.destroy();
+    return [
+      document.getElementById("dropcap-fixture")!.outerHTML,
+      document.getElementById("dropcap-control")!.outerHTML,
+      document.getElementById("dropcap-punctuation")!.outerHTML,
+    ];
+  });
+  expect(restored).toEqual(original.html);
+});
+
+test("a drop cap wider than its column stays native and recovers after resize", async ({ page }) => {
+  const originalText = await page.evaluate(() => {
+    const style = document.createElement("style");
+    style.textContent = `
+      #dropcap-squeezed {
+        width: 40px;
+        margin: 0;
+        font: 17.6px/24.3px Georgia, serif;
+        text-align: justify;
+      }
+      #dropcap-squeezed::first-letter {
+        float: left;
+        padding-right: 6px;
+        font-size: 70px;
+        line-height: 0.8;
+      }
+    `;
+    document.head.append(style);
+    const p = document.createElement("p");
+    p.id = "dropcap-squeezed";
+    p.textContent =
+      "Among the numerous advantages promised by a well constructed Union, " +
+      "none deserves to be more accurately developed.";
+    document.getElementById("host")!.replaceChildren(p);
+    window.__justif.controller = window.__justif.justify(p);
+    return p.textContent;
+  });
+  await page.evaluate(() => window.__justif.controller!.ready);
+
+  expect(await page.locator("#dropcap-squeezed[data-justif]").count()).toBe(0);
+  expect(await page.locator("#dropcap-squeezed .justif-seg").count()).toBe(0);
+
+  await page.evaluate(() => {
+    document.getElementById("dropcap-squeezed")!.style.width = "356px";
+  });
+  await page.waitForFunction(() =>
+    document.getElementById("dropcap-squeezed")!.hasAttribute("data-justif"),
+  );
+  await waitForQuiescence(page, "#dropcap-squeezed");
+  expect(await page.locator("#dropcap-squeezed .justif-float-source").textContent()).toBe("A");
+  expect(await page.locator("#dropcap-squeezed .justif-seg").count()).toBeGreaterThan(0);
+
+  await page.evaluate(() => {
+    document.getElementById("dropcap-squeezed")!.style.width = "40px";
+  });
+  await page.waitForFunction(() =>
+    !document.getElementById("dropcap-squeezed")!.hasAttribute("data-justif"),
+  );
+  const restored = await page.evaluate(() => {
+    const p = document.getElementById("dropcap-squeezed")!;
+    const result = {
+      text: p.textContent,
+      segments: p.querySelectorAll(".justif-seg, .justif-float-source").length,
+    };
+    window.__justif.controller!.destroy();
+    return result;
+  });
+  expect(restored).toEqual({ text: originalText, segments: 0 });
+});
+
+test("multi-run first letters retain each source run's inherited styling", async ({ page }) => {
+  const original = await page.evaluate(() => {
+    const style = document.createElement("style");
+    style.textContent = `
+      #dropcap-styled {
+        width: 356px;
+        margin: 0;
+        font: 17.6px/24.3px Georgia, serif;
+        text-align: justify;
+      }
+      #dropcap-styled::first-letter {
+        float: left;
+        padding-right: 6px;
+        font-size: 70px;
+        line-height: 0.8;
+      }
+      #dropcap-styled .opening { color: rgb(180, 0, 0); font-style: italic; }
+      #dropcap-styled .initial { color: rgb(0, 0, 180); font-weight: 700; }
+    `;
+    document.head.append(style);
+    const p = document.createElement("p");
+    p.id = "dropcap-styled";
+    p.innerHTML =
+      '<span class="opening">“</span><span class="initial">A</span>mong the numerous ' +
+      "advantages promised by a well constructed Union, none deserves to be more accurately " +
+      "developed than its tendency to break and control the violence of faction.";
+    document.getElementById("host")!.replaceChildren(p);
+    const before = p.outerHTML;
+    window.__justif.controller = window.__justif.justify(p);
+    return before;
+  });
+  await page.evaluate(() => window.__justif.controller!.ready);
+  await waitForQuiescence(page, "#dropcap-styled");
+
+  const rendered = await page.evaluate(() => {
+    const p = document.getElementById("dropcap-styled")!;
+    const fragments = [
+      ...p.querySelectorAll<HTMLElement>(".justif-float-source > .justif-float-fragment"),
+    ];
+    return {
+      floatText: p.querySelector(".justif-float-source")?.textContent,
+      fragments: fragments.map((fragment) => {
+        const style = getComputedStyle(fragment);
+        return {
+          text: fragment.textContent,
+          color: style.color,
+          fontStyle: style.fontStyle,
+          fontWeight: style.fontWeight,
+        };
+      }),
+    };
+  });
+  expect(rendered.floatText).toBe("“A");
+  expect(rendered.fragments.map((fragment) => fragment.text)).toEqual(["“", "A"]);
+  expect(rendered.fragments[0]).toMatchObject({
+    color: "rgb(180, 0, 0)",
+    fontStyle: "italic",
+  });
+  expect(rendered.fragments[1]).toMatchObject({
+    color: "rgb(0, 0, 180)",
+    fontWeight: "700",
+  });
+
+  const restored = await page.evaluate(() => {
+    window.__justif.controller!.destroy();
+    return document.getElementById("dropcap-styled")!.outerHTML;
+  });
+  expect(restored).toBe(original);
+});
+
+test("logical drop-cap floats are modeled and unsafe inline first letters stay native", async ({
+  page,
+}) => {
+  const result = await page.evaluate(async () => {
+    const style = document.createElement("style");
+    style.textContent = `
+      #dropcap-logical,
+      #first-letter-inline,
+      #first-letter-strong {
+        width: 356px;
+        margin: 0;
+        font: 17.6px/24.3px Georgia, serif;
+        text-align: justify;
+      }
+      #dropcap-logical::first-letter {
+        float: inline-start;
+        padding-inline-end: 6px;
+        font-size: 70px;
+        line-height: 0.8;
+      }
+      #first-letter-inline::first-letter { font-size: 4em; }
+    `;
+    document.head.append(style);
+    const prose =
+      "Among the numerous advantages promised by a well constructed Union, " +
+      "none deserves to be more accurately developed than its tendency to break and control " +
+      "the violence of faction.";
+    const logical = document.createElement("p");
+    logical.id = "dropcap-logical";
+    logical.textContent = prose;
+    const inline = document.createElement("p");
+    inline.id = "first-letter-inline";
+    inline.textContent = prose;
+    const strong = document.createElement("p");
+    strong.id = "first-letter-strong";
+    strong.innerHTML = `<strong>Among</strong>${prose.slice("Among".length)}`;
+    document.getElementById("host")!.replaceChildren(logical, inline, strong);
+    const skipped = new Map<HTMLElement, string>();
+    const controller = window.__justif.justify([logical, inline, strong], {
+      onSkip(paragraph: HTMLElement, reason: string) {
+        skipped.set(paragraph, reason);
+      },
+    });
+    await controller.ready;
+    const paragraphRect = logical.getBoundingClientRect();
+    const floatRect = logical
+      .querySelector<HTMLElement>(".justif-float-source")!
+      .getBoundingClientRect();
+    const firstLineRect = logical
+      .querySelector<HTMLElement>(":scope > .justif-seg")!
+      .getBoundingClientRect();
+    const out = {
+      logical: {
+        enhanced: logical.hasAttribute("data-justif"),
+        floatText: logical.querySelector(".justif-float-source")?.textContent,
+        floatAtStart: floatRect.left < paragraphRect.left + 1,
+        textBesideFloat: firstLineRect.left > floatRect.right - 1,
+      },
+      inline: {
+        enhanced: inline.hasAttribute("data-justif"),
+        segments: inline.querySelectorAll(".justif-seg").length,
+        reason: skipped.get(inline),
+      },
+      strong: {
+        enhanced: strong.hasAttribute("data-justif"),
+        reason: skipped.get(strong),
+      },
+    };
+    controller.destroy();
+    return out;
+  });
+  expect(result.logical).toEqual({
+    enhanced: true,
+    floatText: "A",
+    floatAtStart: true,
+    textBesideFloat: true,
+  });
+  expect(result.inline).toEqual({
+    enhanced: false,
+    segments: 0,
+    reason: "layout-changing non-floated ::first-letter",
+  });
+  // A source inline's own bold font is represented by an ordinary run;
+  // it must not be mistaken for pseudo-only first-letter styling.
+  expect(result.strong).toEqual({ enhanced: true, reason: undefined });
+});
+
+test("refresh re-reads native drop-cap overlap geometry", async ({ page }) => {
+  await page.evaluate(async () => {
+    const style = document.createElement("style");
+    style.textContent = `
+      #dropcap-refresh {
+        width: 356px;
+        margin: 0;
+        font: 17.6px/24.3px Georgia, serif;
+        text-align: justify;
+      }
+      #dropcap-refresh::first-letter {
+        float: left;
+        padding-right: 6px;
+        font-size: 70px;
+        line-height: 0.6;
+      }
+      #dropcap-refresh.tall::first-letter {
+        font-size: 130px;
+        line-height: 1.2;
+      }
+    `;
+    document.head.append(style);
+    const p = document.createElement("p");
+    p.id = "dropcap-refresh";
+    p.textContent =
+      "Among the numerous advantages promised by a well constructed Union, " +
+      "none deserves to be more accurately developed than its tendency to break and control " +
+      "the violence of faction. The value of accurate native geometry becomes clearest when " +
+      "the drop cap itself changes after the initial enhancement.";
+    document.getElementById("host")!.replaceChildren(p);
+    window.__justif.controller = window.__justif.justify(p);
+    await window.__justif.controller.ready;
+  });
+  await waitForQuiescence(page, "#dropcap-refresh");
+
+  const intrudedLines = () =>
+    page.evaluate(() => {
+      const p = document.getElementById("dropcap-refresh")!;
+      const left = p.getBoundingClientRect().left;
+      let count = 0;
+      for (const segment of p.querySelectorAll<HTMLElement>(":scope > .justif-seg")) {
+        if (segment.getBoundingClientRect().left <= left + 40) break;
+        count++;
+      }
+      return count;
+    });
+  const before = await intrudedLines();
+  await page.evaluate(() => {
+    const p = document.getElementById("dropcap-refresh")!;
+    p.classList.add("tall");
+    window.__justif.controller!.refresh();
+  });
+  await waitForQuiescence(page, "#dropcap-refresh");
+  const after = await intrudedLines();
+  expect(before).toBeGreaterThan(0);
+  expect(after).toBeGreaterThan(before);
+});
+
 test("lastLineMinWidth: 1 justifies paragraph endings flush (rectangular paragraphs)", async ({ page }) => {
   // Control: with the option explicitly OFF (it defaults to 0.33 now) at
   // least one fixture ending must be genuinely short, or the flush
@@ -540,8 +1034,7 @@ test("padded inline chips justify flush, and the padding actually renders", asyn
   for (let i = 0; i < r.g.lines.length - 1; i++) {
     const line = r.g.lines[i]!;
     // Text rects exclude a chip's trailing padding: a line ending in a chip
-    // is flush at the chip's BORDER box (within the corrective ~1px spare,
-    // realized inside the clone). Lines ending in plain text keep the
+    // is flush at the chip's BORDER box. Lines ending in plain text keep the
     // standard sub-0.5px flushness.
     const chipRights = r.chips
       .filter((c) => Math.abs(c.boxTop - line.top) < 6)
@@ -1144,9 +1637,9 @@ test("a line-end painted inline box hangs its end inset outside the margin", asy
   });
 
   expect.soft(geometry.haloRight - geometry.glyphRight).toBeCloseTo(7, 0);
-  // The measured wrap guarantee deliberately keeps ~1px of safety slack;
-  // tolerate that correction while requiring the full painted inset to sit
-  // beyond the glyph edge and materially outside the paragraph measure.
+  // Tolerate sub-pixel distributed-spacing differences while requiring the
+  // full painted inset beyond the glyph edge and materially outside the
+  // paragraph measure.
   expect.soft(Math.abs(geometry.glyphRight - geometry.contentRight)).toBeLessThan(1.5);
   expect(geometry.haloRight - geometry.contentRight).toBeGreaterThan(5.5);
 });
@@ -2170,9 +2663,8 @@ test("observeResize:false still runs the wrap-guarantee corrections", async ({ p
     return document.getElementById("host")!.innerHTML;
   });
   await waitForQuiescence(page);
-  // Corrections are visually inert (trailing layout-advance margins only),
-  // so "they ran" is a DOM fact: the provisional −1.5px wrap-safety pads
-  // were normalized to the measured 1px-spare state after ready.
+  // "They ran" is a DOM fact: the provisional −1.5px wrap-safety pads and
+  // measured spacing were normalized after ready.
   const settled = await page.evaluate(() => document.getElementById("host")!.innerHTML);
   expect(settled).not.toBe(provisional);
   const paragraphs = await readGeometry(page);

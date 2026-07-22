@@ -16,8 +16,21 @@
  * as pseudo-content, invisible to the clipboard and accessibility tree.
  */
 
+import { graphemes } from "../core/cjk.js";
+
 export interface RenderSegment {
   text: string;
+  /** Source prefix rendered outside the nowrap span because it belongs to
+   * the paragraph's floated `::first-letter`. Keeping it in the author's
+   * inline ancestor chain, but out of `.justif-seg`, preserves the native
+   * float line box and keeps correction reads limited to normal-flow text. */
+  floatedPrefix?: string;
+  /** Computed ::first-letter longhands for the real floated source span. */
+  floatedStyle?: readonly (readonly [property: string, value: string])[];
+  /** Source-run styling restored on this fragment inside the one real
+   * first-letter float. Anonymous spans preserve styling without cloning
+   * semantic descendants (and their links/ids) a second time. */
+  floatedInnerStyle?: readonly (readonly [property: string, value: string])[];
   /** Source inline elements to clone around this text, outermost first. */
   ancestors: readonly Element[];
   /** Absolute word-spacing for this segment's own spaces (px). */
@@ -25,6 +38,12 @@ export interface RenderSegment {
   /** Absolute letter-spacing (author's + letterfit tracking), or null to
    * inherit the author's value untouched (tracking inactive on this line). */
   letterSpacingPx: number | null;
+  /** Resolved value represented by `letterSpacingPx` (including inherited
+   * author spacing when the declaration itself is omitted). */
+  resolvedLetterSpacingPx: number;
+  /** Portion of the terminal glyph's advance physically removed so a
+   * nowrap line can fit beside a float without moving the glyph itself. */
+  physicalEndHangPx?: number;
   /** Feature settings to emit when tracking needs to retain common
    * ligatures. Includes the author's low-level settings so this declaration
    * never replaces their stylistic sets or variant choices. */
@@ -49,6 +68,12 @@ export interface RenderSegment {
    * corrective trailing margin always shrinks the line's advance at its
    * END edge. */
   marginEndPx: number;
+  /** Intended optical protrusion of this line's final glyph. Assigned only
+   * to the actual final text segment. */
+  rightHangPx?: number;
+  /** Deliberate excess after all configured shrink resources are exhausted.
+   * Unlike DOM/canvas drift, this remains visibly overfull. */
+  overflowPx?: number;
   /** Painted source inline whose clone receives `marginEndPx`. */
   marginEndOwner?: Element;
   /** Edge spaces excluded from corrective measurement (position-dependent
@@ -59,6 +84,8 @@ export interface RenderSegment {
    * outside the segment span) — added to the corrective model like the
    * edge-trim widths. */
   decorPx?: number;
+  /** Clone whose painted border edge closes `decorPx` on this segment. */
+  decorEndOwner?: Element;
   /** Contains CJK text: rendered with `font-kerning: none` (and Chromium's
    * text-spacing-trim disabled) so DOM advances equal the model's isolated
    * cluster advances. Engines disagree between canvas and DOM on kana
@@ -84,19 +111,22 @@ export interface RenderSegment {
  * line can never re-wrap while its correction is deferred/parked.
  */
 export const WRAP_SAFETY_PAD_PX = 1.5;
-/** Corrections normalize every line measuring overflow above this window
- * back to exactly WRAP_SPARE_PX of slack; lines shorter than the window
- * are ragged by design (paragraph endings) and keep their margins. Wide
- * enough to re-capture lines sitting on the provisional pad. */
+/** Correct every line measuring above this window; lines shorter than it
+ * are ragged by design (paragraph endings) and keep their provisional
+ * margins. Wide enough to re-capture set lines sitting on the safety pad. */
 const CORRECTION_WINDOW_PX = -(2 * WRAP_SAFETY_PAD_PX);
-/** The measured end state: layout fits the measure with this to spare. */
-const WRAP_SPARE_PX = 1;
-
+/** Physical slack retained beside a float. Firefox can reject an
+ * exactly-equal later nowrap fragment after device-pixel rounding. */
+const FLOAT_WRAP_SPARE_PX = 0.25;
 const STYLE_ID = "justif-style";
 const px = (v: number): string => `${Math.round(v * 1000) / 1000}px`;
 
 const SHEET_TEXT =
   ".justif-seg{white-space:nowrap}" +
+  // Once the source letter is a real float, Firefox retargets the
+  // paragraph pseudo to the first normal-flow letter. Neutralize that
+  // second pseudo; the real float carries the snapshotted author styles.
+  "[data-justif-dropcap]::first-letter{all:unset!important}" +
   '.justif-hyphen::after{content:"-"}' +
   '@supports (content:"-" / ""){.justif-hyphen::after{content:"-" / ""}}';
 
@@ -159,6 +189,9 @@ interface LineEntry {
   el: HTMLElement;
   seg: RenderSegment | null;
   marginEndEl: HTMLElement;
+  /** Closing decorated-inline clone, when its border edge is the line's
+   * physical painted end even though it carries no protrusion margin. */
+  paintEndEl?: HTMLElement;
 }
 
 /**
@@ -170,10 +203,14 @@ interface LineEntry {
  */
 export interface PendingParagraph {
   doc: Document;
+  paragraph: HTMLElement;
   lineElements: LineEntry[][];
   /** Target width per line (index-aligned with lineElements): lines under
    * a text-indent have a different measure than the rest. */
   lineWidths: readonly number[];
+  /** Leading lines whose coordinate edge depends on a float. Correct these
+   * from their measured physical width rather than the paragraph edge. */
+  physicalFitLines: number;
 }
 
 
@@ -182,6 +219,7 @@ export function writeParagraph(
   p: HTMLElement,
   segments: readonly RenderSegment[],
   lineWidths: readonly number[],
+  physicalFitLines = 0,
 ): PendingParagraph {
   const doc = p.ownerDocument;
   const root = p.getRootNode();
@@ -231,6 +269,15 @@ export function writeParagraph(
   };
 
   let prevContainer: ParentNode = fragment;
+  let floatSource: HTMLElement | null = null;
+  const floatBaseStyle = new Map(
+    segments.find((segment) => segment.floatedStyle !== undefined)?.floatedStyle ?? [],
+  );
+  const floatInnerProperties = new Set(
+    segments.flatMap((segment) =>
+      (segment.floatedInnerStyle ?? []).map(([property]) => property),
+    ),
+  );
   for (const segment of segments) {
     if (segment.joint === "hyphen") {
       const hyphen = doc.createElement("span");
@@ -262,6 +309,41 @@ export function writeParagraph(
     }
 
     const container = containerFor(segment.ancestors);
+    if (segment.floatedPrefix !== undefined) {
+      if (floatSource === null) {
+        floatSource = doc.createElement("span");
+        floatSource.className = "justif-float-source";
+        disableTextAutosizing(floatSource);
+        for (const [property, value] of segment.floatedStyle ?? []) {
+          floatSource.style.setProperty(property, value);
+        }
+        container.append(floatSource);
+      }
+      if (floatInnerProperties.size === 0) {
+        floatSource.append(doc.createTextNode(segment.floatedPrefix));
+      } else {
+        const innerStyle = new Map(segment.floatedInnerStyle ?? []);
+        const fragment = doc.createElement("span");
+        fragment.className = "justif-float-fragment";
+        // The real float is nested under the first source run's cloned
+        // ancestors. For every property any floated run overrides, later
+        // fragments must either apply their own override or reset to the
+        // snapshotted pseudo value instead of inheriting that first run.
+        for (const property of floatInnerProperties) {
+          const value = innerStyle.get(property) ?? floatBaseStyle.get(property);
+          if (value !== undefined) fragment.style.setProperty(property, value);
+        }
+        fragment.append(doc.createTextNode(segment.floatedPrefix));
+        floatSource.append(fragment);
+      }
+    }
+    // A first-letter range can consume a whole styling run. Its source text
+    // still belongs in the cloned DOM, but there is no normal-flow segment
+    // to measure or correct for that run.
+    if (segment.text.length === 0) {
+      prevContainer = container;
+      continue;
+    }
     const el = doc.createElement("span");
     el.className = "justif-seg";
     disableTextAutosizing(el);
@@ -280,6 +362,7 @@ export function writeParagraph(
     }
     const marginStartEl = cloneFor(segment.marginStartOwner, segment.ancestors) ?? el;
     const marginEndEl = cloneFor(segment.marginEndOwner, segment.ancestors) ?? el;
+    const paintEndEl = cloneFor(segment.decorEndOwner, segment.ancestors);
     if (segment.marginStartPx !== 0) {
       marginStartEl.style.marginInlineStart = px(segment.marginStartPx);
     }
@@ -293,14 +376,43 @@ export function writeParagraph(
       // space-all disables the trim. A no-op in other engines.
       el.style.setProperty("text-spacing-trim", "space-all");
     }
-    el.textContent = segment.text;
+    if (segment.physicalEndHangPx !== undefined && segment.physicalEndHangPx > 0) {
+      const clusters = graphemes(segment.text);
+      let end = clusters.length - 1;
+      while (end >= 0 && /^\s+$/u.test(clusters[end]!)) end--;
+      const hanging = clusters[end];
+      if (hanging === undefined) el.textContent = segment.text;
+      else {
+        const before = clusters.slice(0, end).join("");
+        const after = clusters.slice(end + 1).join("");
+        el.append(before);
+        const span = doc.createElement("span");
+        span.className = "justif-hanging-end";
+        span.style.letterSpacing = px(
+          segment.resolvedLetterSpacingPx - segment.physicalEndHangPx,
+        );
+        span.textContent = hanging;
+        el.append(span, after);
+      }
+    } else el.textContent = segment.text;
     container.append(el);
     prevContainer = container;
-    lineElements[lineElements.length - 1]!.push({ el, seg: segment, marginEndEl });
+    lineElements[lineElements.length - 1]!.push({
+      el,
+      seg: segment,
+      marginEndEl,
+      paintEndEl,
+    });
   }
 
   p.replaceChildren(fragment);
-  return { doc, lineElements, lineWidths };
+  return { doc, paragraph: p, lineElements, lineWidths, physicalFitLines };
+}
+
+export interface SpacingCorrection {
+  el: HTMLElement;
+  property: "word-spacing" | "letter-spacing";
+  px: number;
 }
 
 export interface Correction {
@@ -308,6 +420,9 @@ export interface Correction {
   /** Element currently carrying the provisional end margin. */
   marginEl: HTMLElement;
   marginPx: number;
+  /** Measured spacing adjustments that make the painted glyph edge agree
+   * with the model rather than hiding DOM/canvas drift in an end margin. */
+  spacing?: SpacingCorrection[];
 }
 
 export interface CorrectionResult {
@@ -327,10 +442,10 @@ export interface CorrectionResult {
  * (variable-font expansion responds per glyph, not per calibration
  * string), and a line whose layout width exceeds the measure makes the
  * browser retreat to a mid-line boundary instead of overflowing. So
- * measure each intended line's true layout width and compute the trailing
- * margin that makes it fit with ~1px to spare — glyph positions are
- * unaffected, and the slack is far too small to pull the next segment up.
- * Pure reads (one forced layout for the whole batch, however many
+ * measure each intended line's true painted edge, then correct its spacing
+ * to the modeled edge and retain only the intentional optical end margin.
+ * The provisional safety margin prevents rewrapping until that correction
+ * lands. Pure reads (one forced layout for the whole batch, however many
  * paragraphs it spans); apply the result with `applyCorrections`.
  */
 export function measureCorrections(pending: readonly PendingParagraph[]): CorrectionResult {
@@ -338,7 +453,7 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
   const hidden: number[] = [];
   let range: Range | null = null;
   for (let i = 0; i < pending.length; i++) {
-    const { doc, lineElements, lineWidths } = pending[i]!;
+    const { doc, paragraph, lineElements, lineWidths, physicalFitLines } = pending[i]!;
     // A pending whose nodes were detached (the paragraph was re-patched,
     // restored, or replaced since it was queued) is stale: drop it before
     // paying any geometry reads — detached nodes measure zero like skipped
@@ -346,6 +461,16 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
     const firstEntry = lineElements.find((l) => l.length > 0)?.[0];
     if (firstEntry === undefined || !firstEntry.el.isConnected) continue;
     range ??= doc.createRange();
+    const paragraphRect = paragraph.getBoundingClientRect();
+    const paragraphStyle = doc.defaultView?.getComputedStyle(paragraph);
+    const rtl = paragraphStyle?.direction === "rtl";
+    const contentEnd = rtl
+      ? paragraphRect.left +
+        (parseFloat(paragraphStyle?.borderLeftWidth ?? "") || 0) +
+        (parseFloat(paragraphStyle?.paddingLeft ?? "") || 0)
+      : paragraphRect.right -
+        (parseFloat(paragraphStyle?.borderRightWidth ?? "") || 0) -
+        (parseFloat(paragraphStyle?.paddingRight ?? "") || 0);
     let sawInk = false;
     const paraCorrections: Correction[] = [];
     for (let li = 0; li < lineElements.length; li++) {
@@ -383,11 +508,124 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
       const layout = rectPx + modelPx;
       const overflow = layout - availableWidth;
       if (overflow > CORRECTION_WINDOW_PX) {
-        const last = entries[entries.length - 1]!;
+        const textEntries = entries.filter(
+          (entry): entry is LineEntry & { seg: RenderSegment } => entry.seg !== null,
+        );
+        const endText = textEntries[textEntries.length - 1];
+        const rightHang = endText?.seg.rightHangPx ?? 0;
+        const physicalEndHang = endText?.seg.physicalEndHangPx ?? 0;
+        const deliberateOverflow = endText?.seg.overflowPx ?? 0;
+        const besideFloat = li < physicalFitLines;
+        // Set lines should PAINT at the modeled edge too. The former
+        // margin-only correction made their layout advance fit but left
+        // Firefox's Georgia glyphs visibly 2–3px outside the column. Away
+        // from a float we can read that coordinate directly. Beside a
+        // float (which may occupy either edge), correct the physical line
+        // width instead: content width = measure + intentional overhang,
+        // while the matching negative end margin removes that overhang
+        // from layout. The punctuation itself never moves away from its
+        // preceding glyph.
+        const physicalLayout = layout - ownMargins;
+        let adjustmentPx: number;
+        if (besideFloat) {
+          adjustmentPx =
+            physicalLayout -
+            (availableWidth -
+              FLOAT_WRAP_SPARE_PX +
+              rightHang -
+              physicalEndHang +
+              deliberateOverflow);
+        } else {
+          const paintEndEntry = entries[entries.length - 1]!;
+          let paintRect: DOMRect;
+          if (paintEndEntry.paintEndEl !== undefined) {
+            paintRect = paintEndEntry.paintEndEl.getBoundingClientRect();
+          } else if (
+            paintEndEntry.seg !== null &&
+            paintEndEntry.seg.marginEndOwner !== undefined &&
+            paintEndEntry.marginEndEl !== paintEndEntry.el
+          ) {
+            paintRect = paintEndEntry.marginEndEl.getBoundingClientRect();
+          } else if (paintEndEntry.seg === null) {
+            paintRect = paintEndEntry.el.getBoundingClientRect();
+          } else {
+            const node = endText?.el.firstChild;
+            const end = endText?.seg.text.trimEnd().length ?? 0;
+            if (node?.nodeType === 3 && end > 0) {
+              range.setStart(node, 0);
+              range.setEnd(node, end);
+              paintRect = range.getBoundingClientRect();
+            } else paintRect = paintEndEntry.el.getBoundingClientRect();
+          }
+          let paintedEnd = rtl ? -paintRect.left : paintRect.right;
+          // A provisional margin on the final text span sits INSIDE a
+          // padded ancestor and pinches that ancestor's border box. The
+          // write phase hoists it to the ancestor's outside, restoring the
+          // missing inset. Measure the edge we will have after that hoist,
+          // or the safety pad gets converted into a visible 1.5px overhang.
+          if (
+            paintEndEntry.paintEndEl !== undefined &&
+            paintEndEntry.marginEndEl !== paintEndEntry.paintEndEl &&
+            paintEndEntry.paintEndEl.contains(paintEndEntry.marginEndEl)
+          ) {
+            paintedEnd -= parseFloat(paintEndEntry.marginEndEl.style.marginInlineEnd) || 0;
+          }
+          const desiredEnd = (rtl ? -contentEnd : contentEnd) + rightHang + deliberateOverflow;
+          adjustmentPx = paintedEnd - desiredEnd;
+        }
+        // A retreated segment's collapsible prefix is discarded at the
+        // physical line start, so it cannot absorb distributed spacing.
+        // Other edge-trimmed spaces can sit at mid-line run boundaries and
+        // do paint; keep those in the divisor. (All edge trims are modeled
+        // separately only because their Range widths are position-sensitive.)
+        const correctionTexts = textEntries.map((entry, entryIndex) =>
+          entry.seg.text.slice(entryIndex === 0 ? entry.seg.edgeTrim.lead : 0),
+        );
+        const spaceCounts = correctionTexts.map(
+          (text) => text.match(/[ \u00A0]/g)?.length ?? 0,
+        );
+        const spaces = spaceCounts.reduce((sum, count) => sum + count, 0);
+        const spacing: SpacingCorrection[] = [];
+        if (Math.abs(adjustmentPx) > 0.001 && spaces > 0) {
+          const delta = adjustmentPx / spaces;
+          for (let entryIndex = 0; entryIndex < textEntries.length; entryIndex++) {
+            if (spaceCounts[entryIndex] === 0) continue;
+            const entry = textEntries[entryIndex]!;
+            spacing.push({
+              el: entry.el,
+              property: "word-spacing",
+              px: (parseFloat(entry.el.style.wordSpacing) || 0) - delta,
+            });
+          }
+        } else if (Math.abs(adjustmentPx) > 0.001) {
+          const charCounts = correctionTexts.map((text) => Array.from(text).length);
+          const chars = charCounts.reduce((sum, count) => sum + count, 0);
+          if (chars > 0) {
+            const delta = adjustmentPx / chars;
+            for (let entryIndex = 0; entryIndex < textEntries.length; entryIndex++) {
+              if (charCounts[entryIndex] === 0) continue;
+              const entry = textEntries[entryIndex]!;
+              const computed = entry.el.ownerDocument.defaultView?.getComputedStyle(entry.el);
+              spacing.push({
+                el: entry.el,
+                property: "letter-spacing",
+                px: (parseFloat(computed?.letterSpacing ?? "") || 0) - delta,
+              });
+            }
+          }
+        }
+        const lineEndEntry = entries[entries.length - 1]!;
         paraCorrections.push({
-          el: last.el,
-          marginEl: last.marginEndEl,
-          marginPx: ownMargins - (overflow + WRAP_SPARE_PX),
+          el: lineEndEntry.el,
+          marginEl: lineEndEntry.marginEndEl,
+          // Spacing now puts the measured painted edge at the requested
+          // optical position. Its matching layout exclusion is therefore
+          // exactly the intentional hang/overfull amount; deriving this
+          // margin again from summed DOM widths lets engine-specific inline
+          // rounding leak back in (notably Firefox's persistent 1.5px).
+          marginPx:
+            -(rightHang - (besideFloat ? physicalEndHang : 0) + deliberateOverflow),
+          spacing: spacing.length > 0 ? spacing : undefined,
         });
       }
     }
@@ -408,6 +646,9 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
  * where that line actually ends. */
 export function applyCorrections(corrections: readonly Correction[]): void {
   for (const c of corrections) {
+    for (const spacing of c.spacing ?? []) {
+      spacing.el.style.setProperty(spacing.property, px(spacing.px));
+    }
     let target = c.el;
     for (
       let parent = target.parentElement;

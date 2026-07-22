@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Paragraphs beginning with floated `::first-letter` drop caps can now use
+  justif's paragraph-wide line breaking. The drop cap keeps its styling and
+  browser-native intrusion, including logical float directions and first
+  letters split across styled inline content. Unsupported or too-narrow
+  layouts safely remain browser-native, and drop-cap geometry is refreshed
+  after font and layout changes.
+- Fixed justified lines sometimes painting beyond the column edge in Firefox
+  and Safari because browser text widths differed slightly from the measured
+  model. Corrections are now distributed through the line's spacing, while
+  intentional hanging punctuation continues to protrude into the margin.
 - Fixed spaces emitted as separate JSX text nodes, such as `{" "}`, being
   treated as non-breaking spaces during justification. JSX and equivalent
   plain HTML now wrap identically around links and other inline content.
