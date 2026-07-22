@@ -143,7 +143,9 @@ export function buildItems(
 ): ParagraphItems {
   const items: Item[] = [];
   let pendingSpaceRun = -1;
+  let pendingLeadingSpace = false;
   let hasBox = false;
+  let hasFlowBox = false;
 
   // Inline box extras, painted-box scopes and no-break scopes
   // (RunText.padStartPx/padEndPx/paintedBox/atomicKey). pendingPad
@@ -185,6 +187,7 @@ export function buildItems(
     }
     items.push(box);
     hasBox = true;
+    if ((box.flowChars ?? Array.from(box.text).length) > 0) hasFlowBox = true;
     lastBox = box;
     lastBoxRun = runIndex;
     lastBoxKey = pieceKey;
@@ -193,13 +196,19 @@ export function buildItems(
   const hyphenRp = (run: RunMetrics): number =>
     piecePaintedEnd ? 0 : protrusionHang(opts, measure, "-", run, run.hyphenWidth, "r");
 
-  const makeBox = (text: string, runIndex: number, width: number): Box => {
+  const makeBox = (
+    text: string,
+    runIndex: number,
+    width: number,
+    flowText = text,
+    flowExclusion?: { start: number; end: number },
+  ): Box => {
     const run = runs[runIndex]!;
     let lp = 0;
     let rp = 0;
     let lpFirst = 0;
-    if (opts.protrusion !== false) {
-      const chars = Array.from(text);
+    if (opts.protrusion !== false && flowText.length > 0) {
+      const chars = Array.from(flowText);
       const first = chars[0]!;
       const last = chars[chars.length - 1]!;
       if (!piecePaintedStart) {
@@ -226,11 +235,15 @@ export function buildItems(
       trackStretch = width * opts.tracking.max;
       trackShrink = width * opts.tracking.shrink;
     }
+    const textChars = Array.from(text).length;
+    const flowChars = Array.from(flowText).length;
     return {
       type: ItemType.Box,
       width,
       run: runIndex,
       text,
+      flowChars: flowChars === textChars ? undefined : flowChars,
+      flowExclusion,
       lp,
       lpFirst,
       rp,
@@ -313,25 +326,35 @@ export function buildItems(
   const flushPendingSpace = (nextRun: number): void => {
     if (pendingSpaceRun >= 0 && hasBox) {
       const space = runs[pendingSpaceRun]!.space;
-      if (pieceKey !== undefined && pieceKey === lastBoxKey) {
+      if (pendingLeadingSpace || (pieceKey !== undefined && pieceKey === lastBoxKey)) {
         pushPenalty({ penalty: INF_PENALTY, width: 0, flagged: false, hyphen: false, rp: 0, run: pendingSpaceRun });
       }
       const boundary =
         lastBoxRun >= 0 && runs[lastBoxRun]!.familyKey !== runs[nextRun]!.familyKey;
       items.push({
         type: ItemType.Glue,
-        width: space.width,
-        stretch: space.stretch,
+        width: pendingLeadingSpace ? 0 : space.width,
+        stretch: pendingLeadingSpace ? 0 : space.stretch,
         stretchFil: 0,
-        shrink: boundary ? space.shrink * opts.boundaryShrink : space.shrink,
+        shrink: pendingLeadingSpace
+          ? 0
+          : boundary
+            ? space.shrink * opts.boundaryShrink
+            : space.shrink,
         run: pendingSpaceRun,
-        rigid: boundary && opts.boundaryShrink < 1 ? true : undefined,
+        rigid:
+          !pendingLeadingSpace && boundary && opts.boundaryShrink < 1 ? true : undefined,
       } satisfies Glue);
     }
     pendingSpaceRun = -1;
+    pendingLeadingSpace = false;
   };
 
-  const pushWord = (token: string, runIndex: number): void => {
+  const pushWord = (
+    token: string,
+    runIndex: number,
+    exclusion: { start: number; end: number } | null,
+  ): void => {
     const run = runs[runIndex]!;
 
     // Plan all fragments: explicit hyphens ("self-made" → "self-" | "made"),
@@ -381,10 +404,34 @@ export function buildItems(
     // fragment gets exactly the width of its rendered prefix.
     let acc = "";
     let accWidth = 0;
+    let tokenOffset = 0;
     for (const plan of plans) {
       acc += plan.text;
-      const prefixWidth = measure.width(acc, run);
-      const box = makeBox(plan.text, runIndex, prefixWidth - accWidth);
+      const start = tokenOffset;
+      const end = start + plan.text.length;
+      const excludedStart = exclusion === null ? end : Math.max(start, exclusion.start);
+      const excludedEnd = exclusion === null ? start : Math.min(end, exclusion.end);
+      const flowText =
+        excludedStart < excludedEnd
+          ? plan.text.slice(0, excludedStart - start) + plan.text.slice(excludedEnd - start)
+          : plan.text;
+      const boxExclusion =
+        excludedStart < excludedEnd
+          ? { start: excludedStart - start, end: excludedEnd - start }
+          : undefined;
+      tokenOffset = end;
+      const flowPrefix =
+        exclusion === null
+          ? acc
+          : acc.slice(0, Math.max(0, exclusion.start)) + acc.slice(Math.min(acc.length, exclusion.end));
+      const prefixWidth = measure.width(flowPrefix, run);
+      const box = makeBox(
+        plan.text,
+        runIndex,
+        prefixWidth - accWidth,
+        flowText,
+        boxExclusion,
+      );
       accWidth = prefixWidth;
       emitBox(box, runIndex);
       if (plan.after !== null) {
@@ -414,7 +461,11 @@ export function buildItems(
    * runs inside a mixed token, and NO break opportunity is invented inside
    * them — only at their CJK boundaries, where UAX #14 allows one.
    */
-  const pushCJKToken = (token: string, runIndex: number): void => {
+  const pushCJKToken = (
+    token: string,
+    runIndex: number,
+    exclusion: { start: number; end: number } | null,
+  ): void => {
     const run = runs[runIndex]!;
     // Soft hyphens are meaningless between ideographs; strip them (the
     // Latin path likewise drops them from the emitted text).
@@ -426,13 +477,40 @@ export function buildItems(
     interface Group {
       cjk: boolean;
       text: string;
+      flowText: string;
+      flowExclusion?: { start: number; end: number };
     }
     const groups: Group[] = [];
+    let tokenOffset = 0;
     for (const cluster of graphemes(clean)) {
       const cjk = CJK_CHAR.test(cluster);
+      const start = tokenOffset;
+      const end = start + cluster.length;
+      const excludedStart = exclusion === null ? end : Math.max(start, exclusion.start);
+      const excludedEnd = exclusion === null ? start : Math.min(end, exclusion.end);
+      const flowText =
+        excludedStart < excludedEnd
+          ? cluster.slice(0, excludedStart - start) + cluster.slice(excludedEnd - start)
+          : cluster;
+      const clusterExclusion =
+        excludedStart < excludedEnd
+          ? { start: excludedStart - start, end: excludedEnd - start }
+          : undefined;
+      tokenOffset = end;
       const last = groups[groups.length - 1];
-      if (!cjk && last !== undefined && !last.cjk) last.text += cluster;
-      else groups.push({ cjk, text: cluster });
+      if (!cjk && last !== undefined && !last.cjk) {
+        const previousLength = last.text.length;
+        last.text += cluster;
+        last.flowText += flowText;
+        if (clusterExclusion !== undefined) {
+          const shifted = {
+            start: previousLength + clusterExclusion.start,
+            end: previousLength + clusterExclusion.end,
+          };
+          if (last.flowExclusion === undefined) last.flowExclusion = shifted;
+          else last.flowExclusion.end = shifted.end;
+        }
+      } else groups.push({ cjk, text: cluster, flowText, flowExclusion: clusterExclusion });
     }
 
     flushPendingSpace(runIndex);
@@ -447,7 +525,7 @@ export function buildItems(
     // CJK-bearing segments; see write.ts).
     let prev: { group: Group; width: number } | null = null;
     for (const group of groups) {
-      const width = measure.width(group.text, run);
+      const width = measure.width(group.flowText, run);
       if (prev !== null) {
         const before = prev.group.cjk
           ? prev.group.text
@@ -457,7 +535,11 @@ export function buildItems(
           // Inside a nowrap element every inter-cluster boundary is
           // break-prohibited; the glue still flexes for justification.
           penalty:
-            pieceKey === undefined && cjkBreakAllowed(before, after) ? 0 : INF_PENALTY,
+            prev.group.flowText.length > 0 &&
+            pieceKey === undefined &&
+            cjkBreakAllowed(before, after)
+              ? 0
+              : INF_PENALTY,
           width: 0,
           flagged: false,
           hyphen: false,
@@ -470,7 +552,9 @@ export function buildItems(
         // then flex less, as they should). Never the non-CJK side: a whole
         // Latin word's width would wildly over-flex its two boundaries.
         const basis =
-          prev.group.cjk && group.cjk
+          prev.group.flowText.length === 0
+            ? 0
+            : prev.group.cjk && group.cjk
             ? (prev.width + width) / 2
             : prev.group.cjk
               ? prev.width
@@ -485,7 +569,10 @@ export function buildItems(
           cjk: true,
         } satisfies Glue);
       }
-      emitBox(makeBox(group.text, runIndex, width), runIndex);
+      emitBox(
+        makeBox(group.text, runIndex, width, group.flowText, group.flowExclusion),
+        runIndex,
+      );
       prev = { group, width };
     }
   };
@@ -501,14 +588,29 @@ export function buildItems(
       pendingBoxStartProtrusion += piece.boxStartProtrusionPx;
     }
     const parts = text.split(BREAKABLE_SPLIT);
+    let pieceOffset = 0;
     for (const part of parts) {
       if (part.length === 0) continue;
+      const partStart = pieceOffset;
+      const partEnd = partStart + part.length;
+      pieceOffset = partEnd;
+      const exclusion = piece.flowExclusion;
+      const overlap =
+        exclusion !== undefined && exclusion.start < partEnd && exclusion.end > partStart
+          ? {
+              start: Math.max(0, exclusion.start - partStart),
+              end: Math.min(part.length, exclusion.end - partStart),
+            }
+          : null;
       if (BREAKABLE_SPACE.test(part[0]!)) {
-        if (hasBox) pendingSpaceRun = run;
+        if (hasBox) {
+          pendingSpaceRun = run;
+          pendingLeadingSpace = !hasFlowBox;
+        }
       } else if (CJK_CHAR.test(part)) {
-        pushCJKToken(part, run);
+        pushCJKToken(part, run, overlap);
       } else {
-        pushWord(part, run);
+        pushWord(part, run, overlap);
       }
     }
     // The element's trailing extras ride its LAST box, wherever the last

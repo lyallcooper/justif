@@ -68,6 +68,50 @@ describe("buildItems", () => {
     );
   });
 
+  it("keeps floated first-letter text but excludes it from inline-flow metrics", () => {
+    const run = mockRun();
+    const para = buildItems(
+      [{ text: "Among friends", run: 0, flowExclusion: { start: 0, end: 1 } }],
+      [run],
+      {
+        ...defaultBuildOptions,
+        tracking: { max: 0.03, shrink: 0.03 },
+      },
+      kernedMeasure,
+    );
+    const first = para.items.find((item) => item.type === ItemType.Box)!;
+    expect(first.text).toBe("Among");
+    expect(first.width).toBeCloseTo(kernedMeasure.width("mong", run));
+    expect(first.flowChars).toBe(4);
+    expect(first.flowExclusion).toEqual({ start: 0, end: 1 });
+    expect(first.trackStretch).toBeCloseTo(first.width * 0.03);
+  });
+
+  it("keeps the collapsed source space after a one-letter floated word at zero width", () => {
+    const para = buildItems(
+      [{ text: "A story begins", run: 0, flowExclusion: { start: 0, end: 1 } }],
+      [mockRun()],
+      defaultBuildOptions,
+      mockMeasure,
+    );
+    const boxes = para.items.filter((item) => item.type === ItemType.Box);
+    expect(boxes[0]).toMatchObject({
+      text: "A",
+      width: 0,
+      flowChars: 0,
+      flowExclusion: { start: 0, end: 1 },
+    });
+    expect(boxes[1]!.text).toBe("story");
+    const leadingGlue = para.items.find(
+      (item) => item.type === ItemType.Glue && item.stretchFil === 0,
+    )!;
+    expect(leadingGlue).toMatchObject({ width: 0, stretch: 0, shrink: 0 });
+    expect(para.items[para.items.indexOf(leadingGlue) - 1]).toMatchObject({
+      type: ItemType.Penalty,
+      penalty: 10000,
+    });
+  });
+
   it("turns soft hyphens into flagged penalties carrying the hyphen width", () => {
     const para = build("beau­tiful");
     expect(shape(para.items)).toBe("box(beau) pen(50) box(tiful) pen(10000) fil pen(-10000)");

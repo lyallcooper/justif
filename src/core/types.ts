@@ -74,6 +74,13 @@ export interface RunMetrics {
 export interface RunText {
   text: string;
   run: number;
+  /**
+   * UTF-16 range whose characters are rendered by a floated
+   * `::first-letter` box and therefore contribute no width to the normal
+   * inline flow. The box text is retained for DOM reconstruction; item
+   * widths, expansion, and tracking are measured from the remaining text.
+   */
+  flowExclusion?: { start: number; end: number };
   /** Shorthand for suppressing character protrusion at both sides of every
    * Box produced by this piece (kept for headless callers). */
   paintedBox?: boolean;
@@ -121,6 +128,12 @@ export interface Box {
   width: number;
   run: number;
   text: string;
+  /** Number of rendered characters that remain in normal inline flow.
+   * Absent when every character in `text` participates normally. */
+  flowChars?: number;
+  /** UTF-16 source range rendered by a floated `::first-letter` rather
+   * than by the normal-flow nowrap segment. */
+  flowExclusion?: { start: number; end: number };
   /** Protrusion credit (px) if this box starts a line after the first. */
   lp: number;
   /** Protrusion credit (px) if this box starts the paragraph's FIRST line
