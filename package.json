@@ -135,7 +135,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.core.json --noEmit",
     "compare:tex": "node tools/tex-compare.mjs",
     "prepublishOnly": "npm run typecheck && npm test && npm run build",
-    "version": "node tools/sync-version.mjs && git add README.md"
+    "version": "npm run build && node tools/sync-version.mjs && git add README.md"
   },
   "keywords": [
     "typography",

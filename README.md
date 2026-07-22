@@ -57,10 +57,13 @@ your `<head>`:
   }
 </style>
 
+<!-- The integrity hash needs to be updated or omitted when updating versions -->
 <script
   type="module"
   blocking="render"
   src="https://cdn.jsdelivr.net/npm/justif@0.5.0/dist/auto.js"
+  integrity="sha384-P8qwgG5iZTwB7n2gqZzlHCFnLW+cWa0sLtraLc6xL3kuXvkiR19BOPq4DKlIkU5m"
+  crossorigin="anonymous"
 ></script>
 ```
 
