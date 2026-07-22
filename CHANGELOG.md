@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (2026-07-22)
 
 - Paragraphs beginning with floated `::first-letter` drop caps can now use
   justif's paragraph-wide line breaking. The drop cap keeps its styling and
