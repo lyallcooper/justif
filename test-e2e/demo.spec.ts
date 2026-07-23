@@ -133,9 +133,13 @@ test("flicker mode places the fleuron below both text layers", async ({ page }) 
   const geometry = await page.evaluate(() => {
     const panes = [...document.querySelectorAll<HTMLElement>(".pane")];
     const ornament = document.querySelector<HTMLElement>(".ornament")!;
+    const [browserPane, justifPane] = panes;
+    if (!browserPane || !justifPane) {
+      throw new Error(`Expected two panes, found ${panes.length}`);
+    }
     return {
-      browserBottom: panes[0].getBoundingClientRect().bottom,
-      justifBottom: panes[1].getBoundingClientRect().bottom,
+      browserBottom: browserPane.getBoundingClientRect().bottom,
+      justifBottom: justifPane.getBoundingClientRect().bottom,
       fleuronTop: ornament.getBoundingClientRect().top,
     };
   });
