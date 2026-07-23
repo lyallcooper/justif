@@ -483,15 +483,16 @@ export function buildRenderSegments(
           break;
         }
       }
-      // Firefox evaluates a later nowrap fragment beside a float from its
-      // physical typographic width, ignoring an end margin that would make
-      // the same fragment fit elsewhere. Encode a terminal glyph's hang as
-      // reduced letter advance there: its glyph stays joined to the word,
-      // but its ink can paint beyond the shortened line box. Hyphen pseudo-
-      // content and painted inline boxes retain the ordinary margin
+      // Chromium and Firefox evaluate a nowrap fragment's fit beside a
+      // float from its physical typographic width, ignoring an end margin
+      // that would make the same fragment fit elsewhere. Encode a terminal
+      // glyph's hang as reduced letter advance there: its glyph stays
+      // joined to the word, but its ink can paint beyond the shortened
+      // line box. Painted inline boxes retain the ordinary margin
       // representation: their overhang is not a terminal glyph advance.
+      const besideFloat = lineIndex < (scan.floatIntrusion?.lines ?? 0);
       const physicalEndHang =
-        lineIndex < (scan.floatIntrusion?.lines ?? 0) &&
+        besideFloat &&
         !line.hyphenated &&
         endBox?.paintedEnd !== true &&
         line.rightHang > 0 &&
@@ -499,9 +500,23 @@ export function buildRenderSegments(
           ? line.rightHang
           : 0;
       if (physicalEndHang > 0) last.physicalEndHangPx = physicalEndHang;
+      // A hyphen-ended line beside the float hangs its pseudo-hyphen the
+      // same physical way — as reduced advance on the hyphen span itself
+      // (letter-spacing after the "-"); a margin there is invisible to the
+      // fit test and the whole line drops below the float.
+      const hyphenEndHang =
+        besideFloat && line.hyphenated && line.rightHang > 0 && endBox !== undefined
+          ? line.rightHang
+          : 0;
+      if (hyphenEndHang > 0) {
+        last.hyphenEndHangPx = hyphenEndHang;
+        const endSpec = scan.specs[scan.runs[endBox!.run]!.spec]!;
+        last.hyphenLetterSpacingPx = endSpec.letterSpacingPx - hyphenEndHang;
+      }
       last.marginEndPx = -(
         line.rightHang -
-        physicalEndHang +
+        physicalEndHang -
+        hyphenEndHang +
         line.overflowPx +
         WRAP_SAFETY_PAD_PX
       );

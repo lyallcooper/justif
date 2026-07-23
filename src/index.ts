@@ -634,6 +634,23 @@ export function justify(
       // with the rest of the style attribute. Use `hangingPunctuation`
       // (the protrusion preset) for the full-hang style instead.
       p.style.setProperty("hanging-punctuation", "none");
+      // Neutralize CSS `hyphens: auto`: the model chose every break, so
+      // auto-hyphenation has no work left in the enhanced DOM (the
+      // `hyphenate` option is the replacement) — and it makes Chromium's
+      // beside-float fit test stop hanging the trailing break space,
+      // dropping every line planned to wrap a drop cap below the float at
+      // its narrow measure. Written only when it changes the computed
+      // value: setting -webkit-hyphens at all (even to its initial
+      // `manual`) moves WebKit onto a text path with subtly different
+      // glyph advances. Restored by destroy() with the rest of the style
+      // attribute. An author's `hyphens: auto !important` still wins,
+      // deliberately: like text-align above (and unlike text-size-adjust,
+      // where measurement integrity is at stake), enhancement never
+      // escalates against an explicit author override.
+      if (state.scan.specs[state.scan.baseSpec]!.hyphens === "auto") {
+        p.style.setProperty("hyphens", "manual");
+        p.style.setProperty("-webkit-hyphens", "manual");
+      }
     }
     // Exact placeholder geometry for content-visibility authors: line boxes
     // are uniform (nowrap segments), so the model height is lines ×

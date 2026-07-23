@@ -427,6 +427,251 @@ test("a drop cap wider than its column stays native and recovers after resize", 
   expect(restored).toEqual({ text: originalText, segments: 0 });
 });
 
+test("drop-cap paragraphs with CSS hyphens: auto wrap beside the float", async ({ page }) => {
+  // Chromium's beside-float fit test stops hanging the trailing break
+  // space under `hyphens: auto`, pushing every intruded line below the
+  // float. The enhancement neutralizes the property (inert in the
+  // enhanced DOM anyway), so both paragraphs must render identically.
+  const original = await page.evaluate(() => {
+    const style = document.createElement("style");
+    style.textContent = `
+      #dropcap-hyphens-auto,
+      #dropcap-hyphens-control {
+        width: 367px;
+        margin: 0;
+        font: 18.66px/25.75px Georgia, serif;
+        text-align: justify;
+      }
+      #dropcap-hyphens-auto {
+        hyphens: auto;
+        -webkit-hyphens: auto;
+      }
+      #dropcap-hyphens-auto::first-letter,
+      #dropcap-hyphens-control::first-letter {
+        float: left;
+        font-size: 3.85em;
+        line-height: 0.74;
+        margin: 0.03em 0.08em 0 0;
+      }
+    `;
+    document.head.append(style);
+    const text =
+      "Among the numerous advantages promised by a well constructed Union, " +
+      "none deserves to be more accurately developed than its tendency to " +
+      "break and control the violence of faction.";
+    const auto = document.createElement("p");
+    auto.id = "dropcap-hyphens-auto";
+    auto.lang = "en";
+    auto.textContent = text;
+    const control = document.createElement("p");
+    control.id = "dropcap-hyphens-control";
+    control.textContent = text;
+    document.getElementById("host")!.replaceChildren(auto, control);
+    const html = [auto.outerHTML, control.outerHTML];
+    window.__justif.controller = window.__justif.justify([auto, control]);
+    return html;
+  });
+  await page.evaluate(() => window.__justif.controller!.ready);
+  await waitForQuiescence(page);
+
+  const result = await page.evaluate(() => {
+    // Segment/hyphen rects only: the floated source glyph's tall rect
+    // would otherwise cluster as its own visual line.
+    const read = (id: string) => {
+      const p = document.getElementById(id)!;
+      const box = p.getBoundingClientRect();
+      const lines: Array<{ top: number; left: number; right: number }> = [];
+      for (const el of p.querySelectorAll(".justif-seg, .justif-hyphen")) {
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0) continue;
+        const line = lines.find((candidate) => Math.abs(candidate.top - r.top) < 6);
+        if (line === undefined) lines.push({ top: r.top, left: r.left, right: r.right });
+        else {
+          line.left = Math.min(line.left, r.left);
+          line.right = Math.max(line.right, r.right);
+        }
+      }
+      lines.sort((a, b) => a.top - b.top);
+      return {
+        enhanced: p.hasAttribute("data-justif"),
+        right: box.right,
+        lines: lines.map((l) => ({ left: l.left - box.left, right: l.right })),
+      };
+    };
+    return {
+      auto: read("dropcap-hyphens-auto"),
+      control: read("dropcap-hyphens-control"),
+    };
+  });
+  expect(result.auto.enhanced).toBe(true);
+  expect(result.control.enhanced).toBe(true);
+  const intrudedOf = (lines: Array<{ left: number }>): number => {
+    let n = 0;
+    for (const line of lines) {
+      if (line.left > 40) n++;
+      else break;
+    }
+    return n;
+  };
+  const controlIntruded = intrudedOf(result.control.lines);
+  expect(controlIntruded).toBeGreaterThanOrEqual(2);
+  // The hyphens: auto paragraph wraps the float exactly like the control.
+  expect(intrudedOf(result.auto.lines)).toBe(controlIntruded);
+  expect(result.auto.lines.length).toBe(result.control.lines.length);
+  for (const [i, line] of result.auto.lines.entries()) {
+    expect
+      .soft(line.left, `line ${i + 1} starts where the control's does`)
+      .toBeCloseTo(result.control.lines[i]!.left, 0);
+  }
+  for (const [i, line] of result.auto.lines.slice(0, controlIntruded).entries()) {
+    expect
+      .soft(line.right, `intruded line ${i + 1} does not overflow`)
+      .toBeLessThanOrEqual(result.auto.right + 0.5);
+    expect
+      .soft(result.auto.right - line.right, `intruded line ${i + 1} remains justified`)
+      .toBeLessThan(2);
+  }
+
+  const restored = await page.evaluate(() => {
+    window.__justif.controller!.destroy();
+    return [
+      document.getElementById("dropcap-hyphens-auto")!.outerHTML,
+      document.getElementById("dropcap-hyphens-control")!.outerHTML,
+    ];
+  });
+  expect(restored).toEqual(original);
+});
+
+test("a line that hyphenates at the float boundary stays beside the drop cap", async ({
+  page,
+}) => {
+  // Engines judge a line's fit beside a float from its raw typographic
+  // width, ignoring end margins — an inserted hyphen's optical hang must
+  // be physically removed from the pseudo-hyphen's advance, or the whole
+  // hyphen-ended line drops below the float at its narrow measure.
+  const original = await page.evaluate(() => {
+    const style = document.createElement("style");
+    style.textContent = `
+      #dropcap-hyphenated {
+        width: 367px;
+        margin: 0;
+        font: 18.66px/25.75px Georgia, serif;
+        text-align: justify;
+        hyphens: manual;
+      }
+      #dropcap-hyphenated::first-letter {
+        float: left;
+        font-size: 3.85em;
+        line-height: 0.74;
+        margin: 0.03em 0.08em 0 0;
+      }
+    `;
+    document.head.append(style);
+    const p = document.createElement("p");
+    p.id = "dropcap-hyphenated";
+    p.textContent =
+      "When the people of America reflect that they are now called upon to " +
+      "decide a question, which, in its consequences, must prove one of the " +
+      "most important that ever engaged their attention, the propriety of " +
+      "their taking a very comprehensive, as well as a very serious, view " +
+      "of it, will be evident.";
+    document.getElementById("host")!.replaceChildren(p);
+    const html = p.outerHTML;
+    const box = p.getBoundingClientRect();
+    const range = document.createRange();
+    range.setStart(p.firstChild!, 1);
+    range.setEnd(p.firstChild!, p.firstChild!.textContent!.length);
+    const nativeLines: Array<{ top: number; left: number }> = [];
+    for (const rect of range.getClientRects()) {
+      let line = nativeLines.find((candidate) => Math.abs(candidate.top - rect.top) < 10);
+      if (line === undefined) {
+        line = { top: rect.top, left: rect.left };
+        nativeLines.push(line);
+      } else {
+        line.left = Math.min(line.left, rect.left);
+      }
+    }
+    nativeLines.sort((a, b) => a.top - b.top);
+    let nativeIntruded = 0;
+    for (const line of nativeLines) {
+      if (line.left > box.left + 40) nativeIntruded++;
+      else break;
+    }
+    window.__justif.controller = window.__justif.justify(p, {
+      hyphenate: window.__justif.hyphenateEnUS,
+    });
+    return { html, nativeIntruded };
+  });
+  await page.evaluate(() => window.__justif.controller!.ready);
+  await waitForQuiescence(page, "#dropcap-hyphenated");
+
+  const result = await page.evaluate(() => {
+    const p = document.getElementById("dropcap-hyphenated")!;
+    const box = p.getBoundingClientRect();
+    // Segment/hyphen rects only: the floated source glyph's tall rect
+    // would otherwise cluster as its own visual line.
+    const lines: Array<{ top: number; left: number; right: number; hyphenEnded: boolean }> =
+      [];
+    for (const el of p.querySelectorAll(".justif-seg, .justif-hyphen")) {
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0) continue;
+      const isHyphen = el.classList.contains("justif-hyphen");
+      const line = lines.find((candidate) => Math.abs(candidate.top - r.top) < 6);
+      if (line === undefined) {
+        lines.push({ top: r.top, left: r.left, right: r.right, hyphenEnded: isHyphen });
+      } else {
+        line.left = Math.min(line.left, r.left);
+        if (r.right > line.right) {
+          line.right = r.right;
+          line.hyphenEnded = isHyphen;
+        }
+      }
+    }
+    lines.sort((a, b) => a.top - b.top);
+    return {
+      enhanced: p.hasAttribute("data-justif"),
+      right: box.right,
+      lines: lines.map((l) => ({
+        left: l.left - box.left,
+        right: l.right,
+        hyphenEnded: l.hyphenEnded,
+      })),
+    };
+  });
+  expect(result.enhanced).toBe(true);
+  expect(original.nativeIntruded).toBeGreaterThanOrEqual(2);
+  // The enhanced paragraph may keep one more narrow line than the native
+  // rendering showed (the scan takes the float-geometry prediction when it
+  // exceeds the observed count) — never fewer, and never all of them.
+  let enhancedIntruded = 0;
+  for (const line of result.lines) {
+    if (line.left > 40) enhancedIntruded++;
+    else break;
+  }
+  expect(enhancedIntruded).toBeGreaterThanOrEqual(original.nativeIntruded);
+  expect(enhancedIntruded).toBeLessThan(result.lines.length);
+  const intruded = result.lines.slice(0, enhancedIntruded);
+  // The scenario must actually exercise the hyphen-at-the-boundary path:
+  // with these metrics every engine hyphenates at least one intruded line.
+  expect(intruded.some((line) => line.hyphenEnded)).toBe(true);
+  for (const [i, line] of intruded.entries()) {
+    expect
+      .soft(line.right, `intruded line ${i + 1} does not overflow`)
+      .toBeLessThanOrEqual(result.right + 0.5);
+    expect
+      .soft(result.right - line.right, `intruded line ${i + 1} remains justified`)
+      .toBeLessThan(2);
+  }
+  // The first line past the float returns to the full measure.
+  expect(result.lines[enhancedIntruded]!.left).toBeLessThan(1);
+
+  const restored = await page.evaluate(() => {
+    window.__justif.controller!.destroy();
+    return document.getElementById("dropcap-hyphenated")!.outerHTML;
+  });
+  expect(restored).toBe(original.html);
+});
+
 test("multi-run first letters retain each source run's inherited styling", async ({ page }) => {
   const original = await page.evaluate(() => {
     const style = document.createElement("style");

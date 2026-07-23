@@ -44,6 +44,17 @@ export interface RenderSegment {
   /** Portion of the terminal glyph's advance physically removed so a
    * nowrap line can fit beside a float without moving the glyph itself. */
   physicalEndHangPx?: number;
+  /** Same removal for a line ending in an inserted hyphen, taken out of
+   * the pseudo-hyphen's advance instead: the fit test beside a float
+   * ignores the negative end margin that ordinarily encodes hyphen
+   * protrusion, so a margined hyphen line drops below the float. Set on
+   * the line's final text segment; the writer moves it onto the following
+   * hyphen span. */
+  hyphenEndHangPx?: number;
+  /** Absolute letter-spacing emitted on that hyphen span (the run's own
+   * letter-spacing minus hyphenEndHangPx): spacing after the "-" shrinks
+   * its advance while the ink still paints past the shortened line box. */
+  hyphenLetterSpacingPx?: number;
   /** Feature settings to emit when tracking needs to retain common
    * ligatures. Includes the author's low-level settings so this declaration
    * never replaces their stylistic sets or variant choices. */
@@ -294,6 +305,12 @@ export function writeParagraph(
         hyphen.style.marginInlineEnd = prevEntry.marginEndEl.style.marginInlineEnd;
         prevEntry.marginEndEl.style.marginInlineEnd = "";
       }
+      // Beside a float the hyphen's optical hang is removed from its
+      // physical advance rather than carried in the margin above (see
+      // RenderSegment.hyphenEndHangPx).
+      if (prevEntry?.seg?.hyphenLetterSpacingPx !== undefined) {
+        hyphen.style.letterSpacing = px(prevEntry.seg.hyphenLetterSpacingPx);
+      }
       prevContainer.append(hyphen);
       entries.push({ el: hyphen, seg: null, marginEndEl: hyphen });
     }
@@ -513,7 +530,11 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
         );
         const endText = textEntries[textEntries.length - 1];
         const rightHang = endText?.seg.rightHangPx ?? 0;
-        const physicalEndHang = endText?.seg.physicalEndHangPx ?? 0;
+        // Terminal-glyph and pseudo-hyphen removals are mutually exclusive
+        // (a line ends in one or the other); both mean "this much of
+        // rightHang is already out of the measured rects".
+        const physicalEndHang =
+          (endText?.seg.physicalEndHangPx ?? 0) + (endText?.seg.hyphenEndHangPx ?? 0);
         const deliberateOverflow = endText?.seg.overflowPx ?? 0;
         const besideFloat = li < physicalFitLines;
         // Set lines should PAINT at the modeled edge too. The former

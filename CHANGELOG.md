@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Fixed drop-cap paragraphs rendering their opening lines below the float
+  instead of beside it in Chrome. This happened whenever the paragraph also
+  had CSS `hyphens: auto` (#4), or when a line next to the drop cap ended in
+  a justif-inserted hyphen (#5). Affected lines kept their narrow spacing,
+  leaving a large gap at the right margin. Inserted hyphens still hang into
+  the margin, and lines next to a drop cap no longer extend past the column
+  edge in any browser.
+
 ## 0.5.0 (2026-07-22)
 
 - Paragraphs beginning with floated `::first-letter` drop caps can now use
