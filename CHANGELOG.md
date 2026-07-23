@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.1 (2026-07-23)
 
 - Fixed drop-cap paragraphs rendering their opening lines below the float
   instead of beside it in Chrome. This happened whenever the paragraph also
