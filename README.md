@@ -22,11 +22,13 @@ make the next line too loose, create visible rivers of whitespace, or force a
 poor break near the end of the paragraph.
 
 <p align="center">
-  <img
-    src="docs/images/browser-vs-justif.png"
-    alt="Native browser justification with uneven spacing compared with justif's more balanced line breaks"
-    width="760"
-  ><br>
+  <a href="https://justif.lyall.co">
+    <img
+      src="docs/images/browser-vs-justif.png"
+      alt="Native browser justification with uneven spacing compared with justif's more balanced line breaks"
+      width="760"
+    >
+  </a><br>
   <em>Native browser vs. justif rendering, Google Chrome.</em>
 </p>
 
