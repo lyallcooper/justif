@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.1 (2026-07-24)
 
 - Fixed author-written non-breaking spaces (U+00A0 and narrow U+202F) stretching
   or shrinking with justification like ordinary word spaces. They now retain
