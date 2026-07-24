@@ -1002,6 +1002,7 @@
         </optgroup>
         <optgroup label="Typography">
           <option value="specimen">Type specimen</option>
+          <option value="hardBreaks">&lt;br&gt; workout (temporary)</option>
         </optgroup>
         <optgroup label="Other scripts">
           <option value="rtl">Hebrew &amp; Arabic (RTL)</option>
@@ -1130,9 +1131,8 @@
   // Project Gutenberg #11, public domain) — a long-document performance
   // stress test. "longParagraph" is a naturally long, 4,401-word paragraph
   // from Ulysses that stresses one large line-breaking problem. Verse (the
-  // crocodile poem, Father William) keeps its <br> line structure in "alice",
-  // which justif deliberately bails on: those paragraphs render natively in
-  // both columns.
+  // crocodile poem, Father William) keeps its authored <br> line structure
+  // while justif optimizes each forced-line segment.
   const SAMPLES = {
     tale: `
       <p>In olden times when wishing still helped one, there lived a king
@@ -1221,6 +1221,36 @@ await controller.ready;</code></pre>
       <a href="#specimen">useful link</a>, and keeps No.&#8239;12 intact. The
       test is simple: nothing snags the eye, and nothing important comes
       apart.</p>`,
+
+    // Temporary visual workout for orchestration-layer <br> support. It
+    // deliberately mixes ordinary forced endings, text-align-last: justify,
+    // empty/leading/trailing lines, and a padded inline that spans a break.
+    hardBreaks: `
+      <p><span class="smcp">Ordinary forced endings</span><br>
+      This first segment is long enough to wrap when the measure narrows,
+      so its own line choices can be judged before the authored break.<br>
+      A deliberately short line<br>
+      14 Tiemann Place, Suite 4B<br>
+      New York, New York 10027<br><br>
+      The blank line above comes from two consecutive breaks, while this
+      final sentence tests a trailing break.<br></p>
+
+      <p style="text-align-last: justify"><span class="smcp">Forced endings
+      with text-align-last: justify</span><br>
+      Each authored line in this paragraph asks the browser and justif to
+      fill the complete measure, including the line before every break.<br>
+      Resize the column and watch each segment choose its internal wraps
+      independently while its forced ending remains rectangular.</p>
+
+      <p>A padded inline can cross the same boundary:
+      <code>invoice status: awaiting typographic review<br>
+      owner: the production and composition team</code>. The code element
+      remains one semantic inline, with its background, padding, and real
+      break intact on both sides.</p>
+
+      <p style="text-indent: 4em"><br><em>Leading-break check.</em> The empty
+      first line consumes the paragraph indent; this text should begin at
+      the normal measure and may optimize across several following lines.</p>`,
 
     rtl: `
       <p dir="rtl" lang="he">בראשית ברא אלהים את השמים ואת הארץ. והארץ

@@ -99,4 +99,14 @@ describe("lastLineFit (eTeX \\lastlinefit, layout-only)", () => {
     expect(engaged).not.toBeNull();
     expect(engaged!.trackRatio).toBe(0); // letterfit stays natural
   });
+
+  it("can color a separately laid-out ending from prior paragraph body lines", () => {
+    const opts = { ...defaultBuildOptions, lastLineFit: 1 };
+    const para = buildItems([{ text: "one two", run: 0 }], [mockRun()], opts, mockMeasure);
+    const result = breakParagraph(para, 51, defaultBreakOptions);
+    expect(layoutLines(para, result, 51, opts)[0]!.glueRatio).toBe(0);
+    expect(
+      layoutLines(para, result, 51, opts, { sum: 0.5, count: 1 })[0]!.glueRatio,
+    ).toBeCloseTo(0.5, 9);
+  });
 });

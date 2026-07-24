@@ -79,6 +79,7 @@ export function layoutLines(
   breaks: BreakResult,
   widths: LineWidths,
   opts: BuildOptions,
+  priorLastLineFit: Readonly<{ sum: number; count: number }> = { sum: 0, count: 0 },
 ): Line[] {
   const { items, cumW, cumY, cumYfil, cumZ, cumExpY, cumExpZ, cumTrackY, firstBoxAfter } = para;
   // A paragraph with no boxes (empty or whitespace-only input) has no lines.
@@ -179,10 +180,11 @@ export function layoutLines(
       // (Yg minus the tracking flex folded into it).
       const glueOnly = Yg - Yt;
       let fitTarget = 0;
-      if (opts.lastLineFit > 0 && lines.length > 0) {
-        let sum = 0;
+      if (opts.lastLineFit > 0 && priorLastLineFit.count + lines.length > 0) {
+        let sum = priorLastLineFit.sum;
         for (const l of lines) sum += l.glueRatio;
-        fitTarget = opts.lastLineFit * (sum / lines.length);
+        fitTarget =
+          opts.lastLineFit * (sum / (priorLastLineFit.count + lines.length));
       }
       let floored = false;
       // The floor's threshold is the one the BREAKER's solution was found

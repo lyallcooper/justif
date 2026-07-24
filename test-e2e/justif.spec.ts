@@ -1231,16 +1231,300 @@ test("onSkip reports one reason per declined paragraph", async ({ page }) => {
     } as object);
     await ctl.ready;
     const enhancedFine = byId.get("fine")!.hasAttribute("data-justif");
+    const enhancedBr = byId.get("br")!.hasAttribute("data-justif");
     ctl.destroy();
     for (const el of byId.values()) el.remove();
-    return { skips, enhancedFine };
+    return { skips, enhancedFine, enhancedBr };
   });
   expect(reasons.enhancedFine).toBe(true);
+  expect(reasons.enhancedBr).toBe(true);
   expect(reasons.skips["fine"]).toBeUndefined();
+  expect(reasons.skips["br"]).toBeUndefined();
   expect(reasons.skips["margin"]).toContain("margin");
   expect(reasons.skips["transform"]).toContain("text-transform");
   expect(reasons.skips["stretch"]).toContain("font-stretch");
-  expect(reasons.skips["br"]).toContain("<br>");
+});
+
+test("hard breaks retain native structure, empty lines, and trailing-break height", async ({
+  page,
+}) => {
+  const result = await page.evaluate(async () => {
+    const p = document.createElement("p");
+    p.style.cssText = "width:520px;line-height:24px;margin:0;text-align-last:center";
+    p.innerHTML =
+      '<span id="hard-break-inline" style="padding:0 3px;border:1px solid transparent">' +
+      'Alpha beta gamma <br data-token="kept"> delta epsilon zeta.</span>' +
+      "<br><br>Tail.<br>";
+    document.getElementById("host")!.append(p);
+    const originalHTML = p.innerHTML;
+    const nativeText = p.innerText;
+    const nativeHeight = p.getBoundingClientRect().height;
+
+    const ctl = window.__justif.justify(p, {
+      expansion: false,
+      tracking: false,
+      protrusion: false,
+      lastLineMinWidth: 0,
+    });
+    await ctl.ready;
+    const enhancedHTML = p.innerHTML;
+    const enhancedHeight = p.getBoundingClientRect().height;
+    const segmentTexts = [...p.querySelectorAll<HTMLElement>(".justif-seg")].map(
+      (segment) => segment.textContent ?? "",
+    );
+    const output = {
+      enhanced: p.hasAttribute("data-justif"),
+      brCount: p.querySelectorAll("br").length,
+      markedNested:
+        p.querySelector("#hard-break-inline > br[data-token=kept]") !== null,
+      nativeText,
+      enhancedText: p.innerText,
+      textAlignLast: getComputedStyle(p).textAlignLast,
+      nativeHeight,
+      enhancedHeight,
+      trailingSpaceInSegment: segmentTexts.some((text) => /\s$/.test(text)),
+      enhancedHTML,
+    };
+    ctl.destroy();
+    return {
+      ...output,
+      restoredHTML: p.innerHTML,
+      originalHTML,
+    };
+  });
+
+  expect(result.enhanced).toBe(true);
+  expect(result.brCount).toBe(4);
+  expect(result.markedNested).toBe(true);
+  expect(result.enhancedText).toBe(result.nativeText);
+  expect(result.textAlignLast).toBe("center");
+  expect(result.enhancedHeight).toBeCloseTo(result.nativeHeight, 1);
+  expect(result.trailingSpaceInSegment).toBe(false);
+  expect(result.enhancedHTML).not.toBe(result.originalHTML);
+  expect(result.restoredHTML).toBe(result.originalHTML);
+});
+
+test("hidden hard breaks are ignored while clear behavior stays native", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const hidden = document.createElement("p");
+    hidden.style.width = "220px";
+    hidden.innerHTML =
+      "Alpha beta gamma delta <br data-hidden style='display:none'> epsilon zeta eta theta " +
+      "iota kappa lambda mu nu xi omicron pi rho sigma tau.";
+    const clear = document.createElement("p");
+    clear.style.width = "220px";
+    clear.innerHTML = "Alpha beta<br style='clear:both'>gamma delta.";
+    document.getElementById("host")!.append(hidden, clear);
+    const hiddenText = hidden.innerText;
+    const skips = new Map<HTMLElement, string>();
+    const ctl = window.__justif.justify([hidden, clear], {
+      lastLineMinWidth: 0,
+      onSkip: (paragraph: HTMLElement, reason: string) => skips.set(paragraph, reason),
+    } as object);
+    await ctl.ready;
+    const output = {
+      hiddenEnhanced: hidden.hasAttribute("data-justif"),
+      hiddenBreakCount: hidden.querySelectorAll("br").length,
+      hiddenTextPreserved: hidden.innerText === hiddenText,
+      hiddenSkip: skips.get(hidden),
+      clearEnhanced: clear.hasAttribute("data-justif"),
+      clearSkip: skips.get(clear),
+    };
+    ctl.destroy();
+    return output;
+  });
+
+  expect(result.hiddenEnhanced).toBe(true);
+  expect(result.hiddenBreakCount).toBe(0);
+  expect(result.hiddenTextPreserved).toBe(true);
+  expect(result.hiddenSkip).toBeUndefined();
+  expect(result.clearEnhanced).toBe(false);
+  expect(result.clearSkip).toContain("clear");
+});
+
+test("a leading hard break consumes first-line indentation", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const p = document.createElement("p");
+    p.style.cssText = "width:200px;text-indent:100px;line-height:24px;margin:0";
+    p.innerHTML = "<br>Alpha beta gamma delta";
+    document.getElementById("host")!.append(p);
+    const nativeHeight = p.getBoundingClientRect().height;
+    const ctl = window.__justif.justify(p, {
+      expansion: false,
+      tracking: false,
+      protrusion: false,
+      lastLineMinWidth: 0,
+    });
+    await ctl.ready;
+    return {
+      enhanced: p.hasAttribute("data-justif"),
+      brCount: p.querySelectorAll("br").length,
+      textLines: window.__justifLines(p).lines.length,
+      nativeHeight,
+      enhancedHeight: p.getBoundingClientRect().height,
+    };
+  });
+
+  expect(result.enhanced).toBe(true);
+  expect(result.brCount).toBe(1);
+  expect(result.textLines).toBe(1);
+  expect(result.enhancedHeight).toBeCloseTo(result.nativeHeight, 1);
+});
+
+test("hard-break paragraphs re-layout on resize without losing their breaks", async ({
+  page,
+}) => {
+  const before = await page.evaluate(async () => {
+    const p = document.createElement("p");
+    p.id = "hard-break-resize";
+    p.style.width = "440px";
+    p.innerHTML =
+      "The first forced segment contains enough ordinary prose to choose several balanced " +
+      "lines when the available measure changes.<br data-hard>" +
+      "The second segment independently chooses its lines while the authored break between " +
+      "the two passages remains a real element.";
+    document.getElementById("host")!.replaceChildren(p);
+    const sourceText = p.innerText;
+    const j = window.__justif;
+    j.controller = j.justify(p, {
+      expansion: false,
+      tracking: false,
+      protrusion: false,
+      lastLineMinWidth: 0,
+    });
+    await j.controller.ready;
+    return {
+      lines: window.__justifLines(p).lines.length,
+      sourceText,
+    };
+  });
+  await waitForQuiescence(page, "#hard-break-resize");
+
+  await page.evaluate(() => {
+    document.getElementById("hard-break-resize")!.style.width = "230px";
+  });
+  await page.waitForFunction(
+    (previousLines) =>
+      window.__justifLines(document.getElementById("hard-break-resize")!).lines.length >
+      previousLines,
+    before.lines,
+  );
+  await waitForQuiescence(page, "#hard-break-resize");
+
+  const after = await page.evaluate(() => {
+    const p = document.getElementById("hard-break-resize")!;
+    const geometry = window.__justifLines(p);
+    return {
+      enhanced: p.hasAttribute("data-justif"),
+      brCount: p.querySelectorAll("br[data-hard]").length,
+      text: p.innerText,
+      lines: geometry.lines.length,
+      maxOverflow: Math.max(
+        ...geometry.lines.map((line) => line.right - geometry.contentRight),
+      ),
+    };
+  });
+
+  expect(after.enhanced).toBe(true);
+  expect(after.brCount).toBe(1);
+  expect(after.text).toBe(before.sourceText);
+  expect(after.lines).toBeGreaterThan(before.lines);
+  expect(after.maxOverflow).toBeLessThan(0.75);
+});
+
+test("hard-break segments keep their global line offset beside a drop cap", async ({
+  page,
+}) => {
+  await page.evaluate(async () => {
+    const style = document.createElement("style");
+    style.textContent = `
+      #dropcap-hard-break {
+        width: 356px;
+        margin: 0;
+        font: 17.6px/24.3px Georgia, serif;
+        text-align: justify;
+      }
+      #dropcap-hard-break::first-letter {
+        float: left;
+        padding-right: 6px;
+        font-size: 70px;
+        line-height: 0.8;
+      }
+    `;
+    document.head.append(style);
+    const p = document.createElement("p");
+    p.id = "dropcap-hard-break";
+    p.innerHTML =
+      "Among friends,<br data-hard>none deserves to be more accurately developed " +
+      "than the tendency to break and control the violence of faction.";
+    document.getElementById("host")!.append(p);
+    const ctl = window.__justif.justify(p, { lastLineMinWidth: 0 });
+    await ctl.ready;
+  });
+  await waitForQuiescence(page, "#dropcap-hard-break");
+
+  const result = await page.evaluate(() => {
+    const p = document.getElementById("dropcap-hard-break")!;
+    const box = p.getBoundingClientRect();
+    const afterBreak = [...p.querySelectorAll<HTMLElement>(".justif-seg")].find((segment) =>
+      (segment.textContent ?? "").trimStart().startsWith("none"),
+    );
+    return {
+      enhanced: p.hasAttribute("data-justif"),
+      brCount: p.querySelectorAll("br[data-hard]").length,
+      left: box.left,
+      afterBreakLeft: afterBreak?.getBoundingClientRect().left,
+    };
+  });
+
+  expect(result.enhanced).toBe(true);
+  expect(result.brCount).toBe(1);
+  expect(result.afterBreakLeft).toBeGreaterThan(result.left + 40);
+});
+
+test("text-align-last justify sets every hard-terminated segment as a rectangle", async ({
+  page,
+}) => {
+  const result = await page.evaluate(async () => {
+    const p = document.createElement("p");
+    p.style.cssText = "text-align:justify;text-align-last:justify";
+    p.innerHTML =
+      "Alpha beta gamma delta epsilon<br data-hard>Alpha beta gamma delta epsilon";
+    document.getElementById("host")!.append(p);
+    p.style.textAlignLast = "auto";
+    const range = document.createRange();
+    range.selectNodeContents(p.firstChild!);
+    p.style.width = `${range.getBoundingClientRect().width + 10}px`;
+    p.style.textAlignLast = "justify";
+    const originalStyle = p.getAttribute("style");
+    const ctl = window.__justif.justify(p, {
+      expansion: false,
+      tracking: false,
+      protrusion: false,
+      lastLineMinWidth: 0,
+    });
+    await ctl.ready;
+    const geometry = window.__justifLines(p);
+    const output = {
+      enhanced: p.hasAttribute("data-justif"),
+      brCount: p.querySelectorAll("br[data-hard]").length,
+      textAlignLast: getComputedStyle(p).textAlignLast,
+      gaps: geometry.lines.map((line) => geometry.contentRight - line.right),
+    };
+    ctl.destroy();
+    return {
+      ...output,
+      restoredStyle: p.getAttribute("style"),
+      originalStyle,
+    };
+  });
+
+  expect(result.enhanced).toBe(true);
+  expect(result.brCount).toBe(1);
+  expect(result.textAlignLast).toBe("left");
+  expect(result.gaps).toHaveLength(2);
+  for (const gap of result.gaps) expect(Math.abs(gap)).toBeLessThan(0.75);
+  expect(result.restoredStyle).toBe(result.originalStyle);
 });
 
 test("padded inline chips justify flush, and the padding actually renders", async ({ page }) => {
@@ -3190,6 +3474,54 @@ async function readRtlGeometry(page: Page, id: string) {
     };
   }, id);
 }
+
+test("RTL hard-break paragraphs preserve direction and forced endings", async ({ page }) => {
+  const sourceText = await page.evaluate(async () => {
+    const p = document.createElement("p");
+    p.id = "rtl-hard-break";
+    p.dir = "rtl";
+    p.lang = "he";
+    p.style.cssText =
+      "width:280px;text-align:justify;text-align-last:justify";
+    p.innerHTML =
+      "בראשית ברא אלהים את השמים ואת הארץ והארץ היתה תהו ובהו וחשך על פני תהום" +
+      "<br data-hard>" +
+      "ויאמר אלהים יהי אור ויהי אור וירא אלהים את האור כי טוב ויבדל בין האור ובין החשך";
+    document.getElementById("rtl-host")!.append(p);
+    const text = p.innerText;
+    const j = window.__justif;
+    j.controller = j.justify(p, {
+      expansion: false,
+      tracking: false,
+      protrusion: false,
+      lastLineMinWidth: 0,
+    });
+    await j.controller.ready;
+    return text;
+  });
+  await waitForQuiescence(page, "#rtl-hard-break");
+
+  const geometry = await readRtlGeometry(page, "rtl-hard-break");
+  const state = await page.evaluate(() => {
+    const p = document.getElementById("rtl-hard-break")!;
+    return {
+      brCount: p.querySelectorAll("br[data-hard]").length,
+      text: p.innerText,
+      textAlign: getComputedStyle(p).textAlign,
+      textAlignLast: getComputedStyle(p).textAlignLast,
+    };
+  });
+
+  expect(geometry.enhanced).toBe(true);
+  expect(geometry.lines.length).toBeGreaterThan(3);
+  expect(state.brCount).toBe(1);
+  expect(state.text).toBe(sourceText);
+  expect(state.textAlign).toBe("right");
+  expect(state.textAlignLast).toBe("right");
+  for (const [i, line] of geometry.lines.entries()) {
+    expect.soft(Math.abs(line.right - geometry.contentRight), `line ${i} start`).toBeLessThan(1);
+  }
+});
 
 test("RTL paragraphs justify with lines flush at both edges", async ({ page }) => {
   // hyphenate passed on purpose: it must be ignored for RTL paragraphs.

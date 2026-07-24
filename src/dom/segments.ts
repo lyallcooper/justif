@@ -231,6 +231,7 @@ export function buildRenderSegments(
   runsMetrics: readonly RunMetrics[],
   para: ParagraphItems,
   lines: readonly Line[],
+  lineOffset = 0,
 ): RenderSegment[] {
   const segments: RenderSegment[] = [];
 
@@ -490,7 +491,7 @@ export function buildRenderSegments(
       // joined to the word, but its ink can paint beyond the shortened
       // line box. Painted inline boxes retain the ordinary margin
       // representation: their overhang is not a terminal glyph advance.
-      const besideFloat = lineIndex < (scan.floatIntrusion?.lines ?? 0);
+      const besideFloat = lineOffset + lineIndex < (scan.floatIntrusion?.lines ?? 0);
       const physicalEndHang =
         besideFloat &&
         !line.hyphenated &&

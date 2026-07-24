@@ -111,6 +111,18 @@ test("short Alice excerpt is available as a sample", async ({ page }) => {
   );
 });
 
+test("temporary hard-break workout is available as a sample", async ({ page }) => {
+  await page.goto("/demo/");
+  await page.click("#dock-toggle");
+  await page.selectOption("#sample", "hardBreaks");
+
+  await expect(page.locator("#native > p")).toHaveCount(4);
+  await expect(page.locator("#enhanced > p[data-justif]")).toHaveCount(4);
+  await expect(page.locator("#native br")).toHaveCount(11);
+  await expect(page.locator("#enhanced br")).toHaveCount(11);
+  await expect(page.locator("#enhanced code > br")).toHaveCount(1);
+});
+
 test("long-paragraph stress sample is one very long paragraph", async ({ page }) => {
   await page.goto("/demo/");
   await page.click("#dock-toggle");

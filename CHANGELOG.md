@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Paragraphs containing inline `<br>` elements are now enhanced instead of
+  staying in browser layout. Set `text-align-last: justify` to tell justif to
+  justify lines ending in `<br>` instead of leaving them ragged.
+
 ## 0.5.1 (2026-07-23)
 
 - Fixed drop-cap paragraphs rendering their opening lines below the float

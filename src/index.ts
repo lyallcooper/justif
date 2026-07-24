@@ -18,10 +18,14 @@ import {
 } from "./core/protrusion.js";
 import {
   type BreakOptions,
+  type BreakResult,
   type BuildOptions,
   defaultBreakOptions,
   defaultBuildOptions,
   type ExpansionOptions,
+  ItemType,
+  type Line,
+  type LineWidths,
   type ParagraphItems,
   type ProtrusionTable,
   type RunMetrics,
@@ -42,6 +46,7 @@ import {
   contentWidthOf,
   floatIntrusionOf,
   floatInlineSizeOf,
+  type HardBreak,
   type ParagraphScan,
   readParagraph,
 } from "./dom/read.js";
@@ -51,6 +56,7 @@ import {
   disableTextAutosizing,
   measureCorrections,
   type PendingParagraph,
+  type RenderContent,
   writeParagraph,
 } from "./dom/write.js";
 
@@ -79,8 +85,9 @@ export interface JustifyOptions {
   finalHyphenDemerits?: number;
   emergencyStretch?: number | "auto";
   /**
-   * Keep paragraph endings at least this fraction of the measure wide
-   * (0.33 ≈ Bringhurst's "at least a third"). Two mechanisms compose.
+   * Keep paragraph endings and lines terminated by `<br>` at least this
+   * fraction of the measure wide (0.33 ≈ Bringhurst's "at least a third").
+   * Two mechanisms compose.
    * The breaker prefers arrangements whose endings reach the threshold
    * naturally — cost pressure that escalates into hyphenation when
    * needed, and prices endings by exactly what will render, so it steers
@@ -150,7 +157,9 @@ export interface JustifyOptions {
    * spaces are set at this fraction (0–1) of the paragraph's average
    * looseness, instead of always natural width — a connoisseur's
    * refinement mainstream DTP tools only approximate with a static
-   * "desired spacing" value. 0 (default) = off.
+   * "desired spacing" value. Lines terminated by `<br>` contribute their
+   * justified body lines to the average but do not receive last-line fitting
+   * themselves. 0 (default) = off.
    */
   lastLineFit?: number;
   /**
@@ -213,6 +222,11 @@ export interface JustifyController {
   readonly paragraphs: readonly HTMLElement[];
 }
 
+interface ParaPart {
+  para: ParagraphItems;
+  breakAfter: HardBreak | null;
+}
+
 interface ParaState {
   /** The controller that owns this enhancement (guards zombie observers). */
   owner: symbol;
@@ -221,7 +235,7 @@ interface ParaState {
   scan: ParagraphScan;
   runsMetrics: RunMetrics[];
   specByKey: Map<string, FontSpec>;
-  para: ParagraphItems;
+  parts: ParaPart[];
   width: number;
   /** Fingerprint of the last patch, to skip no-op re-renders. */
   lastPatch: string;
@@ -432,18 +446,40 @@ export function justify(
     return true;
   };
 
-  const buildPara = (
+  const buildParts = (
     scan: ParagraphScan,
     runsMetrics: RunMetrics[],
     specByKey: Map<string, FontSpec>,
-  ): ParagraphItems => {
+  ): ParaPart[] => {
     // RTL paragraphs never letterspace: tracking inside Arabic cursive
     // joining is typographically wrong, and engines disagree on whether
     // joined pairs receive letter-spacing at all — the width model would
     // drift by pixels per word. (Hyphenation is likewise suppressed, via
     // noHyphens in buildRunMetrics.)
     const opts = scan.direction === "rtl" ? { ...buildOpts, tracking: false as const } : buildOpts;
-    return buildItems(runTexts(scan), runsMetrics, opts, measureFor(specByKey));
+    const texts = runTexts(scan);
+    const measure = measureFor(specByKey);
+    const parts: ParaPart[] = [];
+    let startRun = 0;
+    const append = (endRun: number, breakAfter: HardBreak | null): void => {
+      const para = buildItems(texts.slice(startRun, endRun), runsMetrics, opts, measure);
+      // First-line protrusion is a property of the CSS paragraph, not of
+      // each independently optimized hard-break segment. A leading <br>
+      // consumes that first formatted line too, so every later segment
+      // uses ordinary line-start protrusion from its first box onward.
+      if (parts.length > 0) {
+        for (const item of para.items) {
+          if (item.type === ItemType.Box) item.lpFirst = item.lp;
+        }
+      }
+      parts.push({ para, breakAfter });
+      startRun = endRun;
+    };
+    for (const hardBreak of scan.hardBreaks) {
+      append(hardBreak.afterRun, hardBreak);
+    }
+    append(texts.length, null);
+    return parts;
   };
 
   /** Phase 2: measurement + item building, against the fonts currently
@@ -469,7 +505,7 @@ export function justify(
         scan,
         runsMetrics,
         specByKey,
-        para: buildPara(scan, runsMetrics, specByKey),
+        parts: buildParts(scan, runsMetrics, specByKey),
         width: scan.contentWidth,
         lastPatch: "",
         enhanced: false,
@@ -581,24 +617,125 @@ export function justify(
       paragraphMinWidth === lastLineMinWidth
         ? buildOpts
         : { ...buildOpts, lastLineMinWidth: paragraphMinWidth };
-    const result = breakParagraph(state.para, widths, paragraphBreakOpts);
-    const lines = layoutLines(state.para, result, widths, paragraphBuildOpts);
+    const widthAt = (line: number): number =>
+      typeof widths === "number"
+        ? widths
+        : (widths[Math.min(line, widths.length - 1)] ?? 0);
+    const widthsFrom = (line: number): LineWidths =>
+      typeof widths === "number"
+        ? widths
+        : widths.slice(Math.min(line, widths.length - 1));
 
-    if (lines.length === 1) {
+    const rendered: RenderContent[] = [];
+    const lineWidths: number[] = [];
+    const fingerprintParts: string[] = [];
+    const priorLastLineFit = { sum: 0, count: 0 };
+    let visualLineCount = 0;
+    let modeledLineCount = 0;
+    let onlyLine: Line | null = null;
+    let onlyResult: BreakResult | null = null;
+
+    // With drop-cap line widths, this deliberately commits each part's line
+    // count before choosing the next part's width slice. It does not backtrack
+    // across a <br> for a globally prettier allocation inside the overlap.
+    for (let partIndex = 0; partIndex < state.parts.length; partIndex++) {
+      const part = state.parts[partIndex]!;
+      const partLineOffset = visualLineCount;
+      const partWidths = widthsFrom(partLineOffset);
+      const isFinal = part.breakAfter === null;
+      let result: BreakResult | null = null;
+      let lines: Line[] = [];
+
+      if (part.para.firstBoxAfter[0] !== part.para.items.length) {
+        const partBuildOpts =
+          !isFinal && paragraphBuildOpts.lastLineFit !== 0
+            ? { ...paragraphBuildOpts, lastLineFit: 0 }
+            : paragraphBuildOpts;
+        result = breakParagraph(part.para, partWidths, paragraphBreakOpts);
+        lines = layoutLines(
+          part.para,
+          result,
+          partWidths,
+          partBuildOpts,
+          isFinal ? priorLastLineFit : undefined,
+        );
+        rendered.push(
+          ...buildRenderSegments(
+            state.scan,
+            state.runsMetrics,
+            part.para,
+            lines,
+            partLineOffset,
+          ),
+        );
+        for (const line of lines) lineWidths.push(line.width);
+        visualLineCount += lines.length;
+        modeledLineCount += lines.length;
+        if (modeledLineCount === 1) {
+          onlyLine = lines[0] ?? null;
+          onlyResult = result;
+        } else {
+          onlyLine = null;
+          onlyResult = null;
+        }
+        // A hard-terminated segment's ragged/floored last line is not body
+        // color. Preserve lastLineFit's paragraph-wide average by carrying
+        // only the ordinarily justified lines into the actual final part.
+        for (let i = 0; i + 1 < lines.length; i++) {
+          priorLastLineFit.sum += lines[i]!.glueRatio;
+          priorLastLineFit.count++;
+        }
+        fingerprintParts.push(
+          `${partIndex}:${result.breakpoints.join(",")}:${
+            result.endingMinWidth ?? ""
+          }:${lines
+            .map(
+              (line) =>
+                `${line.glueRatio.toFixed(4)}:${line.trackRatio.toFixed(4)}:${
+                  line.fontStretch
+                }`,
+            )
+            .join(",")}`,
+        );
+      } else {
+        fingerprintParts.push(`${partIndex}:empty`);
+      }
+
+      if (part.breakAfter !== null) {
+        // A hard break after no box content still terminates one empty line.
+        // The real <br> produces its height; this bookkeeping advances
+        // text-indent/float widths and the intrinsic-size placeholder.
+        if (lines.length === 0) {
+          lineWidths.push(widthAt(visualLineCount));
+          visualLineCount++;
+        }
+        rendered.push({
+          kind: "hard-break",
+          source: part.breakAfter.source,
+          ancestors: part.breakAfter.ancestors,
+        });
+      }
+    }
+
+    if (
+      visualLineCount === 1 &&
+      state.scan.hardBreaks.length === 0 &&
+      onlyLine !== null &&
+      onlyResult !== null
+    ) {
       // A normal one-line paragraph has no short ending to repair and gains
       // nothing from DOM rewriting. Rectangular mode is the sole exception,
       // and only when the breaker reached the FULL target rather than one
       // of lastLineMinWidth's degraded fallback rungs. An unreachable line
       // remains native instead of being partially widened.
-      const line = lines[0]!;
       const adjusted =
-        Math.abs(line.glueRatio) > 1e-9 ||
-        Math.abs(line.trackRatio) > 1e-9 ||
-        Math.abs(line.fontStretch - 100) > 1e-9;
+        Math.abs(onlyLine.glueRatio) > 1e-9 ||
+        Math.abs(onlyLine.trackRatio) > 1e-9 ||
+        Math.abs(onlyLine.fontStretch - 100) > 1e-9;
       const reachedFullWidth =
         paragraphMinWidth === 1 &&
-        (result.endingMinWidth ?? paragraphMinWidth) >= 1 - 1e-9 &&
-        line.overfull !== true &&
+        (onlyResult.endingMinWidth ?? paragraphMinWidth) >= 1 - 1e-9 &&
+        onlyLine.overfull !== true &&
         adjusted;
       if (!reachedFullWidth) {
         pendingWidths.delete(p);
@@ -608,12 +745,7 @@ export function justify(
       }
     }
 
-    const rendered = buildRenderSegments(state.scan, state.runsMetrics, state.para, lines);
-
-    const fingerprint =
-      result.breakpoints.join(",") +
-      "|" +
-      lines.map((l) => `${l.glueRatio.toFixed(4)}:${l.fontStretch}`).join(",");
+    const fingerprint = fingerprintParts.join("|");
     if (fingerprint === state.lastPatch) return { changed: false, pending: null };
     state.lastPatch = fingerprint;
 
@@ -627,6 +759,14 @@ export function justify(
       // re-justify our exactly-filled lines) — toward the line-START edge,
       // which is the right edge in an RTL paragraph.
       p.style.textAlign = state.scan.direction === "rtl" ? "right" : "left";
+      // text-align-last also applies to lines terminated by <br>. The core
+      // has already implemented its `justify` case by setting each segment
+      // ending as a rectangle, so neutralize that native second pass.
+      // Other author alignments remain useful: the browser can center/end-
+      // align our already-sized ragged ending without changing its breaks.
+      if (state.scan.justifyAll) {
+        p.style.textAlignLast = state.scan.direction === "rtl" ? "right" : "left";
+      }
       // Neutralize CSS hanging-punctuation (Safari): it would hang quotes
       // and stops on top of our protrusion — a double hang — and shift
       // rendered widths our wrap model doesn't know about. A no-op in
@@ -653,14 +793,14 @@ export function justify(
       }
     }
     // Exact placeholder geometry for content-visibility authors: line boxes
-    // are uniform (nowrap segments), so the model height is lines ×
-    // line-height. Skipped paragraphs then occupy exactly their rendered
+    // are uniform (nowrap segments and native empty <br> lines), so the
+    // model height is visual lines × line-height. Skipped paragraphs then occupy exactly their rendered
     // size — find-in-page scroll targets, anchors, and scrollbars stay
     // stable across reveals even in engines whose remembered-size
     // recording is unreliable (WebKit).
     if (state.scan.pinIntrinsicSize && state.scan.lineHeightPx !== null) {
       p.style.containIntrinsicBlockSize = `auto ${
-        Math.round(lines.length * state.scan.lineHeightPx * 1000) / 1000
+        Math.round(visualLineCount * state.scan.lineHeightPx * 1000) / 1000
       }px`;
     }
     // This re-patch detaches any previous segment DOM: corrections queued
@@ -674,7 +814,7 @@ export function justify(
       pending: writeParagraph(
         p,
         rendered,
-        lines.map((l) => l.width),
+        lineWidths,
         intrusion?.lines ?? 0,
       ),
     };
@@ -738,7 +878,7 @@ export function justify(
         try {
           const specByKey = new Map(scan.specs.map((spec) => [spec.key, spec]));
           const runsMetrics = buildRunMetrics(scan, expansion, spacing, protrusionCtx);
-          buildPara(scan, runsMetrics, specByKey);
+          buildParts(scan, runsMetrics, specByKey);
         } catch {
           // prepare() owns the per-paragraph fail-safe and will bail this
           // paragraph without affecting its siblings.
@@ -885,7 +1025,7 @@ export function justify(
         if (!state.scan.specs.some(requiresDomMeasurement)) continue;
         try {
           const runsMetrics = buildRunMetrics(state.scan, expansion, spacing, protrusionCtx);
-          buildPara(state.scan, runsMetrics, state.specByKey);
+          buildParts(state.scan, runsMetrics, state.specByKey);
         } catch {
           // The actual pass below owns restoration and native fallback.
         }
@@ -896,7 +1036,7 @@ export function justify(
     for (const p of mine) {
       const state = states.get(p)!;
       state.runsMetrics = buildRunMetrics(state.scan, expansion, spacing, protrusionCtx);
-      state.para = buildPara(state.scan, state.runsMetrics, state.specByKey);
+      state.parts = buildParts(state.scan, state.runsMetrics, state.specByKey);
       state.width = widths.get(p)!;
       state.lastPatch = "";
       const outcome = safePatch(p);

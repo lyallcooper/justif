@@ -47,8 +47,19 @@ export interface FloatIntrusion {
   style: readonly (readonly [property: string, value: string])[];
 }
 
+/** A visible forced line break in source order. `afterRun` partitions the
+ * scanned text without putting a non-optional break into the core item
+ * stream; `ancestors` lets the writer restore the real <br> at its exact
+ * inline nesting depth. */
+export interface HardBreak {
+  source: Element;
+  ancestors: readonly Element[];
+  afterRun: number;
+}
+
 export interface ParagraphScan {
   runs: StyledRun[];
+  hardBreaks: HardBreak[];
   specs: FontSpec[];
   /** Spec index of the paragraph element itself. */
   baseSpec: number;
@@ -79,7 +90,6 @@ export interface ParagraphScan {
 
 /** Content the v1 walker cannot lay out; the paragraph keeps native rendering. */
 const REJECT_TAGS = new Set([
-  "BR",
   "WBR",
   "IMG",
   "PICTURE",
@@ -781,6 +791,7 @@ export function readParagraph(p: HTMLElement): ParagraphScan | string {
 
   const baseSpec = indexSpec(cs);
   const runs: StyledRun[] = [];
+  const hardBreaks: HardBreak[] = [];
   let skip: string | null = null;
 
   let nextAtomicKey = 0;
@@ -820,9 +831,29 @@ export function readParagraph(p: HTMLElement): ParagraphScan | string {
       } else if (child.nodeType === 1 /* ELEMENT_NODE */) {
         adjacentTextRun = null;
         const el = child as Element;
+        const tag = el.tagName.toUpperCase();
+        if (tag === "BR") {
+          const elStyle = view.getComputedStyle(el);
+          // A hidden <br> creates no line break in native layout.
+          if (elStyle.display === "none") continue;
+          if (elStyle.clear !== "none") {
+            skip = `<br> with clear: ${elStyle.clear}`;
+            return;
+          }
+          if (
+            elStyle.display !== "inline" ||
+            elStyle.float !== "none" ||
+            (elStyle.position !== "static" && elStyle.position !== "relative")
+          ) {
+            skip = "non-inline-flow <br> (display/float/position)";
+            return;
+          }
+          hardBreaks.push({ source: el, ancestors: chain, afterRun: runs.length });
+          continue;
+        }
         // Foreign elements (SVG/MathML) keep case-preserved tagNames, so
         // match case-insensitively.
-        if (REJECT_TAGS.has(el.tagName.toUpperCase())) {
+        if (REJECT_TAGS.has(tag)) {
           skip = `<${el.tagName.toLowerCase()}> content`;
           return;
         }
@@ -971,9 +1002,9 @@ export function readParagraph(p: HTMLElement): ParagraphScan | string {
   walk(p, [], baseSpec, undefined, []);
 
   if (skip !== null) return skip;
-  if (runs.length === 0) return "no text content";
+  if (runs.length === 0 && hardBreaks.length === 0) return "no text content";
   const text = runs.map((r) => r.text).join("");
-  if (!textSupported(text, direction)) {
+  if (text.length > 0 && !textSupported(text, direction)) {
     return "unsupported text (bidi controls, mixed direction, or a script without break support)";
   }
 
@@ -1013,6 +1044,7 @@ export function readParagraph(p: HTMLElement): ParagraphScan | string {
 
   return {
     runs,
+    hardBreaks,
     specs,
     baseSpec,
     contentWidth,

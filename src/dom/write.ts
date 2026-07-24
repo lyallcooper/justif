@@ -115,6 +115,17 @@ export interface RenderSegment {
   joint: "none" | "space" | "hyphen" | "wbr";
 }
 
+/** A mandatory source break between independently laid-out segments. The
+ * writer clones the real element so selection, copying, accessibility, and
+ * inline ancestry retain native <br> semantics. */
+export interface RenderHardBreak {
+  kind: "hard-break";
+  source: Element;
+  ancestors: readonly Element[];
+}
+
+export type RenderContent = RenderSegment | RenderHardBreak;
+
 /**
  * Provisional trailing-margin pad (px) each line carries from write time
  * until its measured correction runs: covers model drift (expansion
@@ -228,7 +239,7 @@ export interface PendingParagraph {
 /** Write phase: build and install the segment DOM. No layout reads. */
 export function writeParagraph(
   p: HTMLElement,
-  segments: readonly RenderSegment[],
+  contents: readonly RenderContent[],
   lineWidths: readonly number[],
   physicalFitLines = 0,
 ): PendingParagraph {
@@ -281,6 +292,9 @@ export function writeParagraph(
 
   let prevContainer: ParentNode = fragment;
   let floatSource: HTMLElement | null = null;
+  const segments = contents.filter(
+    (content): content is RenderSegment => !("kind" in content),
+  );
   const floatBaseStyle = new Map(
     segments.find((segment) => segment.floatedStyle !== undefined)?.floatedStyle ?? [],
   );
@@ -289,7 +303,18 @@ export function writeParagraph(
       (segment.floatedInnerStyle ?? []).map(([property]) => property),
     ),
   );
-  for (const segment of segments) {
+  let lastWasHardBreak = false;
+  for (const content of contents) {
+    if ("kind" in content) {
+      const container = containerFor(content.ancestors);
+      container.append(content.source.cloneNode(false));
+      prevContainer = container;
+      lineElements.push([]);
+      lastWasHardBreak = true;
+      continue;
+    }
+    const segment = content;
+    lastWasHardBreak = false;
     if (segment.joint === "hyphen") {
       const hyphen = doc.createElement("span");
       hyphen.className = "justif-hyphen";
@@ -422,6 +447,10 @@ export function writeParagraph(
     });
   }
 
+  // A trailing <br> terminates the current line but does not create another
+  // line box after itself. Consecutive breaks retain all preceding empty
+  // entries, so <br><br> still contributes two native-height lines.
+  if (lastWasHardBreak) lineElements.pop();
   p.replaceChildren(fragment);
   return { doc, paragraph: p, lineElements, lineWidths, physicalFitLines };
 }

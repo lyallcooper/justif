@@ -302,6 +302,18 @@ default) to retain those insets instead of overflowing or inventing a break
 inside code. With tracking disabled—or a token still too wide after that
 bounded fallback—ordinary overfull-line behavior remains.
 
+### Hard line breaks
+
+Inline `<br>` elements are preserved as real breaks. The default behavior is to
+leave the text on the line ending with `<br>` as ragged, though proceeding line
+breaks and spacing may be adjusted to try and meet the configured
+`lastLineMinWidth` value. This behavior is analagous to TeX's `\newline`, with
+our `lastLineMinWidth` policy layered on top.
+
+If the paragraph element has a `text-align-last` value of `justify`, then justif
+will attempt to fully justify lines ending with `<br>`. This is analagous to
+TeX's `\linebreak`.
+
 ### Browser fallback
 
 justif leaves a paragraph on native browser layout when it cannot reproduce it
@@ -309,7 +321,7 @@ reliably. This includes:
 
 - mixed LTR and RTL text;
 - vertical writing, Thai, and Lao;
-- images, form controls, `<br>`, SVG, MathML, floats, or block descendants;
+- images, form controls, SVG, MathML, floats, or block descendants;
 - inline descendants with horizontal margins, `box-decoration-break: clone`,
   or preserved-whitespace `white-space` values;
 - `contenteditable` paragraphs.
