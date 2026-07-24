@@ -300,6 +300,13 @@
     text-decoration: underline;
     text-underline-offset: 0.18em;
   }
+  .noscript-message {
+    max-width: 36rem;
+    margin: 2rem auto;
+    padding: 0.8rem 1rem;
+    border: 1px solid var(--hairline);
+    text-align: start;
+  }
 
   .view-toggle {
     display: flex;
@@ -938,6 +945,14 @@
   <p class="subtitle">Publication-grade text justification for the web</p>
   <p class="gh-link"><a href="https://github.com/lyallcooper/justif">learn more on github</a></p>
 </header>
+
+<noscript>
+  <p class="noscript-message" role="alert">
+    Hello! This is a demo page for a JavaScript library, so it necessarily
+    requires JavaScript to run. Please enable JavaScript and reload the page if
+    you'd like to see it in action.
+  </p>
+</noscript>
 
 <input type="hidden" id="view" value="side" />
 <input type="hidden" id="theme" value="system" />

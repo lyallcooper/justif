@@ -1,5 +1,15 @@
 import { expect, test } from "@playwright/test";
 
+test.describe("without JavaScript", () => {
+  test.use({ javaScriptEnabled: false });
+
+  test("explains that the demo requires JavaScript", async ({ page }) => {
+    await page.goto("/demo/");
+
+    await expect(page.getByRole("alert")).toContainText("Hello!");
+  });
+});
+
 test("favicon SVG adapts to the preferred color scheme", async ({ page }) => {
   await page.goto("/demo/");
   const icon = page.locator('link[rel="icon"]');
