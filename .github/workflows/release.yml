@@ -5,17 +5,54 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+      - name: Verify release metadata
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$PACKAGE_VERSION" != "$VERSION" ]; then
+            echo "Tag v$VERSION does not match package.json version $PACKAGE_VERSION" >&2
+            exit 1
+          fi
+          awk -v ver="$VERSION" '
+            $0 ~ "^## " ver " " { found=1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md | sed -e '/./,$!d' > release-notes.md
+          if ! [ -s release-notes.md ]; then
+            echo "No CHANGELOG.md section for $VERSION" >&2
+            exit 1
+          fi
+      - run: npm ci
+      # prepublishOnly typechecks, tests, and builds the package. npm obtains
+      # a short-lived credential through GitHub OIDC; no NPM_TOKEN is needed.
+      - run: npm publish
+
   release:
+    needs: publish
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The release body is the tag's section of CHANGELOG.md, so the
-      # changelog stays the single source of release notes (npm version is
-      # only run after the changelog entry is committed).
+      # changelog stays the single source of release notes.
       - name: Extract changelog section
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
