@@ -6,7 +6,7 @@
     "type": "git",
     "url": "git+https://github.com/lyallcooper/justif.git"
   },
-  "homepage": "https://github.com/lyallcooper/justif#readme",
+  "homepage": "https://justif.lyall.co",
   "bugs": "https://github.com/lyallcooper/justif/issues",
   "type": "module",
   "sideEffects": false,
@@ -141,7 +141,7 @@
     "typography",
     "justification",
     "knuth-plass",
-    "microtype",
+    "microtypography",
     "line-breaking",
     "hyphenation"
   ],
