@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 (2026-07-24)
 
 - Paragraphs spanning a CSS multicolumn break no longer receive roughly
   two-column line breaks or extreme spacing stretch in earlier columns.
