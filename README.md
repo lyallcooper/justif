@@ -364,6 +364,15 @@ that rely on Safari's inflation, enhanced prose may look smaller than
 surrounding unenhanced text. Use responsive font sizing or leave those
 paragraphs out of the justification target.
 
+## AI Usage Disclosure
+
+AI/LLM-based tools are used as part of the justif development process.
+Nonetheless, we hold ourselves and the project to a high standard. We strive to
+ensure that every feature is well tested and every design choice well
+considered. Our goal is to use AI tools where appropriate to achieve a
+previously unreasonable level of quality and polish. Constructive feedback is
+always welcome.
+
 ## License
 
 MIT. Bundled hyphenation patterns retain the licenses recorded in their
