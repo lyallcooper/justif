@@ -18,6 +18,7 @@
 
 import { graphemes } from "../core/cjk.js";
 import { fragmentBoxesOf } from "./geometry.js";
+import { endWithoutCollapsibleSpaces } from "./whitespace.js";
 
 export interface RenderSegment {
   text: string;
@@ -36,6 +37,15 @@ export interface RenderSegment {
   ancestors: readonly Element[];
   /** Absolute word-spacing for this segment's own spaces (px). */
   wordSpacingPx: number;
+  /** Number of rendered source-space characters in this segment that came
+   * from core Glue and therefore receive measured word-spacing correction.
+   * Includes synthetic NBSP used to keep run-boundary glue unbreakable;
+   * excludes author U+00A0/U+202F, which remain fixed box content. */
+  adjustableSpaceCount: number;
+  /** False for an own-segment author no-break-space box. A correction to
+   * the segment's inherited letter-spacing would move those fixed spaces,
+   * so drift must be absorbed by other segments on the line. */
+  allowLetterCorrection: boolean;
   /** Absolute letter-spacing (author's + letterfit tracking), or null to
    * inherit the author's value untouched (tracking inactive on this line). */
   letterSpacingPx: number | null;
@@ -641,7 +651,8 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
             paintRect = paintEndEntry.el.getBoundingClientRect();
           } else {
             const node = endText?.el.firstChild;
-            const end = endText?.seg.text.trimEnd().length ?? 0;
+            const end =
+              endText === undefined ? 0 : endWithoutCollapsibleSpaces(endText.seg.text);
             if (node?.nodeType === 3 && end > 0) {
               range.setStart(node, 0);
               range.setEnd(node, end);
@@ -672,8 +683,13 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
         const correctionTexts = textEntries.map((entry, entryIndex) =>
           entry.seg.text.slice(entryIndex === 0 ? entry.seg.edgeTrim.lead : 0),
         );
-        const spaceCounts = correctionTexts.map(
-          (text) => text.match(/[ \u00A0]/g)?.length ?? 0,
+        const spaceCounts = textEntries.map(
+          (entry, entryIndex) =>
+            Math.max(
+              0,
+              entry.seg.adjustableSpaceCount -
+                (entryIndex === 0 ? entry.seg.edgeTrim.lead : 0),
+            ),
         );
         const spaces = spaceCounts.reduce((sum, count) => sum + count, 0);
         const spacing: SpacingCorrection[] = [];
@@ -689,7 +705,9 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
             });
           }
         } else if (Math.abs(adjustmentPx) > 0.001) {
-          const charCounts = correctionTexts.map((text) => Array.from(text).length);
+          const charCounts = correctionTexts.map((text, entryIndex) =>
+            textEntries[entryIndex]!.seg.allowLetterCorrection ? Array.from(text).length : 0,
+          );
           const chars = charCounts.reduce((sum, count) => sum + count, 0);
           if (chars > 0) {
             const delta = adjustmentPx / chars;
@@ -705,6 +723,10 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
             }
           }
         }
+        // With no legitimate spacing recipient, keep the provisional wrap
+        // margin instead of changing an author no-break-space box. This is
+        // the only faithful fallback for a line made solely of fixed boxes.
+        if (Math.abs(adjustmentPx) > 0.001 && spacing.length === 0) continue;
         const lineEndEntry = entries[entries.length - 1]!;
         paraCorrections.push({
           el: lineEndEntry.el,

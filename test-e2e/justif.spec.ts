@@ -1628,6 +1628,195 @@ test("hard breaks retain native structure, empty lines, and trailing-break heigh
   expect(result.restoredHTML).toBe(result.originalHTML);
 });
 
+test("author NBSP indentation stays fixed when a hard-break segment soft-wraps", async ({
+  page,
+}) => {
+  const sourceText = await page.evaluate(async () => {
+    await document.fonts.load('16px "Junicode"');
+    const p = document.createElement("p");
+    p.id = "hard-break-author-nbsp";
+    // Keep the first correction parked so the test observes the provisional
+    // DOM too. Scrolling it into view below promotes the measured correction.
+    p.style.cssText =
+      'width:160px;margin:3000px 0 0;font:16px/1.45 "Junicode",Georgia,serif;' +
+      "text-align:justify;padding:0;border:0";
+    p.innerHTML =
+      "Prelude.<br data-hard>" +
+      "\u00A0\u00A0\u00A0\u00A0With gently smiling jaws!”";
+    document.getElementById("host")!.replaceChildren(p);
+    const sourceText = p.innerText;
+    const j = window.__justif;
+    j.controller = j.justify(p, { hyphenate: j.hyphenateEnUS });
+    await j.controller.ready;
+    return sourceText;
+  });
+
+  const readState = () =>
+    page.evaluate(() => {
+      const p = document.getElementById("hard-break-author-nbsp")!;
+      const rectOf = (needle: string): DOMRect => {
+        const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+        const range = document.createRange();
+        for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+          const at = (node.nodeValue ?? "").indexOf(needle);
+          if (at < 0) continue;
+          range.setStart(node, at);
+          range.setEnd(node, at + needle.length);
+          return range.getBoundingClientRect();
+        }
+        throw new Error(`missing text: ${needle}`);
+      };
+      const box = p.getBoundingClientRect();
+      const cs = getComputedStyle(p);
+      const contentLeft =
+        box.left + parseFloat(cs.borderLeftWidth) + parseFloat(cs.paddingLeft);
+      const withRect = rectOf("With");
+      const jawsRect = rectOf("jaws!”");
+      const fixed = [...p.querySelectorAll<HTMLElement>(".justif-seg")].find((segment) =>
+        (segment.textContent ?? "").startsWith("\u00A0\u00A0\u00A0\u00A0With"),
+      )!;
+      const adjustable = [...p.querySelectorAll<HTMLElement>(".justif-seg")].find(
+        (segment) => (segment.textContent ?? "").includes("gently smiling"),
+      )!;
+      return {
+        enhanced: p.hasAttribute("data-justif"),
+        brCount: p.querySelectorAll("br[data-hard]").length,
+        lines: window.__justifLines(p).lines.length,
+        renderedText: p.innerText,
+        indent: withRect.left - contentLeft,
+        nextLineDelta: jawsRect.top - withRect.top,
+        fixedText: fixed.textContent,
+        fixedWordSpacing: parseFloat(getComputedStyle(fixed).wordSpacing),
+        adjustableWordSpacing: parseFloat(getComputedStyle(adjustable).wordSpacing),
+      };
+    });
+
+  const provisional = await readState();
+
+  await page.locator("#hard-break-author-nbsp").evaluate((p) => p.scrollIntoView());
+  await page.waitForFunction(() => {
+    const segments = [
+      ...document.querySelectorAll<HTMLElement>("#hard-break-author-nbsp .justif-seg"),
+    ];
+    return segments.some(
+      (segment) =>
+        (segment.textContent ?? "").includes("gently smiling") &&
+        segment.style.marginInlineEnd === "0px",
+    );
+  });
+  await waitForQuiescence(page, "#hard-break-author-nbsp");
+
+  const settled = await readState();
+
+  for (const state of [provisional, settled]) {
+    expect.soft(state.enhanced).toBe(true);
+    expect.soft(state.brCount).toBe(1);
+    expect.soft(state.lines).toBe(3); // prelude + two internally wrapped verse lines
+    expect.soft(state.renderedText).toBe(sourceText);
+    expect.soft(state.fixedText).toBe("\u00A0\u00A0\u00A0\u00A0With");
+    expect.soft(state.fixedWordSpacing).toBeCloseTo(0, 3);
+    expect.soft(state.adjustableWordSpacing).toBeGreaterThan(1);
+    expect.soft(state.indent).toBeGreaterThan(12);
+    expect.soft(state.indent).toBeLessThan(30);
+    expect.soft(state.nextLineDelta).toBeGreaterThan(10);
+  }
+});
+
+test("author NBSP and NNBSP boxes keep authored spacing and inline ancestry", async ({
+  page,
+}) => {
+  await page.evaluate(async () => {
+    const p = document.createElement("p");
+    p.id = "author-no-break-boxes";
+    p.style.cssText = "width:245px;word-spacing:2px";
+    p.innerHTML =
+      "The reference <em>Fig.\u00A07</em> stays intact while the numbered note " +
+      "No.\u202F12 remains together in justified prose across several ordinary lines.";
+    document.getElementById("host")!.replaceChildren(p);
+    const j = window.__justif;
+    j.controller = j.justify(p, { hyphenate: j.hyphenateEnUS });
+    await j.controller.ready;
+  });
+  await waitForQuiescence(page, "#author-no-break-boxes");
+
+  const result = await page.evaluate(() => {
+    const p = document.getElementById("author-no-break-boxes")!;
+    const fixed = [...p.querySelectorAll<HTMLElement>(".justif-seg")]
+      .filter((segment) => /[\u00A0\u202F]/.test(segment.textContent ?? ""))
+      .map((segment) => ({
+        text: segment.textContent,
+        wordSpacing: parseFloat(getComputedStyle(segment).wordSpacing),
+        parent: segment.parentElement?.tagName,
+      }));
+    const rectCount = (needle: string): number => {
+      const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+      const range = document.createRange();
+      for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+        const at = (node.nodeValue ?? "").indexOf(needle);
+        if (at < 0) continue;
+        range.setStart(node, at);
+        range.setEnd(node, at + needle.length);
+        return range.getClientRects().length;
+      }
+      return 0;
+    };
+    return {
+      fixed,
+      emCount: p.querySelectorAll("em").length,
+      nbspRects: rectCount("Fig.\u00A07"),
+      narrowRects: rectCount("No.\u202F12"),
+    };
+  });
+
+  expect(result.fixed).toEqual([
+    { text: "Fig.\u00A07", wordSpacing: 2, parent: "EM" },
+    { text: "No.\u202F12", wordSpacing: 2, parent: "P" },
+  ]);
+  expect(result.emCount).toBe(1);
+  expect(result.nbspRects).toBe(1);
+  expect(result.narrowRects).toBe(1);
+});
+
+test("fixed no-break segments preserve dash-junction word joiners on both sides", async ({
+  page,
+}) => {
+  const sourceText = await page.evaluate(async () => {
+    const p = document.createElement("p");
+    p.id = "fixed-dash-junctions";
+    p.style.width = "310px";
+    p.innerHTML =
+      "The entry prefix—<em>Fig.\u00A07</em> stays indivisible, while the exit " +
+      "<em>No.\u202F12—</em>suffix also remains intact in justified prose.";
+    document.getElementById("host")!.replaceChildren(p);
+    const source = p.textContent ?? "";
+    const j = window.__justif;
+    j.controller = j.justify(p, { hyphenate: j.hyphenateEnUS });
+    await j.controller.ready;
+    return source;
+  });
+  await waitForQuiescence(page, "#fixed-dash-junctions");
+
+  const result = await page.evaluate(() => {
+    const p = document.getElementById("fixed-dash-junctions")!;
+    const raw = p.textContent ?? "";
+    return {
+      raw,
+      joiners: raw.match(/\u2060/g)?.length ?? 0,
+      entryProtected: raw.includes("prefix—\u2060Fig.\u00A07"),
+      exitProtected: raw.includes("No.\u202F12—\u2060suffix"),
+      fixedSegments: [...p.querySelectorAll<HTMLElement>(".justif-seg")]
+        .filter((segment) => /[\u00A0\u202F]/.test(segment.textContent ?? ""))
+        .map((segment) => segment.textContent),
+    };
+  });
+
+  expect(result.joiners).toBe(2);
+  expect(result.entryProtected).toBe(true);
+  expect(result.exitProtected).toBe(true);
+  expect(result.raw.replaceAll("\u2060", "")).toBe(sourceText);
+  expect(result.fixedSegments).toEqual(["\u2060Fig.\u00A07", "No.\u202F12—"]);
+});
+
 test("hidden hard breaks are ignored while clear behavior stays native", async ({ page }) => {
   const result = await page.evaluate(async () => {
     const hidden = document.createElement("p");

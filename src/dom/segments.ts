@@ -30,7 +30,15 @@ import {
   requiresDomMeasurement,
 } from "./measure.js";
 import type { ParagraphScan } from "./read.js";
+import {
+  endWithoutCollapsibleSpaces,
+  leadingCollapsibleSpaces,
+  trailingCollapsibleSpaces,
+} from "./whitespace.js";
 import { type RenderSegment, WRAP_SAFETY_PAD_PX } from "./write.js";
+
+const AUTHOR_NO_BREAK_SPACE = /[\u00A0\u202F]/;
+const DASH_JUNCTION = /[\u002D\u2010-\u2015]/;
 
 /** Browsers commonly suppress common ligatures when letter-spacing is
  * nonzero. Tracking introduces letter-spacing, so explicitly retain those
@@ -278,6 +286,14 @@ export function buildRenderSegments(
     let cjkZ = 0;
     let hasCJK = false;
     let boxChars = 0;
+    let adjustableSpaceCount = 0;
+    /** True only while flushing one Box that contains author U+00A0/U+202F.
+     * Such a box owns a segment so line glue never leaks into its spaces. */
+    let fixedNoBreakBox = false;
+    /** A fixed box has already flushed, but an unrendered Penalty may still
+     * separate it from the next Box. Retain its source edge so cross-run
+     * dash junctions receive the same WJ protection as unflushed boxes. */
+    let fixedBoundary: { lastChar: string; run: number } | undefined;
     let flowExclusion: { start: number; end: number } | undefined;
     /** Set while flushing a rigid boundary glue's own segment. */
     let rigidFlex: { stretch: number; shrink: number } | null = null;
@@ -314,19 +330,24 @@ export function buildRenderSegments(
       // (they collapse when a retreated segment sits at a line start, making
       // rect widths position-dependent); their widths are modeled exactly:
       // stretched space advance plus this segment's word-spacing.
-      const lead = flowText.length - flowText.trimStart().length;
+      const lead = leadingCollapsibleSpaces(flowText);
       // Compute trail on the post-lead remainder: a whitespace-only
       // segment (bare space between two inline elements of different
       // runs) must not count its single character as BOTH lead and trail
       // — modelPx would double and the corrective measurement would run
       // an inverted Range.
-      const trail =
-        lead < flowText.length ? flowText.length - flowText.trimEnd().length : 0;
+      const trail = lead < flowText.length ? trailingCollapsibleSpaces(flowText) : 0;
       const spec = scan.specs[scan.runs[run]!.spec]!;
       const table = runsMetrics[run]!.expansionRatios;
       const key = Math.round(line.fontStretch * 1000) / 1000;
       const ratio = table?.get(key) ?? 1;
-      const wordSpacing = desired(run, rigidFlex ?? undefined);
+      // An author no-break-space box is measured with the run's raw author
+      // word-spacing and has no glue adjustment. Do not subtract `ls`: its
+      // NBSPs are box characters, so inherited tracking legitimately
+      // reaches them just like the model's boxChars/track flex.
+      const wordSpacing = fixedNoBreakBox
+        ? spec.wordSpacingPx
+        : desired(run, rigidFlex ?? undefined);
       const spacePx = spaceWidthIn(spec, scan.runs[run]!.text) * ratio + wordSpacing;
       const srcRun = scan.runs[run]!;
       let decorPx: number | undefined;
@@ -344,7 +365,9 @@ export function buildRenderSegments(
         floatedInnerStyle:
           floatedPrefix !== undefined ? srcRun.floatInnerStyle : undefined,
         ancestors: srcRun.ancestors,
-        wordSpacingPx: wordSpacing - ls,
+        wordSpacingPx: fixedNoBreakBox ? wordSpacing : wordSpacing - ls,
+        adjustableSpaceCount,
+        allowLetterCorrection: !fixedNoBreakBox,
         letterSpacingPx: ls !== 0 ? spec.letterSpacingPx + ls : null,
         resolvedLetterSpacingPx: spec.letterSpacingPx + ls,
         fontFeatureSettings: trackingFeatureSettings(spec, ls !== 0),
@@ -377,12 +400,29 @@ export function buildRenderSegments(
       cjkZ = 0;
       hasCJK = false;
       boxChars = 0;
+      adjustableSpaceCount = 0;
+      fixedNoBreakBox = false;
       flowExclusion = undefined;
     };
 
     for (let i = line.start; i < line.end; i++) {
       const it = para.items[i]!;
       if (it.type === ItemType.Box) {
+        const ownFixedSegment = AUTHOR_NO_BREAK_SPACE.test(it.text);
+        const firstChar = it.text[0] ?? "";
+        if (fixedBoundary !== undefined) {
+          const junction = fixedBoundary.lastChar + firstChar;
+          if (fixedBoundary.run !== it.run && DASH_JUNCTION.test(junction)) {
+            text = "\u2060";
+          }
+          fixedBoundary = undefined;
+        }
+        if (ownFixedSegment && run !== -1) {
+          const junction = text.slice(-1) + firstChar;
+          const protect = run !== it.run && DASH_JUNCTION.test(junction);
+          flush();
+          if (protect) text = "\u2060";
+        }
         if (run !== -1 && run !== it.run) {
           // Glue-less run boundary. Dash-class characters allow a line
           // break here (UAX14 B2/HY) — e.g. code directly followed by an
@@ -390,8 +430,8 @@ export function buildRenderSegments(
           // forbids the break outright. Zero width and invisible; only
           // inserted at dash junctions since find-in-page cannot match
           // through it.
-          const junction = text.slice(-1) + (it.text[0] ?? "");
-          const risky = /[\u002D\u2010-\u2015]/.test(junction);
+          const junction = text.slice(-1) + firstChar;
+          const risky = DASH_JUNCTION.test(junction);
           flush();
           text = risky ? "\u2060" : "";
         }
@@ -410,7 +450,14 @@ export function buildRenderSegments(
         trackZ += it.trackShrink;
         boxChars += it.flowChars ?? Array.from(it.text).length;
         if (!hasCJK && CJK_CHAR.test(it.text)) hasCJK = true;
+        if (ownFixedSegment) {
+          const boundary = { lastChar: it.text.slice(-1), run: it.run };
+          fixedNoBreakBox = true;
+          flush();
+          fixedBoundary = boundary;
+        }
       } else if (it.type === ItemType.Glue) {
+        fixedBoundary = undefined;
         if (it.cjk === true) {
           // CJK inter-character glue: no source character to emit — its
           // flex is pooled and rendered as this segment's letter-spacing
@@ -432,6 +479,7 @@ export function buildRenderSegments(
           flush();
           run = it.run;
           text = " ";
+          adjustableSpaceCount = 1;
           flush();
           continue;
         }
@@ -445,6 +493,7 @@ export function buildRenderSegments(
           flush();
           run = it.run;
           text = "\u00A0";
+          adjustableSpaceCount = 1;
           rigidFlex = { stretch: it.stretch, shrink: it.shrink };
           flush();
           rigidFlex = null;
@@ -460,12 +509,14 @@ export function buildRenderSegments(
         if (run === -1 || run === it.run) {
           run = it.run;
           text += " ";
+          adjustableSpaceCount++;
         } else {
           // Leading NBSP in the NEXT run's segment: outside the previous
           // element (no underline extension), unbreakable on both sides.
           flush();
           run = it.run;
           text = "\u00A0";
+          adjustableSpaceCount = 1;
         }
       }
       // Penalties not broken at render nothing.
@@ -497,7 +548,7 @@ export function buildRenderSegments(
         !line.hyphenated &&
         endBox?.paintedEnd !== true &&
         line.rightHang > 0 &&
-        last.text.trimEnd().length > 0
+        endWithoutCollapsibleSpaces(last.text) > 0
           ? line.rightHang
           : 0;
       if (physicalEndHang > 0) last.physicalEndHangPx = physicalEndHang;

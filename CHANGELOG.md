@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Fixed author-written non-breaking spaces (U+00A0 and narrow U+202F) stretching
+  or shrinking with justification like ordinary word spaces. They now retain
+  their authored width in indentation and no-break phrases.
+
 ## 0.6.0 (2026-07-24)
 
 - Paragraphs spanning a CSS multicolumn break no longer receive roughly
