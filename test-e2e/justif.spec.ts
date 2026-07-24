@@ -90,6 +90,75 @@ async function readGeometry(page: Page): Promise<LineGeometry[]> {
   );
 }
 
+interface FragmentedGeometry {
+  enhanced: boolean;
+  rtl: boolean;
+  fragments: Array<{ left: number; right: number; width: number }>;
+  lines: Array<{
+    left: number;
+    right: number;
+    width: number;
+    fragmentLeft: number;
+    fragmentRight: number;
+  }>;
+}
+
+/** Geometry for plain-text multicolumn fixtures (one .justif-seg per line).
+ * Match by nearest rectangle in both axes: columns can share line tops,
+ * while pagelike fragments can share horizontal coordinates. */
+async function readFragmentedGeometry(page: Page, selector: string): Promise<FragmentedGeometry> {
+  return page.evaluate((sel) => {
+    const p = document.querySelector<HTMLElement>(sel)!;
+    const rtl = getComputedStyle(p).direction === "rtl";
+    const fragments = [...p.getClientRects()].map((rect) => ({
+      left: rect.left,
+      right: rect.right,
+      width: rect.width,
+      top: rect.top,
+      bottom: rect.bottom,
+    }));
+    const lines = [...p.querySelectorAll<HTMLElement>(".justif-seg")].map((line) => {
+      const rect = line.getBoundingClientRect();
+      const x = rtl ? rect.right : rect.left;
+      const y = rect.top + rect.height / 2;
+      let fragment = fragments[0]!;
+      let bestDistance = Infinity;
+      for (const candidate of fragments) {
+        const dx =
+          x < candidate.left
+            ? candidate.left - x
+            : x > candidate.right
+              ? x - candidate.right
+              : 0;
+        const dy =
+          y < candidate.top
+            ? candidate.top - y
+            : y > candidate.bottom
+              ? y - candidate.bottom
+              : 0;
+        const distance = dx * dx + dy * dy;
+        if (distance < bestDistance) {
+          fragment = candidate;
+          bestDistance = distance;
+        }
+      }
+      return {
+        left: rect.left,
+        right: rect.right,
+        width: rect.width,
+        fragmentLeft: fragment.left,
+        fragmentRight: fragment.right,
+      };
+    });
+    return {
+      enhanced: p.hasAttribute("data-justif"),
+      rtl,
+      fragments: fragments.map(({ left, right, width }) => ({ left, right, width })),
+      lines,
+    };
+  }, selector);
+}
+
 /**
  * Resolve once `selector`'s subtree has stopped mutating: its innerHTML is
  * unchanged across two samples ~120ms apart. The measured wrap-guarantee
@@ -146,6 +215,261 @@ test("justified lines end flush within 0.5px (no protrusion/expansion)", async (
         .toBeLessThan(0.5);
     }
   }
+});
+
+test("equal-width multicolumn fragments are set against their own LTR and RTL edges", async ({
+  page,
+}) => {
+  const originals = await page.evaluate(async () => {
+    document.body.innerHTML = `
+      <style>
+        .columns {
+          width: 761px;
+          height: 264px;
+          column-count: 3;
+          column-gap: 23px;
+          column-fill: auto;
+          margin-bottom: 24px;
+        }
+        .columns p {
+          margin: 0;
+          padding: 0;
+          border: 0;
+          font: 17px/24px Georgia, serif;
+          text-align: justify;
+        }
+      </style>
+      <div class="columns"><p id="columns-ltr"></p></div>
+      <div class="columns" dir="rtl"><p id="columns-rtl"></p></div>
+    `;
+    const ltr = document.getElementById("columns-ltr")!;
+    const rtl = document.getElementById("columns-rtl")!;
+    ltr.textContent = (
+      "In olden times when wishing still helped one, there lived a king whose daughters " +
+      "were all beautiful, and the youngest was so beautiful that the sun itself was " +
+      "astonished whenever it shone in her face. "
+    ).repeat(8);
+    rtl.textContent = (
+      "בראשית ברא אלהים את השמים ואת הארץ, והארץ היתה תהו ובהו וחשך על פני תהום. " +
+      "ויאמר אלהים יהי אור ויהי אור, וירא אלהים את האור כי טוב ויבדל בין האור ובין החשך. "
+    ).repeat(10);
+    const html = [ltr.innerHTML, rtl.innerHTML];
+    window.__justif.controller = window.__justif.justify([ltr, rtl], {
+      expansion: false,
+      tracking: false,
+      protrusion: false,
+      lastLineMinWidth: 0,
+      observeResize: false,
+    });
+    await window.__justif.controller.ready;
+    return html;
+  });
+  await waitForQuiescence(page, "body");
+
+  const geometries = await Promise.all([
+    readFragmentedGeometry(page, "#columns-ltr"),
+    readFragmentedGeometry(page, "#columns-rtl"),
+  ]);
+  for (const geometry of geometries) {
+    expect(geometry.enhanced).toBe(true);
+    expect(geometry.fragments.length).toBeGreaterThanOrEqual(3);
+    expect(geometry.lines.length).toBeGreaterThan(20);
+    const firstWidth = geometry.fragments[0]!.width;
+    expect(firstWidth % 1).not.toBe(0); // fractional column measure
+    for (const fragment of geometry.fragments) {
+      expect(Math.abs(fragment.width - firstWidth)).toBeLessThan(0.05);
+    }
+    for (const [index, line] of geometry.lines.entries()) {
+      expect(line.width).toBeLessThan(firstWidth + 0.5);
+      if (index === geometry.lines.length - 1) continue;
+      const edgeError = geometry.rtl
+        ? Math.abs(line.left - line.fragmentLeft)
+        : Math.abs(line.right - line.fragmentRight);
+      expect.soft(edgeError, `line ${index + 1} fragment edge`).toBeLessThan(0.5);
+    }
+  }
+
+  const restored = await page.evaluate(() => {
+    window.__justif.controller!.destroy();
+    return [
+      document.getElementById("columns-ltr")!.innerHTML,
+      document.getElementById("columns-rtl")!.innerHTML,
+    ];
+  });
+  expect(restored).toEqual(originals);
+});
+
+test("column migration needs no re-layout, while a column-width resize does", async ({ page }) => {
+  const original = await page.evaluate(async () => {
+    document.body.innerHTML = `
+      <style>
+        #migration-columns {
+          width: 760px;
+          height: 300px;
+          column-count: 2;
+          column-gap: 48px;
+          column-fill: auto;
+        }
+        #migration-target {
+          margin: 0;
+          padding: 0;
+          border: 0;
+          font: 17px/24px Georgia, serif;
+          text-align: justify;
+        }
+      </style>
+      <div id="migration-columns">
+        <div id="migration-lead"></div>
+        <p id="migration-target"></p>
+      </div>
+    `;
+    const p = document.getElementById("migration-target")!;
+    p.textContent = (
+      "In olden times when wishing still helped one, there lived a king whose daughters " +
+      "were all beautiful, and the youngest was so beautiful that the sun itself was " +
+      "astonished whenever it shone in her face. "
+    ).repeat(3);
+    const html = p.innerHTML;
+    p.dataset.relayouts = "0";
+    window.__justif.controller = window.__justif.justify(p, {
+      expansion: false,
+      tracking: false,
+      protrusion: false,
+      lastLineMinWidth: 0,
+      onRelayout: (paragraph: HTMLElement) => {
+        paragraph.dataset.relayouts = String(Number(paragraph.dataset.relayouts) + 1);
+      },
+    });
+    await window.__justif.controller.ready;
+    return html;
+  });
+  await waitForQuiescence(page, "#migration-target");
+
+  const initial = await readFragmentedGeometry(page, "#migration-target");
+  expect(initial.fragments).toHaveLength(2);
+  expect(initial.enhanced).toBe(true);
+  const initialFirstFragmentLines = initial.lines.filter(
+    (line) => Math.abs(line.fragmentLeft - initial.fragments[0]!.left) < 0.05,
+  ).length;
+
+  await page.evaluate(async () => {
+    document.getElementById("migration-lead")!.style.height = "120px";
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    );
+  });
+  const migrated = await readFragmentedGeometry(page, "#migration-target");
+  expect(migrated.fragments).toHaveLength(2);
+  const migratedFirstFragmentLines = migrated.lines.filter(
+    (line) => Math.abs(line.fragmentLeft - migrated.fragments[0]!.left) < 0.05,
+  ).length;
+  expect(migratedFirstFragmentLines).toBeLessThan(initialFirstFragmentLines);
+  expect(await page.locator("#migration-target").getAttribute("data-relayouts")).toBe("1");
+  for (const [index, line] of migrated.lines.entries()) {
+    if (index === migrated.lines.length - 1) continue;
+    expect(Math.abs(line.right - line.fragmentRight)).toBeLessThan(0.5);
+  }
+
+  await page.evaluate(() => {
+    document.getElementById("migration-columns")!.style.width = "680px";
+  });
+  await page.waitForFunction(
+    () =>
+      document.getElementById("migration-target")!.getClientRects()[0]!.width < 330 &&
+      Number(document.getElementById("migration-target")!.dataset.relayouts) > 1,
+  );
+  await waitForQuiescence(page, "#migration-target");
+  await page.evaluate(() => window.__justif.controller!.refresh());
+  await waitForQuiescence(page, "#migration-target");
+
+  const resized = await readFragmentedGeometry(page, "#migration-target");
+  expect(resized.fragments[0]!.width).toBeCloseTo(316, 1);
+  for (const [index, line] of resized.lines.entries()) {
+    if (index === resized.lines.length - 1) continue;
+    expect(Math.abs(line.right - line.fragmentRight)).toBeLessThan(0.5);
+  }
+
+  const restored = await page.evaluate(() => {
+    const p = document.getElementById("migration-target")!;
+    window.__justif.controller!.destroy();
+    return { html: p.innerHTML, enhanced: p.hasAttribute("data-justif") };
+  });
+  expect(restored.html).toBe(original);
+  expect(restored.enhanced).toBe(false);
+});
+
+test("unequal fragments and fragmented drop caps stay native", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    document.body.innerHTML = `
+      <style>
+        #fallback-columns {
+          width: 760px;
+          height: 240px;
+          column-count: 2;
+          column-gap: 48px;
+          column-fill: auto;
+        }
+        #fallback-columns p, #unequal-fragments {
+          width: auto;
+          margin: 0;
+          padding: 0;
+          border: 0;
+          font: 17px/24px Georgia, serif;
+          text-align: justify;
+        }
+        #fragmented-dropcap::first-letter {
+          float: left;
+          padding-right: 6px;
+          font-size: 70px;
+          line-height: 0.8;
+        }
+      </style>
+      <div id="fallback-columns"><p id="fragmented-dropcap"></p></div>
+      <p id="unequal-fragments"></p>
+    `;
+    const dropcap = document.getElementById("fragmented-dropcap")!;
+    const unequal = document.getElementById("unequal-fragments")!;
+    const prose =
+      "Among the numerous advantages promised by a well constructed Union, none deserves " +
+      "to be more accurately developed than its tendency to break and control the violence " +
+      "of faction. ";
+    dropcap.textContent = prose.repeat(5);
+    unequal.textContent = prose;
+    unequal.style.width = "356px";
+    const nativeRects = unequal.getClientRects.bind(unequal);
+    const first = nativeRects()[0]!;
+    Object.defineProperty(unequal, "getClientRects", {
+      configurable: true,
+      value: () => [
+        new DOMRect(first.x, first.y, 356, first.height),
+        new DOMRect(first.x + 404, first.y, 320, first.height),
+      ],
+    });
+    const originals = [dropcap.innerHTML, unequal.innerHTML];
+    const skips = new Map<HTMLElement, string>();
+    const ctl = window.__justif.justify([dropcap, unequal], {
+      onSkip: (paragraph: HTMLElement, reason: string) => skips.set(paragraph, reason),
+    });
+    await ctl.ready;
+    const output = {
+      dropcapFragments: dropcap.getClientRects().length,
+      dropcapEnhanced: dropcap.hasAttribute("data-justif"),
+      dropcapReason: skips.get(dropcap),
+      unequalEnhanced: unequal.hasAttribute("data-justif"),
+      unequalReason: skips.get(unequal),
+      unchanged: dropcap.innerHTML === originals[0] && unequal.innerHTML === originals[1],
+    };
+    ctl.destroy();
+    return output;
+  });
+
+  expect(result.dropcapFragments).toBeGreaterThan(1);
+  expect(result.dropcapEnhanced).toBe(false);
+  expect(result.dropcapReason).toContain("fragmented");
+  expect(result.dropcapReason).toContain("first-letter");
+  expect(result.unequalEnhanced).toBe(false);
+  expect(result.unequalReason).toContain("unequal widths");
+  expect(result.unchanged).toBe(true);
 });
 
 test("floated ::first-letter drop caps use the remaining width on every intruded line", async ({

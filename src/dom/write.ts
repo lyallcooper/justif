@@ -17,6 +17,7 @@
  */
 
 import { graphemes } from "../core/cjk.js";
+import { fragmentBoxesOf } from "./geometry.js";
 
 export interface RenderSegment {
   text: string;
@@ -481,6 +482,33 @@ export interface CorrectionResult {
    * then the provisional wrap-safety pad keeps the lines safe.
    */
   hidden: number[];
+  /** Paragraph indices whose live fragments are not equal-width columns. */
+  invalid: Array<{ index: number; reason: string }>;
+}
+
+/** Pick the fragment containing a line's logical start. Horizontal distance
+ * distinguishes adjacent columns; vertical distance also handles fragments
+ * stacked like pages. Small hanging indents may put the point just outside
+ * its fragment, so nearest-rectangle distance is used instead of contains(). */
+function fragmentForLine(
+  rects: readonly DOMRect[],
+  lineRect: DOMRect,
+  rtl: boolean,
+): DOMRect {
+  const x = rtl ? lineRect.right : lineRect.left;
+  const y = lineRect.top + lineRect.height / 2;
+  let best = rects[0]!;
+  let bestDistance = Infinity;
+  for (const rect of rects) {
+    const dx = x < rect.left ? rect.left - x : x > rect.right ? x - rect.right : 0;
+    const dy = y < rect.top ? rect.top - y : y > rect.bottom ? y - rect.bottom : 0;
+    const distance = dx * dx + dy * dy;
+    if (distance < bestDistance) {
+      best = rect;
+      bestDistance = distance;
+    }
+  }
+  return best;
 }
 
 /**
@@ -497,6 +525,7 @@ export interface CorrectionResult {
 export function measureCorrections(pending: readonly PendingParagraph[]): CorrectionResult {
   const corrections: Correction[] = [];
   const hidden: number[] = [];
+  const invalid: Array<{ index: number; reason: string }> = [];
   let range: Range | null = null;
   for (let i = 0; i < pending.length; i++) {
     const { doc, paragraph, lineElements, lineWidths, physicalFitLines } = pending[i]!;
@@ -507,16 +536,14 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
     const firstEntry = lineElements.find((l) => l.length > 0)?.[0];
     if (firstEntry === undefined || !firstEntry.el.isConnected) continue;
     range ??= doc.createRange();
-    const paragraphRect = paragraph.getBoundingClientRect();
     const paragraphStyle = doc.defaultView?.getComputedStyle(paragraph);
     const rtl = paragraphStyle?.direction === "rtl";
-    const contentEnd = rtl
-      ? paragraphRect.left +
-        (parseFloat(paragraphStyle?.borderLeftWidth ?? "") || 0) +
-        (parseFloat(paragraphStyle?.paddingLeft ?? "") || 0)
-      : paragraphRect.right -
-        (parseFloat(paragraphStyle?.borderRightWidth ?? "") || 0) -
-        (parseFloat(paragraphStyle?.paddingRight ?? "") || 0);
+    const fragments = fragmentBoxesOf(paragraph, paragraphStyle);
+    if (!fragments.ok) {
+      if (fragments.reason === "zero content width") hidden.push(i);
+      else invalid.push({ index: i, reason: fragments.reason });
+      continue;
+    }
     let sawInk = false;
     const paraCorrections: Correction[] = [];
     for (let li = 0; li < lineElements.length; li++) {
@@ -526,9 +553,15 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
       let rectPx = 0;
       let modelPx = 0;
       let ownMargins = 0;
+      let lineRect: DOMRect | null = null;
       for (const { el, seg, marginEndEl } of entries) {
+        let elRect: DOMRect | undefined;
+        if (lineRect === null) {
+          elRect = el.getBoundingClientRect();
+          lineRect = elRect;
+        }
         if (seg === null || (seg.edgeTrim.lead === 0 && seg.edgeTrim.trail === 0)) {
-          rectPx += el.getBoundingClientRect().width;
+          rectPx += (elRect ?? el.getBoundingClientRect()).width;
         } else {
           // Position-independent width: trimmed glyph run (measured) plus
           // exact model widths for the edge spaces.
@@ -586,6 +619,14 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
               physicalEndHang +
               deliberateOverflow);
         } else {
+          const fragment = fragmentForLine(fragments.rects, lineRect!, rtl === true);
+          const contentEnd = rtl
+            ? fragment.left +
+              (parseFloat(paragraphStyle?.borderLeftWidth ?? "") || 0) +
+              (parseFloat(paragraphStyle?.paddingLeft ?? "") || 0)
+            : fragment.right -
+              (parseFloat(paragraphStyle?.borderRightWidth ?? "") || 0) -
+              (parseFloat(paragraphStyle?.paddingRight ?? "") || 0);
           const paintEndEntry = entries[entries.length - 1]!;
           let paintRect: DOMRect;
           if (paintEndEntry.paintEndEl !== undefined) {
@@ -682,7 +723,7 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
     if (!sawInk) hidden.push(i);
     else corrections.push(...paraCorrections);
   }
-  return { corrections, hidden };
+  return { corrections, hidden, invalid };
 }
 
 /** Write phase of the wrap guarantee. The corrective margin lands on the

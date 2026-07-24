@@ -1,5 +1,6 @@
 import { graphemes } from "../core/cjk.js";
 import { textMakesBox } from "../core/items.js";
+import { fragmentBoxesOf } from "./geometry.js";
 import { type FontSpec, fontSpecOf, measureWidth } from "./measure.js";
 
 /** One resolved styling run; adjacent sibling text nodes may be coalesced. */
@@ -689,6 +690,7 @@ function floatDetailsOf(
   p: HTMLElement,
   text: string,
   paragraphStyle?: CSSStyleDeclaration,
+  fragmentCount?: number,
 ): { intrusion: FloatIntrusion; span: { start: number; end: number } } | string | null {
   const view = p.ownerDocument.defaultView;
   if (view === null) return null;
@@ -713,6 +715,15 @@ function floatDetailsOf(
       : null;
   }
   const cs = paragraphStyle ?? view.getComputedStyle(p);
+  let liveFragmentCount = fragmentCount;
+  if (liveFragmentCount === undefined) {
+    const fragments = fragmentBoxesOf(p, cs);
+    if (!fragments.ok) return fragments.reason;
+    liveFragmentCount = fragments.rects.length;
+  }
+  if (liveFragmentCount > 1) {
+    return "fragmented paragraph with floated ::first-letter";
+  }
   const direction: "ltr" | "rtl" = cs.direction === "rtl" ? "rtl" : "ltr";
   const floatSide = physicalFloatSide(style.float, direction);
   if (floatSide === null) return `unsupported ::first-letter float: ${style.float}`;
@@ -1008,7 +1019,10 @@ export function readParagraph(p: HTMLElement): ParagraphScan | string {
     return "unsupported text (bidi controls, mixed direction, or a script without break support)";
   }
 
-  const floatDetails = floatDetailsOf(p, text, cs);
+  const fragments = fragmentBoxesOf(p, cs);
+  if (!fragments.ok) return fragments.reason;
+
+  const floatDetails = floatDetailsOf(p, text, cs, fragments.rects.length);
   if (typeof floatDetails === "string") return floatDetails;
   const floatIntrusion = floatDetails?.intrusion ?? null;
   if (floatDetails !== null) {
@@ -1025,8 +1039,7 @@ export function readParagraph(p: HTMLElement): ParagraphScan | string {
     }
   }
 
-  const contentWidth = contentWidthOf(p);
-  if (contentWidth <= 0) return "zero content width";
+  const contentWidth = fragments.contentWidth;
 
   let textIndent = parseFloat(cs.textIndent) || 0;
   const textIndentPct = cs.textIndent.endsWith("%") ? textIndent / 100 : null;
@@ -1058,16 +1071,11 @@ export function readParagraph(p: HTMLElement): ParagraphScan | string {
   };
 }
 
-/** Content-box width from computed style + border-box rect width. */
-export function contentWidthOf(p: HTMLElement): number {
+/** Content-box width of one equal-width fragment (one rect in normal flow). */
+export function contentWidthOf(p: HTMLElement): number | string {
   const view = p.ownerDocument.defaultView;
-  if (view === null) return 0;
+  if (view === null) return "zero content width";
   const cs = view.getComputedStyle(p);
-  return (
-    p.getBoundingClientRect().width -
-    (parseFloat(cs.paddingLeft) || 0) -
-    (parseFloat(cs.paddingRight) || 0) -
-    (parseFloat(cs.borderLeftWidth) || 0) -
-    (parseFloat(cs.borderRightWidth) || 0)
-  );
+  const fragments = fragmentBoxesOf(p, cs);
+  return fragments.ok ? fragments.contentWidth : fragments.reason;
 }

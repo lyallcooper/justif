@@ -847,11 +847,26 @@ export function justify(
       else if (e.p.isConnected) hiddenCorrections.set(e.p, e.pending);
     }
     if (measure.length > 0) {
-      const { corrections, hidden } = measureCorrections(measure.map((e) => e.pending));
+      const { corrections, hidden, invalid } = measureCorrections(
+        measure.map((e) => e.pending),
+      );
       applyCorrections(corrections);
       for (const i of hidden) {
         const e = measure[i]!;
         hiddenCorrections.set(e.p, e.pending);
+      }
+      for (const { index, reason } of invalid) {
+        const e = measure[index]!;
+        const state = states.get(e.p);
+        if (state === undefined || state.owner !== owner) continue;
+        pendingWidths.delete(e.p);
+        pendingCorrections.delete(e.p);
+        hiddenCorrections.delete(e.p);
+        const changed = state.enhanced;
+        restore(e.p);
+        bailed.add(e.p);
+        emitSkip(e.p, reason);
+        if (changed) emitRelayout(e.p);
       }
     }
   };
@@ -1035,9 +1050,21 @@ export function justify(
     const changed: HTMLElement[] = [];
     for (const p of mine) {
       const state = states.get(p)!;
+      const width = widths.get(p)!;
+      if (typeof width === "string") {
+        pendingWidths.delete(p);
+        pendingCorrections.delete(p);
+        hiddenCorrections.delete(p);
+        const wasEnhanced = state.enhanced;
+        restore(p);
+        bailed.add(p);
+        emitSkip(p, width);
+        if (wasEnhanced) changed.push(p);
+        continue;
+      }
       state.runsMetrics = buildRunMetrics(state.scan, expansion, spacing, protrusionCtx);
       state.parts = buildParts(state.scan, state.runsMetrics, state.specByKey);
-      state.width = widths.get(p)!;
+      state.width = width;
       state.lastPatch = "";
       const outcome = safePatch(p);
       if (outcome.pending !== null) batch.push({ p, pending: outcome.pending });

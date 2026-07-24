@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Paragraphs spanning a CSS multicolumn break no longer receive roughly
+  two-column line breaks or extreme spacing stretch in earlier columns.
+  They are now measured and corrected against the individual column width
+  instead of the bounding box of the whole spread. Fragmented drop caps and
+  unequal-width page fragments safely remain in native layout.
 - Paragraphs containing inline `<br>` elements are now enhanced instead of
   staying in browser layout. Set `text-align-last: justify` to tell justif to
   justify lines ending in `<br>` instead of leaving them ragged.
