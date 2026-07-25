@@ -89,6 +89,31 @@ export function endingFloorRatio(
   return glueY > 0 ? (need - flexY * flexCap) / glueY : flexCap;
 }
 
+/**
+ * Split a token after every explicit hyphen that is followed by a non-hyphen:
+ * "self-made" → ["self-", "made"], while "a--b" keeps its run of dashes
+ * together ("a--", "b"). Written as a loop rather than the equivalent
+ * lookbehind-plus-lookahead regex: lookbehind assertions are Safari 16.4+,
+ * they are SYNTAX
+ * (an older engine fails to parse the whole module, taking any bundle this
+ * ships inside down with it), and no build step can lower them — esbuild
+ * passes them through even when the target says otherwise.
+ */
+function splitAfterHyphens(token: string): string[] {
+  // Most tokens carry no hyphen at all; one native scan settles them.
+  if (token.indexOf("-") < 0) return [token];
+  const chunks: string[] = [];
+  let start = 0;
+  for (let i = 0; i < token.length - 1; i++) {
+    if (token[i] === "-" && token[i + 1] !== "-") {
+      chunks.push(token.slice(start, i + 1));
+      start = i + 1;
+    }
+  }
+  chunks.push(token.slice(start));
+  return chunks;
+}
+
 /** Half-open range of text consumed by a floated ::first-letter. */
 interface Exclusion {
   start: number;
@@ -418,7 +443,7 @@ export function buildItems(
     // then soft-hyphen/hyphenator splits within each chunk. Inside a nowrap
     // element nothing may break, so the token stays one box (soft hyphens
     // stripped like the noHyphens path).
-    const chunks = pieceKey !== undefined ? [token] : token.split(/(?<=-)(?=[^-])/);
+    const chunks = pieceKey !== undefined ? [token] : splitAfterHyphens(token);
     const plans: PiecePlan[] = [];
     for (let c = 0; c < chunks.length; c++) {
       const { pieces, fromHyphenator } = chunkPieces(

@@ -71,6 +71,27 @@ for (const path of files) {
   } catch (error) {
     throw new Error(`lower-dist: ${path} still fails Vite-default lowering:\n${error}`);
   }
+
+  // Gate: regex syntax newer than the target. Neither Babel nor esbuild can
+  // lower regex features — esbuild passes them through without a word (its
+  // compat data doesn't cover them) — and they are SYNTAX: an engine that
+  // doesn't know the construct fails to parse the whole file, taking any
+  // bundle this ships inside down with it. Nothing degrades gracefully, so
+  // this is a hard build failure. Lookbehind assertions are Safari 16.4+; the
+  // pattern deliberately does not match ES2018 named groups (`(?<name>`),
+  // which every target engine supports. Watch for the `v` flag (Safari 17+)
+  // too — it isn't checked here because a regex literal's flags can't be told
+  // from a division by a variable named `v` without a real parser.
+  const lookbehind = /\(\?<[=!]/.exec(result.code);
+  if (lookbehind !== null) {
+    throw new Error(
+      `lower-dist: ${path} contains a regex lookbehind assertion (Safari 16.4+), ` +
+        `outside ${VERIFY_TARGET.join(",")} and impossible to transpile — rewrite ` +
+        `it without the construct (near: ${JSON.stringify(
+          result.code.slice(Math.max(0, lookbehind.index - 40), lookbehind.index + 40),
+        )})`,
+    );
+  }
 }
 
 console.log(`dist lowered for ${VERIFY_TARGET.join(",")} (${lowered}/${files.length} files rewritten)`);
