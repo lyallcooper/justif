@@ -261,6 +261,94 @@ function paintedInlineEdges(
   return shadowPaintedEdges(style.boxShadow, direction);
 }
 
+/** Why this `<br>` cannot be modeled as a hard break, or null when it can. */
+function hardBreakBailReason(elStyle: CSSStyleDeclaration): string | null {
+  if (elStyle.clear !== "none") return `<br> with clear: ${elStyle.clear}`;
+  if (
+    elStyle.display !== "inline" ||
+    elStyle.float !== "none" ||
+    (elStyle.position !== "static" && elStyle.position !== "relative")
+  ) {
+    return "non-inline-flow <br> (display/float/position)";
+  }
+  return null;
+}
+
+/**
+ * Padding + border on an inline element's line-start and line-end sides.
+ * These ARE modeled — folded into the element's first/last box, which is how
+ * `box-decoration-break: slice` (the initial value) fragments.
+ */
+function inlineInsets(
+  elStyle: CSSStyleDeclaration,
+  direction: "ltr" | "rtl",
+): { start: number; end: number } {
+  const rtl = direction === "rtl";
+  return {
+    start:
+      (parseFloat(rtl ? elStyle.paddingRight : elStyle.paddingLeft) || 0) +
+      (parseFloat(rtl ? elStyle.borderRightWidth : elStyle.borderLeftWidth) || 0),
+    end:
+      (parseFloat(rtl ? elStyle.paddingLeft : elStyle.paddingRight) || 0) +
+      (parseFloat(rtl ? elStyle.borderLeftWidth : elStyle.borderRightWidth) || 0),
+  };
+}
+
+/**
+ * Why the model cannot place this inline element's content, or null when it
+ * can. `padded` says whether the element has horizontal insets, which decides
+ * whether `box-decoration-break` has any decoration to repeat.
+ */
+function inlineBailReason(
+  el: Element,
+  elStyle: CSSStyleDeclaration,
+  paragraphStyle: CSSStyleDeclaration,
+  padded: boolean,
+): string | null {
+  const name = el.tagName.toLowerCase();
+  if (
+    elStyle.display !== "inline" ||
+    elStyle.float !== "none" ||
+    (elStyle.position !== "static" && elStyle.position !== "relative")
+  ) {
+    return `non-inline-flow <${name}> (display/float/position)`;
+  }
+  // Margins add layout width OUTSIDE the border box, where neither the box
+  // widths nor the rendered clones carry them. Bail; native rendering
+  // handles them fine.
+  if (MARGIN_PROPS.some((prop) => (parseFloat(elStyle[prop]) || 0) !== 0)) {
+    return `inline <${name}> has a horizontal margin`;
+  }
+  // `clone` would repeat the insets at every line break the model can't
+  // see; bail.
+  const decorationBreak =
+    elStyle.getPropertyValue("box-decoration-break") ||
+    elStyle.getPropertyValue("-webkit-box-decoration-break");
+  if (padded && decorationBreak === "clone") {
+    return `box-decoration-break: clone on padded <${name}>`;
+  }
+  if (elStyle.textTransform !== "none") {
+    return `text-transform: ${elStyle.textTransform} on <${name}>`;
+  }
+  // A nested direction change or any non-default unicode-bidi (<bdo>'s
+  // bidi-override, embeddings, plaintext) is mixed-bidi territory: the
+  // browser would reorder runs the linear line model cannot place.
+  // `isolate` is allowed — with the paragraph-uniform direction enforced by
+  // the caller, an isolate renders identically.
+  if (
+    elStyle.direction !== paragraphStyle.direction ||
+    (elStyle.unicodeBidi !== "normal" && elStyle.unicodeBidi !== "isolate")
+  ) {
+    return `direction/unicode-bidi override on <${name}>`;
+  }
+  // Preserved-whitespace values (pre*) change tokenization itself: out of
+  // scope, bail. `nowrap` is honored by the caller as an atomic scope.
+  if (elStyle.whiteSpace !== "normal" && elStyle.whiteSpace !== "nowrap") {
+    return `white-space: ${elStyle.whiteSpace} on <${name}>`;
+  }
+  return null;
+}
+
 /** CSS ::first-letter includes the first typographic character together
  * with punctuation immediately before and after it. Return UTF-16 offsets
  * into the paragraph's flattened text (leading collapsible whitespace is
@@ -806,6 +894,82 @@ export function readParagraph(p: HTMLElement): ParagraphScan | string {
   let skip: string | null = null;
 
   let nextAtomicKey = 0;
+
+  /**
+   * Post-order step for one inline element: hand its padding and its painted
+   * side insets to the runs that will carry them. Padding attaches to the
+   * element's first/last runs; a painted box additionally owns the whole
+   * distance from its border to the edge glyph, so the enclosed glyph can
+   * meet the measure while the decoration itself hangs outside it. Returns a
+   * bail reason, or null.
+   */
+  const attachInlineExtras = (
+    el: Element,
+    before: number,
+    insets: { start: number; end: number },
+    padded: boolean,
+    painted: PaintedEdges,
+  ): string | null => {
+    // Only padded or locally-painted elements need an edge scan/copy.
+    if (!padded && !painted.start && !painted.end) return null;
+    const inside = runs.slice(before);
+    let firstBoxAt = -1;
+    let lastBoxAt = -1;
+    for (let i = 0; i < inside.length; i++) {
+      if (!textMakesBox(inside[i]!.text)) continue;
+      if (firstBoxAt < 0) firstBoxAt = i;
+      lastBoxAt = i;
+    }
+    if (padded) {
+      // The extras attach to the element's first/last runs. An element with
+      // no box-worthy content would strand them (nothing to widen; the
+      // writer would drop the empty element entirely) — bail. Soft hyphens
+      // count as empty: the item builder emits no box for them either.
+      if (firstBoxAt < 0) return `padded <${el.tagName.toLowerCase()}> with no text content`;
+      const first = runs[before]!;
+      const last = runs[runs.length - 1]!;
+      first.padStartPx = (first.padStartPx ?? 0) + insets.start;
+      last.padEndPx = (last.padEndPx ?? 0) + insets.end;
+      // The walk is post-order, so nested closing edges overwrite this from
+      // inner to outer. The final owner is the clone whose border edge
+      // represents the complete closing decoration.
+      last.padEndOwner = el;
+    }
+    if ((painted.start || painted.end) && firstBoxAt >= 0) {
+      // This painted box owns the distance from its border to the edge
+      // glyph, including padded descendants (already attached by the
+      // post-order walk). If an UNPAINTED padded ancestor shares that same
+      // edge, the core completes the inset from all pending pads.
+      if (painted.start) {
+        let startInset = 0;
+        for (let i = 0; i <= firstBoxAt; i++) {
+          startInset += inside[i]!.padStartPx ?? 0;
+        }
+        const firstBoxRun = inside[firstBoxAt]!;
+        // Keep the zero marker too. It identifies the real open of an
+        // unpadded painted inline, where the decoration edge replaces
+        // character protrusion. Internal line slices have no marker, so
+        // their edge glyphs retain ordinary optical alignment.
+        firstBoxRun.boxStartProtrusionPx = startInset;
+        firstBoxRun.boxStartProtrusionOwner = el;
+      }
+      if (painted.end) {
+        let endInset = 0;
+        for (let i = lastBoxAt; i < inside.length; i++) {
+          endInset += inside[i]!.padEndPx ?? 0;
+        }
+        // The core patches the last box when the element's raw final run is
+        // consumed (which may be whitespace-only), while the renderer finds
+        // the owner from the actual last box's run. Keep the zero marker: it
+        // distinguishes the real close of an unpadded painted inline from an
+        // internal wrap in that inline.
+        inside[inside.length - 1]!.boxEndProtrusionPx = endInset;
+        inside[lastBoxAt]!.boxEndProtrusionOwner = el;
+      }
+    }
+    return null;
+  };
+
   const walk = (
     node: Node,
     chain: readonly Element[],
@@ -847,18 +1011,8 @@ export function readParagraph(p: HTMLElement): ParagraphScan | string {
           const elStyle = view.getComputedStyle(el);
           // A hidden <br> creates no line break in native layout.
           if (elStyle.display === "none") continue;
-          if (elStyle.clear !== "none") {
-            skip = `<br> with clear: ${elStyle.clear}`;
-            return;
-          }
-          if (
-            elStyle.display !== "inline" ||
-            elStyle.float !== "none" ||
-            (elStyle.position !== "static" && elStyle.position !== "relative")
-          ) {
-            skip = "non-inline-flow <br> (display/float/position)";
-            return;
-          }
+          skip = hardBreakBailReason(elStyle);
+          if (skip !== null) return;
           hardBreaks.push({ source: el, ancestors: chain, afterRun: runs.length });
           continue;
         }
@@ -869,72 +1023,15 @@ export function readParagraph(p: HTMLElement): ParagraphScan | string {
           return;
         }
         const elStyle = view.getComputedStyle(el);
-        if (
-          elStyle.display !== "inline" ||
-          elStyle.float !== "none" ||
-          (elStyle.position !== "static" && elStyle.position !== "relative")
-        ) {
-          skip = `non-inline-flow <${el.tagName.toLowerCase()}> (display/float/position)`;
-          return;
-        }
-        // Margins add layout width OUTSIDE the border box, where neither
-        // the box widths nor the rendered clones carry them. Bail; native
-        // rendering handles them fine.
-        if (MARGIN_PROPS.some((prop) => (parseFloat(elStyle[prop]) || 0) !== 0)) {
-          skip = `inline <${el.tagName.toLowerCase()}> has a horizontal margin`;
-          return;
-        }
-        // Padding and borders ARE modeled: they travel with the element's
-        // first/last fragment, which is `box-decoration-break: slice` —
-        // the initial value, and how the whole-element clones fragment.
-        // `clone` would repeat them at every line break the model can't
-        // see; bail.
-        const padStart =
-          (parseFloat(direction === "rtl" ? elStyle.paddingRight : elStyle.paddingLeft) || 0) +
-          (parseFloat(
-            direction === "rtl" ? elStyle.borderRightWidth : elStyle.borderLeftWidth,
-          ) || 0);
-        const padEnd =
-          (parseFloat(direction === "rtl" ? elStyle.paddingLeft : elStyle.paddingRight) || 0) +
-          (parseFloat(
-            direction === "rtl" ? elStyle.borderLeftWidth : elStyle.borderRightWidth,
-          ) || 0);
-        const padded = padStart > 0 || padEnd > 0;
-        const decorationBreak =
-          elStyle.getPropertyValue("box-decoration-break") ||
-          elStyle.getPropertyValue("-webkit-box-decoration-break");
-        if (padded && decorationBreak === "clone") {
-          skip = `box-decoration-break: clone on padded <${el.tagName.toLowerCase()}>`;
-          return;
-        }
-        if (elStyle.textTransform !== "none") {
-          skip = `text-transform: ${elStyle.textTransform} on <${el.tagName.toLowerCase()}>`;
-          return;
-        }
-        // A nested direction change or any non-default unicode-bidi
-        // (<bdo>'s bidi-override, embeddings, plaintext) is mixed-bidi
-        // territory: the browser would reorder runs the linear line model
-        // cannot place. `isolate` is allowed — with the paragraph-uniform
-        // direction enforced here, an isolate renders identically.
-        if (
-          elStyle.direction !== cs.direction ||
-          (elStyle.unicodeBidi !== "normal" && elStyle.unicodeBidi !== "isolate")
-        ) {
-          skip = `direction/unicode-bidi override on <${el.tagName.toLowerCase()}>`;
-          return;
-        }
+        const insets = inlineInsets(elStyle, direction);
+        const padded = insets.start > 0 || insets.end > 0;
+        skip = inlineBailReason(el, elStyle, cs, padded);
+        if (skip !== null) return;
         // `white-space: nowrap` forbids breaks between this element's
         // boxes — honored via an atomic scope (the innermost key wins;
         // any nowrap ancestor already forbids everything inside).
-        // Preserved-whitespace values (pre*) change tokenization itself:
-        // out of scope, bail.
-        let childKey = atomicKey;
-        if (elStyle.whiteSpace === "nowrap") {
-          childKey = atomicKey ?? nextAtomicKey++;
-        } else if (elStyle.whiteSpace !== "normal") {
-          skip = `white-space: ${elStyle.whiteSpace} on <${el.tagName.toLowerCase()}>`;
-          return;
-        }
+        const childKey =
+          elStyle.whiteSpace === "nowrap" ? (atomicKey ?? nextAtomicKey++) : atomicKey;
         const before = runs.length;
         const paintedHere = paintedInlineEdges(elStyle, direction);
         walk(
@@ -945,67 +1042,8 @@ export function readParagraph(p: HTMLElement): ParagraphScan | string {
           firstLetterInnerStyle(elStyle, cs),
         );
         if (skip !== null) return;
-        // Only padded or locally-painted elements need an edge scan/copy.
-        const inspectEdges = padded || paintedHere.start || paintedHere.end;
-        const inside = inspectEdges ? runs.slice(before) : [];
-        let firstBoxAt = -1;
-        let lastBoxAt = -1;
-        for (let i = 0; i < inside.length; i++) {
-          if (!textMakesBox(inside[i]!.text)) continue;
-          if (firstBoxAt < 0) firstBoxAt = i;
-          lastBoxAt = i;
-        }
-        if (padded) {
-          // The extras attach to the element's first/last runs. An element
-          // with no box-worthy content would strand them (nothing to widen;
-          // the writer would drop the empty element entirely) — bail.
-          // Soft hyphens count as empty: the item builder emits no box for
-          // them either.
-          if (firstBoxAt < 0) {
-            skip = `padded <${el.tagName.toLowerCase()}> with no text content`;
-            return;
-          }
-          const first = runs[before]!;
-          const last = runs[runs.length - 1]!;
-          first.padStartPx = (first.padStartPx ?? 0) + padStart;
-          last.padEndPx = (last.padEndPx ?? 0) + padEnd;
-          // The walk is post-order, so nested closing edges overwrite this
-          // from inner to outer. The final owner is the clone whose border
-          // edge represents the complete closing decoration.
-          last.padEndOwner = el;
-        }
-        if ((paintedHere.start || paintedHere.end) && firstBoxAt >= 0) {
-          // This painted box owns the distance from its border to the edge
-          // glyph, including padded descendants (already attached by the
-          // post-order walk). If an UNPAINTED padded ancestor shares that
-          // same edge, the core completes the inset from all pending pads.
-          if (paintedHere.start) {
-            let startInset = 0;
-            for (let i = 0; i <= firstBoxAt; i++) {
-              startInset += inside[i]!.padStartPx ?? 0;
-            }
-            const firstBoxRun = inside[firstBoxAt]!;
-            // Keep the zero marker too. It identifies the real open of an
-            // unpadded painted inline, where the decoration edge replaces
-            // character protrusion. Internal line slices have no marker,
-            // so their edge glyphs retain ordinary optical alignment.
-            firstBoxRun.boxStartProtrusionPx = startInset;
-            firstBoxRun.boxStartProtrusionOwner = el;
-          }
-          if (paintedHere.end) {
-            let endInset = 0;
-            for (let i = lastBoxAt; i < inside.length; i++) {
-              endInset += inside[i]!.padEndPx ?? 0;
-            }
-            // The core patches the last box when the element's raw final
-            // run is consumed (which may be whitespace-only), while the
-            // renderer finds the owner from the actual last box's run.
-            // Keep the zero marker: it distinguishes the real close of an
-            // unpadded painted inline from an internal wrap in that inline.
-            inside[inside.length - 1]!.boxEndProtrusionPx = endInset;
-            inside[lastBoxAt]!.boxEndProtrusionOwner = el;
-          }
-        }
+        skip = attachInlineExtras(el, before, insets, padded, paintedHere);
+        if (skip !== null) return;
       }
       // Comments and other node types are ignored.
     }
