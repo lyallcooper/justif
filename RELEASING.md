@@ -23,6 +23,12 @@ trusted publisher; there is no long-lived npm token.
    builds the package, updates the README CDN pin and SRI, validates the npm
    artifact, and shows the complete diff before asking for confirmation.
 
+   Add `--yes` to skip that confirmation when running without a terminal, such
+   as from an agent or a script. The diff is still printed, and every other
+   check still gates the release: clean `main` matching `origin/main`, only the
+   four release files touched, and CI green on the release commit before the
+   tag is pushed.
+
 After confirmation, the command pushes one `Release X.Y.Z` commit to `main`.
 It waits for CI on that exact commit and only then pushes the annotated
 `vX.Y.Z` tag. The tag-triggered Release workflow rebuilds and validates the

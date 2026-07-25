@@ -16,6 +16,7 @@ const RELEASE_FILES = [
   "README.md",
 ];
 const BUMPS = new Set(["patch", "minor", "major"]);
+const FLAGS = new Set(["--dry-run", "--yes", "-y"]);
 
 let snapshots = null;
 let mutated = false;
@@ -112,9 +113,15 @@ function restoreSnapshots() {
   mutated = false;
 }
 
-async function confirmRelease(version) {
+async function confirmRelease(version, assumeYes) {
+  if (assumeYes) {
+    console.log(`Confirmed justif ${version} non-interactively via --yes`);
+    return true;
+  }
   if (!input.isTTY || !output.isTTY) {
-    throw new Error("Confirmation requires an interactive terminal");
+    throw new Error(
+      "Confirmation requires an interactive terminal; pass --yes to skip the prompt",
+    );
   }
   const prompt = createInterface({ input, output });
   try {
@@ -173,7 +180,7 @@ function ensureTag(version, sha) {
   );
 }
 
-async function prepareRelease(bump, dryRun) {
+async function prepareRelease(bump, dryRun, assumeYes) {
   assertMain();
   assertClean();
   getUnreleasedNotes(readFileSync("CHANGELOG.md", "utf8"));
@@ -215,7 +222,7 @@ async function prepareRelease(bump, dryRun) {
     return;
   }
 
-  if (!(await confirmRelease(version))) {
+  if (!(await confirmRelease(version, assumeYes))) {
     restoreSnapshots();
     assertClean();
     console.log("Release cancelled; prepared files were restored");
@@ -297,11 +304,16 @@ function resumeRelease() {
 
 function usage() {
   console.log(`Usage:
-  npm run release -- patch|minor|major [--dry-run]
+  npm run release -- patch|minor|major [--dry-run] [--yes]
   npm run release -- resume
 
 The command prepares one release commit on main, waits for that commit's CI,
-then pushes an immutable vX.Y.Z tag. The tag triggers npm and GitHub publishing.`);
+then pushes an immutable vX.Y.Z tag. The tag triggers npm and GitHub publishing.
+
+--yes skips the interactive confirmation, for non-interactive callers such as
+an agent or a script. Every other safety check still applies: the release must
+run from a clean main matching origin/main, only the four release files may
+change, and the tag is pushed only after CI passes on the release commit.`);
 }
 
 async function main() {
@@ -311,7 +323,8 @@ async function main() {
     return;
   }
   const dryRun = args.includes("--dry-run");
-  const positional = args.filter((argument) => argument !== "--dry-run");
+  const assumeYes = args.includes("--yes") || args.includes("-y");
+  const positional = args.filter((argument) => !FLAGS.has(argument));
   if (positional.length !== 1) {
     usage();
     throw new Error("Choose patch, minor, major, or resume");
@@ -324,7 +337,7 @@ async function main() {
   if (!BUMPS.has(positional[0])) {
     throw new Error(`Unknown release kind: ${positional[0]}`);
   }
-  await prepareRelease(positional[0], dryRun);
+  await prepareRelease(positional[0], dryRun, assumeYes);
 }
 
 process.on("SIGINT", () => {
