@@ -134,6 +134,9 @@
     "test:e2e": "playwright test",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.core.json --noEmit",
     "compare:tex": "node tools/tex-compare.mjs",
+    "check:package": "node tools/check-package.mjs --dry-run",
+    "check:release-readme": "node tools/sync-version.mjs --check",
+    "release": "node tools/release.mjs",
     "prepublishOnly": "npm run typecheck && npm test && npm run build",
     "version": "npm run build && node tools/sync-version.mjs && git add README.md"
   },

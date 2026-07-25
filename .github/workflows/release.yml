@@ -4,13 +4,49 @@ on:
   push:
     tags: ["v*"]
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
 jobs:
-  publish:
+  verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Verify release metadata
+        id: metadata
+        run: >-
+          node tools/release-metadata.mjs verify
+          --tag "$GITHUB_REF_NAME"
+          --github-output "$GITHUB_OUTPUT"
+      - name: Verify tagged commit is on main
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - name: Require successful CI for the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node tools/wait-for-ci.mjs --sha "$GITHUB_SHA"
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       id-token: write
@@ -21,54 +57,49 @@ jobs:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
-      - name: Verify release metadata
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
-          if [ "$PACKAGE_VERSION" != "$VERSION" ]; then
-            echo "Tag v$VERSION does not match package.json version $PACKAGE_VERSION" >&2
-            exit 1
-          fi
-          awk -v ver="$VERSION" '
-            $0 ~ "^## " ver " " { found=1; next }
-            found && /^## / { exit }
-            found { print }
-          ' CHANGELOG.md | sed -e '/./,$!d' > release-notes.md
-          if ! [ -s release-notes.md ]; then
-            echo "No CHANGELOG.md section for $VERSION" >&2
-            exit 1
-          fi
       - run: npm ci
-      # prepublishOnly typechecks, tests, and builds the package. npm obtains
-      # a short-lived credential through GitHub OIDC; no NPM_TOKEN is needed.
-      - run: npm publish
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npm run check:release-readme
+      - name: Pack and validate the publish artifact
+        id: pack
+        run: >-
+          node tools/check-package.mjs
+          --pack-destination "$RUNNER_TEMP/justif-package"
+          --github-output "$GITHUB_OUTPUT"
+      - name: Publish exact artifact through npm trusted publishing
+        run: >-
+          node tools/publish-release.mjs
+          --tarball "${{ steps.pack.outputs.tarball }}"
+          --integrity "${{ steps.pack.outputs.integrity }}"
 
   release:
-    needs: publish
+    needs: [verify, publish]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v7
-      # The release body is the tag's section of CHANGELOG.md, so the
-      # changelog stays the single source of release notes.
-      - name: Extract changelog section
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          awk -v ver="$VERSION" '
-            $0 ~ "^## " ver " " { found=1; next }
-            found && /^## / { exit }
-            found { print }
-          ' CHANGELOG.md | sed -e '/./,$!d' > release-notes.md
-          if ! [ -s release-notes.md ]; then
-            echo "No CHANGELOG.md section for $VERSION" >&2
-            exit 1
-          fi
-      - name: Create GitHub release
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Extract verified changelog notes
+        run: >-
+          node tools/release-metadata.mjs verify
+          --tag "$GITHUB_REF_NAME"
+          --notes-file release-notes.md
+      - name: Create GitHub release if needed
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "justif ${GITHUB_REF_NAME#v}" \
-            --notes-file release-notes.md
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "GitHub release $GITHUB_REF_NAME already exists"
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --verify-tag \
+              --title "justif ${{ needs.verify.outputs.version }}" \
+              --notes-file release-notes.md
+          fi
