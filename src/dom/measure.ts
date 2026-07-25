@@ -52,6 +52,13 @@ export interface FontSpec {
    * (mixed-direction content bails in read.ts).
    */
   key: string;
+  /**
+   * Precomputed `requiresDomMeasurement` verdict. It is a pure function of
+   * the variant/feature fields, and it was being recomputed — eight string
+   * comparisons — on every single width lookup (tens of thousands per cold
+   * enhance). Read it through `requiresDomMeasurement` rather than directly.
+   */
+  needsDomMeasurement: boolean;
 }
 
 export function fontSpecOf(style: CSSStyleDeclaration): FontSpec {
@@ -85,6 +92,7 @@ export function fontSpecOf(style: CSSStyleDeclaration): FontSpec {
     variantPosition: computed("font-variant-position"),
     direction: style.direction === "rtl" ? "rtl" : "ltr",
     key: "",
+    needsDomMeasurement: false,
   };
   spec.key = [
     spec.style,
@@ -104,6 +112,15 @@ export function fontSpecOf(style: CSSStyleDeclaration): FontSpec {
     spec.numeric,
     spec.variantPosition,
   ].join("|");
+  spec.needsDomMeasurement =
+    spec.variantCaps !== "normal" ||
+    spec.variantAlternates !== "normal" ||
+    spec.variantEastAsian !== "normal" ||
+    spec.variantEmoji !== "normal" ||
+    spec.ligatures !== "normal" ||
+    spec.featureSettings !== "normal" ||
+    spec.numeric !== "normal" ||
+    spec.variantPosition !== "normal";
   return spec;
 }
 
@@ -225,16 +242,7 @@ export function applyFontSpec(el: HTMLElement, spec: FontSpec): void {
  * state before. A styled DOM probe shapes with exactly the engine that
  * renders. Every other variant/feature value likewise. */
 export function requiresDomMeasurement(spec: FontSpec): boolean {
-  return (
-    spec.variantCaps !== "normal" ||
-    spec.variantAlternates !== "normal" ||
-    spec.variantEastAsian !== "normal" ||
-    spec.variantEmoji !== "normal" ||
-    spec.ligatures !== "normal" ||
-    spec.featureSettings !== "normal" ||
-    spec.numeric !== "normal" ||
-    spec.variantPosition !== "normal"
-  );
+  return spec.needsDomMeasurement;
 }
 
 /** Paragraphs whose styling neither measurement path can reproduce bail. */
