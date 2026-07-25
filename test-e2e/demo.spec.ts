@@ -546,43 +546,33 @@ test("punctuation protrudes at an internal slice of the technical code halo", as
     el.dispatchEvent(new Event("input", { bubbles: true }));
   });
 
-  await page.waitForFunction(() => {
-    const paragraph = [...document.querySelectorAll<HTMLElement>("#enhanced p")].find(
-      (candidate) => candidate.textContent?.includes("above supplies"),
-    );
-    const seg = paragraph
-      ? [...paragraph.querySelectorAll<HTMLElement>("code .justif-seg")].find(
-          (candidate) => candidate.textContent === "{ hyphenate:",
-        )
-      : undefined;
-    if (paragraph === undefined || seg === undefined) return false;
-    const paragraphStyle = getComputedStyle(paragraph);
-    const contentRight =
-      paragraph.getBoundingClientRect().right -
-      parseFloat(paragraphStyle.paddingRight) -
-      parseFloat(paragraphStyle.borderRightWidth);
-    // The width control updates before its asynchronous paragraph patch.
-    // Reject the transient old segment geometry (hundreds of px away).
-    return Math.abs(seg.getBoundingClientRect().right - contentRight) < 20;
-  });
-
-  const geometry = await page.evaluate(() => {
-    const paragraph = [...document.querySelectorAll<HTMLElement>("#enhanced p")].find(
-      (candidate) => candidate.textContent?.includes("above supplies"),
-    )!;
-    const seg = [...paragraph.querySelectorAll<HTMLElement>("code .justif-seg")].find(
-      (candidate) => candidate.textContent === "{ hyphenate:",
-    )!;
-    const paragraphStyle = getComputedStyle(paragraph);
-    const contentRight =
-      paragraph.getBoundingClientRect().right -
-      parseFloat(paragraphStyle.paddingRight) -
-      parseFloat(paragraphStyle.borderRightWidth);
-    return {
-      overhang: seg.getBoundingClientRect().right - contentRight,
-      background: getComputedStyle(seg).backgroundColor,
-    };
-  });
+  // Gate and measure in the SAME poll. The width control patches paragraphs
+  // asynchronously and more than one patch can land: a separate read after
+  // the gate is a race that a later patch wins, measuring this segment
+  // mid-line instead of at the measure (observed on WebKit under load as a
+  // -210px overhang).
+  const geometry = (await page
+    .waitForFunction(() => {
+      const paragraph = [...document.querySelectorAll<HTMLElement>("#enhanced p")].find(
+        (candidate) => candidate.textContent?.includes("above supplies"),
+      );
+      const seg = paragraph
+        ? [...paragraph.querySelectorAll<HTMLElement>("code .justif-seg")].find(
+            (candidate) => candidate.textContent === "{ hyphenate:",
+          )
+        : undefined;
+      if (paragraph === undefined || seg === undefined) return null;
+      const paragraphStyle = getComputedStyle(paragraph);
+      const contentRight =
+        paragraph.getBoundingClientRect().right -
+        parseFloat(paragraphStyle.paddingRight) -
+        parseFloat(paragraphStyle.borderRightWidth);
+      const overhang = seg.getBoundingClientRect().right - contentRight;
+      // Reject the transient pre-patch geometry (hundreds of px away).
+      if (Math.abs(overhang) > 20) return null;
+      return { overhang, background: getComputedStyle(seg).backgroundColor };
+    })
+    .then((handle) => handle.jsonValue()))!;
 
   // The default colon code hangs half its advance. Leave room for the
   // measured wrap correction while requiring a material optical hang.
