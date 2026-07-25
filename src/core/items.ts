@@ -29,8 +29,24 @@ const MIN_HYPHENATION_LENGTH = 5;
  * (U+00A0, U+202F), which stay inside boxes — unbreakable and unstretchable,
  * as the author intended.
  */
-const BREAKABLE_SPACE = /[^\S\u00A0\u202F]/;
 const BREAKABLE_SPLIT = /([^\S\u00A0\u202F]+)/;
+
+/**
+ * A necessary condition for CJK_CHAR.test, decided by one charCodeAt scan.
+ * U+1100 (Hangul Jamo) is the LOWEST code point that class matches — verified
+ * exhaustively over all 1,114,112 code points — and every astral member is
+ * spelled with surrogates, which start at 0xD800. So a token whose every
+ * UTF-16 unit is below 0x1100 cannot contain a CJK character, and the whole
+ * Script-property regex may be skipped: that covers every token of Latin,
+ * Cyrillic, Greek, Hebrew, Arabic and Devanagari prose. The condition is
+ * monotone under concatenation, so the per-code-point bound settles strings.
+ */
+function mayBeCJK(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) >= 0x1100) return true;
+  }
+  return false;
+}
 
 /**
  * Whether `text` can produce at least one Box under this module's tokenizer.
@@ -210,6 +226,9 @@ function excludeFlow(
   };
 }
 
+/** `protrusionHang`'s "fetch the advance yourself, if you turn out to need it". */
+const LAZY_ADVANCE = -1;
+
 /**
  * Protrusion hang for `ch` at a line edge, in px: code/1000 × advance
  * (pdfTeX semantics), from the run's own hand-tuned table when one matched
@@ -222,7 +241,16 @@ function protrusionHang(
   measure: Measure,
   ch: string,
   run: RunMetrics,
-  advance: number,
+  /**
+   * The glyph's advance, or LAZY (any negative value) to fetch it from
+   * `measure.charAdvance` here. Deferring is exact, not an approximation: the
+   * advance only ever scales a nonzero code or bounds the ink clamps below, so
+   * a glyph the table says nothing about hangs zero whatever its advance is —
+   * and the vast majority of glyphs (every ordinary letter) is such a glyph.
+   * A pathological measure returning a negative advance merely gets asked
+   * again for the same number.
+   */
+  advanceOrLazy: number,
   side: "l" | "r",
   firstLine = false,
 ): number {
@@ -232,6 +260,7 @@ function protrusionHang(
     : (run.protrusion ?? opts.protrusion);
   const advCode = protrusionCodes(table, ch)?.[side] ?? 0;
   if (advCode === 0) return 0;
+  const advance = advanceOrLazy < 0 ? measure.charAdvance(ch, run) : advanceOrLazy;
   const advHang = (advCode / 1000) * advance;
   if (run.protrudeInkOnly === true && measure.inkBearings !== undefined) {
     return Math.min(advHang, measure.inkBearings(ch, run)[side]);
@@ -333,15 +362,14 @@ export function buildItems(
       const first = firstCodePoint(flowText);
       const last = lastCodePoint(flowText);
       if (!piecePaintedStart) {
-        const firstAdv = measure.charAdvance(first, run);
-        lp = protrusionHang(opts, measure, first, run, firstAdv, "l");
+        lp = protrusionHang(opts, measure, first, run, LAZY_ADVANCE, "l");
         lpFirst =
           (run.protrusionFirst ?? opts.protrusionFirst) === undefined
             ? lp
-            : protrusionHang(opts, measure, first, run, firstAdv, "l", true);
+            : protrusionHang(opts, measure, first, run, LAZY_ADVANCE, "l", true);
       }
       if (!piecePaintedEnd) {
-        rp = protrusionHang(opts, measure, last, run, measure.charAdvance(last, run), "r");
+        rp = protrusionHang(opts, measure, last, run, LAZY_ADVANCE, "r");
       }
     }
     let expStretch = 0;
@@ -380,65 +408,110 @@ export function buildItems(
     };
   };
 
-  const pushPenalty = (p: Omit<Penalty, "type">): void => {
-    items.push({ type: ItemType.Penalty, ...p });
+  /**
+   * Positional, and deliberately NOT an options bag: every break opportunity
+   * in the document passes through here, and one uniform object literal keeps
+   * the whole penalty stream on a single hidden class. The CJK joints keep
+   * their own literal below rather than gaining a parameter here — their extra
+   * `cjk` field would otherwise reshape every penalty in the stream.
+   */
+  const pushPenalty = (
+    penalty: number,
+    width: number,
+    flagged: boolean,
+    hyphen: boolean,
+    rp: number,
+    runIndex: number,
+  ): void => {
+    items.push({
+      type: ItemType.Penalty,
+      penalty,
+      width,
+      flagged,
+      hyphen,
+      rp,
+      run: runIndex,
+    } satisfies Penalty);
   };
 
-  interface PiecePenalty {
-    penalty: number;
-    width: number;
-    flagged: boolean;
-    hyphen: boolean;
-    rp: number;
-    /** True → use the preceding box's rp (an explicit "-" is box text). */
-    rpFromBox?: boolean;
-  }
-  interface PiecePlan {
-    text: string;
-    after: PiecePenalty | null;
-  }
+  /**
+   * The fragments of the token being emitted, as scratch arrays reused for the
+   * whole paragraph. They are safe to reuse because a token is fully planned
+   * and then fully emitted before the next one is touched: `pieceCount` is the
+   * only live extent, so stale entries past it are unreachable. `pieceAfter`
+   * says what follows fragment q — 0 nothing, 1 a hyphenation penalty, 2 an
+   * explicit-hyphen penalty — and `pieceFromHyphenator` is meaningful only
+   * where `pieceAfter` is 1.
+   */
+  const pieceText: string[] = [];
+  const pieceAfter: number[] = [];
+  const pieceFromHyphenator: boolean[] = [];
+  let pieceCount = 0;
 
-  /** Split one chunk (no explicit hyphens) at soft hyphens or hyphenator points. */
-  const chunkPieces = (
-    chunk: string,
-    noHyphens: boolean,
-  ): { pieces: string[]; fromHyphenator: boolean } => {
+  /**
+   * Split one chunk (no explicit hyphens) at soft hyphens or hyphenator
+   * points, APPENDING the fragments to the scratch arrays. Returns whether
+   * they came from the hyphenator, which decides the penalty's `hyphen` flag
+   * (and so whether pass 1 may break there).
+   */
+  const chunkPieces = (chunk: string, noHyphens: boolean): boolean => {
     if (noHyphens) {
       // CSS hyphens:none — strip soft hyphens instead of honoring them.
-      const text = chunk.split(SOFT_HYPHEN).join("");
-      return { pieces: text.length > 0 ? [text] : [], fromHyphenator: false };
+      const text = chunk.includes(SOFT_HYPHEN)
+        ? chunk.split(SOFT_HYPHEN).join("")
+        : chunk;
+      if (text.length > 0) pieceText[pieceCount++] = text;
+      return false;
     }
     if (chunk.includes(SOFT_HYPHEN)) {
-      return {
-        pieces: chunk.split(SOFT_HYPHEN).filter((s) => s.length > 0),
-        fromHyphenator: false,
-      };
+      for (const part of chunk.split(SOFT_HYPHEN)) {
+        if (part.length > 0) pieceText[pieceCount++] = part;
+      }
+      return false;
     }
-    if (opts.hyphenate) {
+    // The letter core WORD_CORE finds is a substring of the chunk, so a chunk
+    // shorter than the minimum cannot contain a long enough core — a length
+    // test settles it before the \p{L}-class regex, which would otherwise be
+    // matched against every short token in the document (roughly 40% of
+    // English tokens are under five characters).
+    if (opts.hyphenate && chunk.length >= MIN_HYPHENATION_LENGTH) {
       const m = WORD_CORE.exec(chunk);
       if (m && m[2]!.length >= MIN_HYPHENATION_LENGTH) {
         const prefix = m[1]!;
         const core = m[2]!;
         const suffix = m[3]!;
-        const parts = opts.hyphenate(core.toLowerCase()).filter((p) => p.length > 0);
+        const parts = opts.hyphenate(core.toLowerCase());
         // The offsets come from the lowercased core; reject output whose
         // total length differs (length-changing case mappings, e.g. İ→i̇,
-        // would misalign every subsequent break point).
-        if (parts.length > 1 && parts.join("").length === core.length) {
+        // would misalign every subsequent break point). Empty parts are
+        // skipped in place rather than filtered into a new array: they move
+        // neither the offsets nor the length total.
+        let nonEmpty = 0;
+        let joined = 0;
+        for (const part of parts) {
+          if (part.length > 0) nonEmpty++;
+          joined += part.length;
+        }
+        if (nonEmpty > 1 && joined === core.length) {
           // Slice the original (cased) core at the hyphenator's offsets.
-          const pieces: string[] = [];
+          const first = pieceCount;
           let off = 0;
           for (const part of parts) {
-            pieces.push(core.slice(off, off + part.length));
+            if (part.length > 0) {
+              pieceText[pieceCount++] = core.slice(off, off + part.length);
+            }
             off += part.length;
           }
-          pieces[0] = prefix + pieces[0]!;
-          pieces[pieces.length - 1] = pieces[pieces.length - 1]! + suffix;
-          return { pieces, fromHyphenator: true };
+          if (prefix.length > 0) pieceText[first] = prefix + pieceText[first]!;
+          if (suffix.length > 0) {
+            pieceText[pieceCount - 1] = pieceText[pieceCount - 1]! + suffix;
+          }
+          return true;
         }
       }
     }
-    return { pieces: [chunk], fromHyphenator: false };
+    pieceText[pieceCount++] = chunk;
+    return false;
   };
 
   /**
@@ -453,7 +526,7 @@ export function buildItems(
     if (pendingSpaceRun >= 0 && hasBox) {
       const space = runs[pendingSpaceRun]!.space;
       if (pendingLeadingSpace || (pieceKey !== undefined && pieceKey === lastBoxKey)) {
-        pushPenalty({ penalty: INF_PENALTY, width: 0, flagged: false, hyphen: false, rp: 0, run: pendingSpaceRun });
+        pushPenalty(INF_PENALTY, 0, false, false, 0, pendingSpaceRun);
       }
       const boundary =
         lastBoxRun >= 0 && runs[lastBoxRun]!.familyKey !== runs[nextRun]!.familyKey;
@@ -484,45 +557,46 @@ export function buildItems(
     const run = runs[runIndex]!;
 
     // Plan all fragments: explicit hyphens ("self-made" → "self-" | "made"),
-    // then soft-hyphen/hyphenator splits within each chunk. Inside a nowrap
-    // element nothing may break, so the token stays one box (soft hyphens
-    // stripped like the noHyphens path).
-    const chunks = pieceKey !== undefined ? [token] : splitAfterHyphens(token);
-    const plans: PiecePlan[] = [];
-    for (let c = 0; c < chunks.length; c++) {
-      const { pieces, fromHyphenator } = chunkPieces(
-        chunks[c]!,
-        run.noHyphens === true || pieceKey !== undefined,
-      );
-      for (let i = 0; i < pieces.length; i++) {
-        let after: PiecePenalty | null = null;
-        if (i < pieces.length - 1) {
-          after = {
-            penalty: opts.hyphenPenalty,
-            width: run.hyphenWidth,
-            flagged: true,
-            hyphen: fromHyphenator,
-            rp: hyphenRp(run),
-          };
-        } else if (c < chunks.length - 1) {
-          after = {
-            penalty: opts.exHyphenPenalty,
-            width: 0,
-            flagged: true,
-            hyphen: false,
-            rp: 0,
-            rpFromBox: true,
-          };
+    // then soft-hyphen/hyphenator splits within each chunk.
+    pieceCount = 0;
+    if (pieceKey !== undefined) {
+      // Inside a nowrap element nothing may break, so the token stays one box
+      // (soft hyphens stripped like the noHyphens path) with no penalty after.
+      chunkPieces(token, true);
+      if (pieceCount > 0) pieceAfter[pieceCount - 1] = 0;
+    } else {
+      const noHyphens = run.noHyphens === true;
+      const chunks = splitAfterHyphens(token);
+      for (let c = 0; c < chunks.length; c++) {
+        const first = pieceCount;
+        const fromHyphenator = chunkPieces(chunks[c]!, noHyphens);
+        for (let q = first; q < pieceCount - 1; q++) {
+          pieceAfter[q] = 1;
+          pieceFromHyphenator[q] = fromHyphenator;
         }
-        plans.push({ text: pieces[i]!, after });
+        // A chunk that yielded NO fragments (a lone soft hyphen) has no last
+        // fragment to hang the explicit-hyphen penalty on, and must not steal
+        // the previous chunk's.
+        if (pieceCount > first) {
+          pieceAfter[pieceCount - 1] = c < chunks.length - 1 ? 2 : 0;
+        }
       }
     }
     // A token with no measurable pieces (e.g. a lone soft hyphen) emits
     // nothing — and must not consume the pending space, or the next word
     // would get a doubled glue.
-    if (plans.length === 0) return;
+    if (pieceCount === 0) return;
 
     flushPendingSpace(runIndex);
+
+    // The shape almost every prose token has — one unbreakable fragment with
+    // nothing withdrawn from flow — is the whole token measured once. The
+    // prefix bookkeeping below degenerates to exactly this for it.
+    if (pieceCount === 1 && pieceAfter[0] === 0 && exclusion === null) {
+      const only = pieceText[0]!;
+      emitBox(makeBox(only, runIndex, measure.width(only, run)), runIndex);
+      return;
+    }
 
     // Fragment widths are measured incrementally over token prefixes so they
     // sum exactly to the kerned whole-token width: adding break opportunities
@@ -531,38 +605,38 @@ export function buildItems(
     let acc = "";
     let accWidth = 0;
     let tokenOffset = 0;
-    for (const plan of plans) {
-      acc += plan.text;
+    for (let q = 0; q < pieceCount; q++) {
+      const text = pieceText[q]!;
+      acc += text;
       const start = tokenOffset;
       const { flowText, flowExclusion: boxExclusion } = excludeFlow(
-        plan.text,
+        text,
         start,
         exclusion,
       );
-      tokenOffset = start + plan.text.length;
+      tokenOffset = start + text.length;
       const flowPrefix =
         exclusion === null
           ? acc
           : acc.slice(0, Math.max(0, exclusion.start)) + acc.slice(Math.min(acc.length, exclusion.end));
       const prefixWidth = measure.width(flowPrefix, run);
-      const box = makeBox(
-        plan.text,
-        runIndex,
-        prefixWidth - accWidth,
-        flowText,
-        boxExclusion,
-      );
+      const box = makeBox(text, runIndex, prefixWidth - accWidth, flowText, boxExclusion);
       accWidth = prefixWidth;
       emitBox(box, runIndex);
-      if (plan.after !== null) {
-        pushPenalty({
-          penalty: plan.after.penalty,
-          width: plan.after.width,
-          flagged: plan.after.flagged,
-          hyphen: plan.after.hyphen,
-          rp: plan.after.rpFromBox === true ? box.rp : plan.after.rp,
-          run: runIndex,
-        });
+      const after = pieceAfter[q]!;
+      if (after === 1) {
+        pushPenalty(
+          opts.hyphenPenalty,
+          run.hyphenWidth,
+          true,
+          pieceFromHyphenator[q]!,
+          hyphenRp(run),
+          runIndex,
+        );
+      } else if (after === 2) {
+        // An explicit "-" is box text, so the break inherits the box's own
+        // right protrusion rather than a materialized hyphen's.
+        pushPenalty(opts.exHyphenPenalty, 0, true, false, box.rp, runIndex);
       }
     }
   };
@@ -645,7 +719,8 @@ export function buildItems(
           ? prev.group.text
           : (graphemes(prev.group.text).pop() ?? "");
         const after = group.cjk ? group.text : (graphemes(group.text)[0] ?? "");
-        pushPenalty({
+        items.push({
+          type: ItemType.Penalty,
           // Inside a nowrap element every inter-cluster boundary is
           // break-prohibited; the glue still flexes for justification.
           penalty:
@@ -660,7 +735,7 @@ export function buildItems(
           rp: 0, // breakRp walks back to the box, whose own rp applies
           run: runIndex,
           cjk: true,
-        });
+        } satisfies Penalty);
         // Glue basis ≈ the em: the neighboring CJK cluster's advance (mean
         // of the two when both are CJK — punctuation and halfwidth kana
         // then flex less, as they should). Never the non-CJK side: a whole
@@ -701,19 +776,28 @@ export function buildItems(
       pendingPaintedStart = true;
       pendingBoxStartProtrusion += piece.boxStartProtrusionPx;
     }
+    // BREAKABLE_SPLIT's sole capture group IS its whole pattern, so `split`
+    // emits strictly alternating non-separator / separator entries — text,
+    // whitespace run, text, … — beginning and ending with a (possibly empty)
+    // non-separator. ODD indices are therefore exactly the whitespace runs,
+    // which is a total classification, not a heuristic: an even entry cannot
+    // contain breakable whitespace, because `+` makes each separator maximal.
     const parts = text.split(BREAKABLE_SPLIT);
     let pieceOffset = 0;
-    for (const part of parts) {
+    for (let pi = 0; pi < parts.length; pi++) {
+      const part = parts[pi]!;
       if (part.length === 0) continue;
       const partStart = pieceOffset;
       pieceOffset = partStart + part.length;
-      const overlap = clipExclusion(piece.flowExclusion, partStart, part.length);
-      if (BREAKABLE_SPACE.test(part[0]!)) {
+      if ((pi & 1) === 1) {
         if (hasBox) {
           pendingSpaceRun = run;
           pendingLeadingSpace = !hasFlowBox;
         }
-      } else if (CJK_CHAR.test(part)) {
+        continue;
+      }
+      const overlap = clipExclusion(piece.flowExclusion, partStart, part.length);
+      if (mayBeCJK(part) && CJK_CHAR.test(part)) {
         pushCJKToken(part, run, overlap);
       } else {
         pushWord(part, run, overlap);
@@ -757,9 +841,9 @@ export function buildItems(
   piecePaintedEnd = false;
 
   // \penalty10000 \parfillskip \penalty-10000
-  pushPenalty({ penalty: INF_PENALTY, width: 0, flagged: false, hyphen: false, rp: 0, run: 0 });
+  pushPenalty(INF_PENALTY, 0, false, false, 0, 0);
   items.push({ type: ItemType.Glue, width: 0, stretch: 0, stretchFil: 1, shrink: 0, run: 0 });
-  pushPenalty({ penalty: -INF_PENALTY, width: 0, flagged: false, hyphen: false, rp: 0, run: 0 });
+  pushPenalty(-INF_PENALTY, 0, false, false, 0, 0);
 
   return withSums(items, runs);
 }
