@@ -553,6 +553,208 @@ function fragmentForLine(
 }
 
 /**
+ * Whether third-party code (a browser extension, an annotation tool) has
+ * restructured any of this line's segments. The measurements below index
+ * into their text nodes with write-time offsets, so a foreign-mutated line
+ * cannot be measured against the model — its provisional wrap-safety margin
+ * stays standing instead.
+ */
+function foreignMutated(entries: readonly LineEntry[]): boolean {
+  return entries.some(({ el, seg }) => {
+    if (seg === null) return false;
+    const singleText =
+      el.childNodes.length === 1 &&
+      el.firstChild?.nodeType === 3 &&
+      (el.firstChild as Text).data === seg.text;
+    if (!(seg.physicalEndHangPx !== undefined && seg.physicalEndHangPx > 0)) {
+      return !singleText;
+    }
+    // A physical-end-hang segment legitimately holds text around its own
+    // hanging-cluster span (or a lone text node when every cluster is
+    // whitespace); anything else is foreign.
+    const mid = el.childNodes[1] as Element | undefined;
+    const hangShape =
+      el.childNodes.length === 3 &&
+      el.firstChild?.nodeType === 3 &&
+      mid?.nodeType === 1 &&
+      mid.className === "justif-hanging-end" &&
+      el.lastChild?.nodeType === 3 &&
+      el.textContent === seg.text;
+    return !(singleText || hangShape);
+  });
+}
+
+interface LineExtent {
+  /** Measured glyph-run width (edge spaces excluded — see modelPx). */
+  rectPx: number;
+  /** Exactly modeled contributions: edge spaces, decorations, margins. */
+  modelPx: number;
+  /** The line's own end margins, which layout excludes but paint does not. */
+  ownMargins: number;
+  /** First entry's rect, identifying the line's fragment and line box. */
+  lineRect: DOMRect | null;
+}
+
+/** Reads one line's true painted extent. Rect reads only for the glyph runs;
+ * every space at a segment edge is taken from the model instead, because a
+ * Range over a leading space measures narrower at a line start than mid-line
+ * (which made the naive correction circular). */
+function measureLineExtent(entries: readonly LineEntry[], range: Range): LineExtent {
+  let rectPx = 0;
+  let modelPx = 0;
+  let ownMargins = 0;
+  let lineRect: DOMRect | null = null;
+  for (const { el, seg, marginEndEl } of entries) {
+    let elRect: DOMRect | undefined;
+    if (lineRect === null) {
+      elRect = el.getBoundingClientRect();
+      lineRect = elRect;
+    }
+    if (seg === null || (seg.edgeTrim.lead === 0 && seg.edgeTrim.trail === 0)) {
+      rectPx += (elRect ?? el.getBoundingClientRect()).width;
+    } else {
+      const node = el.firstChild as Text;
+      range.setStart(node, seg.edgeTrim.lead);
+      range.setEnd(node, seg.text.length - seg.edgeTrim.trail);
+      rectPx += range.getBoundingClientRect().width;
+      modelPx += seg.edgeTrim.modelPx;
+    }
+    if (seg !== null && seg.decorPx !== undefined) modelPx += seg.decorPx;
+    // Start margins are never relocated; the exact modeled value is already
+    // on the segment (unlike end margins, whose carrier can be transferred
+    // to a hyphen or hoisted out of a closing clone).
+    modelPx += seg?.marginStartPx ?? 0;
+    const me = parseFloat(marginEndEl.style.marginInlineEnd) || 0;
+    modelPx += me;
+    ownMargins += me;
+  }
+  return { rectPx, modelPx, ownMargins, lineRect };
+}
+
+/** Coordinate of a fragment's content-box end edge (its line-end side). */
+function contentEndOf(
+  fragment: DOMRect,
+  paragraphStyle: CSSStyleDeclaration | undefined,
+  rtl: boolean,
+): number {
+  return rtl
+    ? fragment.left +
+        (parseFloat(paragraphStyle?.borderLeftWidth ?? "") || 0) +
+        (parseFloat(paragraphStyle?.paddingLeft ?? "") || 0)
+    : fragment.right -
+        (parseFloat(paragraphStyle?.borderRightWidth ?? "") || 0) -
+        (parseFloat(paragraphStyle?.paddingRight ?? "") || 0);
+}
+
+/**
+ * Where this line's ink actually ends, and the rect that coordinate came
+ * from. The carrier of the painted edge is whichever of these closes the
+ * line: a decorated inline's border box, the clone holding a relocated end
+ * margin, a pseudo-hyphen span, or the final glyph run itself (measured
+ * without its collapsible trailing spaces, which paint nothing).
+ */
+function paintedEndOf(
+  entries: readonly LineEntry[],
+  endText: (LineEntry & { seg: RenderSegment }) | undefined,
+  range: Range,
+  rtl: boolean,
+): { value: number; rect: DOMRect } {
+  const paintEndEntry = entries[entries.length - 1]!;
+  let paintRect: DOMRect;
+  if (paintEndEntry.paintEndEl !== undefined) {
+    paintRect = paintEndEntry.paintEndEl.getBoundingClientRect();
+  } else if (
+    paintEndEntry.seg !== null &&
+    paintEndEntry.seg.marginEndOwner !== undefined &&
+    paintEndEntry.marginEndEl !== paintEndEntry.el
+  ) {
+    paintRect = paintEndEntry.marginEndEl.getBoundingClientRect();
+  } else if (paintEndEntry.seg === null) {
+    paintRect = paintEndEntry.el.getBoundingClientRect();
+  } else {
+    const node = endText?.el.firstChild;
+    const end = endText === undefined ? 0 : endWithoutCollapsibleSpaces(endText.seg.text);
+    if (node?.nodeType === 3 && end > 0) {
+      range.setStart(node, 0);
+      range.setEnd(node, end);
+      paintRect = range.getBoundingClientRect();
+    } else paintRect = paintEndEntry.el.getBoundingClientRect();
+  }
+  let value = rtl ? -paintRect.left : paintRect.right;
+  // A provisional margin on the final text span sits INSIDE a padded
+  // ancestor and pinches that ancestor's border box. The write phase hoists
+  // it to the ancestor's outside, restoring the missing inset. Measure the
+  // edge we will have after that hoist, or the safety pad gets converted
+  // into a visible 1.5px overhang.
+  if (
+    paintEndEntry.paintEndEl !== undefined &&
+    paintEndEntry.marginEndEl !== paintEndEntry.paintEndEl &&
+    paintEndEntry.paintEndEl.contains(paintEndEntry.marginEndEl)
+  ) {
+    value -= parseFloat(paintEndEntry.marginEndEl.style.marginInlineEnd) || 0;
+  }
+  return { value, rect: paintRect };
+}
+
+/**
+ * Spreads `adjustmentPx` (measured painted edge minus modeled edge) over the
+ * line's word spaces, or over its characters when the line has no adjustable
+ * space left. Returns an empty list when nothing may legitimately absorb it
+ * — a line of fixed boxes only, or an adjustment below the write precision.
+ */
+function distributeAdjustment(
+  textEntries: readonly (LineEntry & { seg: RenderSegment })[],
+  adjustmentPx: number,
+): SpacingCorrection[] {
+  if (Math.abs(adjustmentPx) <= 0.001) return [];
+  // A retreated segment's collapsible prefix is discarded at the physical
+  // line start, so it cannot absorb distributed spacing. Other edge-trimmed
+  // spaces can sit at mid-line run boundaries and do paint; keep those in
+  // the divisor. (All edge trims are modeled separately only because their
+  // Range widths are position-sensitive.)
+  const spaceCounts = textEntries.map((entry, entryIndex) =>
+    Math.max(
+      0,
+      entry.seg.adjustableSpaceCount - (entryIndex === 0 ? entry.seg.edgeTrim.lead : 0),
+    ),
+  );
+  const spacing: SpacingCorrection[] = [];
+  const spaces = spaceCounts.reduce((sum, count) => sum + count, 0);
+  if (spaces > 0) {
+    const delta = adjustmentPx / spaces;
+    for (let entryIndex = 0; entryIndex < textEntries.length; entryIndex++) {
+      if (spaceCounts[entryIndex] === 0) continue;
+      const entry = textEntries[entryIndex]!;
+      spacing.push({
+        el: entry.el,
+        property: "word-spacing",
+        px: (parseFloat(entry.el.style.wordSpacing) || 0) - delta,
+      });
+    }
+    return spacing;
+  }
+  const charCounts = textEntries.map((entry, entryIndex) =>
+    entry.seg.allowLetterCorrection
+      ? Array.from(entry.seg.text.slice(entryIndex === 0 ? entry.seg.edgeTrim.lead : 0)).length
+      : 0,
+  );
+  const chars = charCounts.reduce((sum, count) => sum + count, 0);
+  if (chars === 0) return spacing;
+  const delta = adjustmentPx / chars;
+  for (let entryIndex = 0; entryIndex < textEntries.length; entryIndex++) {
+    if (charCounts[entryIndex] === 0) continue;
+    const entry = textEntries[entryIndex]!;
+    const computed = entry.el.ownerDocument.defaultView?.getComputedStyle(entry.el);
+    spacing.push({
+      el: entry.el,
+      property: "letter-spacing",
+      px: (parseFloat(computed?.letterSpacing ?? "") || 0) - delta,
+    });
+  }
+  return spacing;
+}
+
+/**
  * Read phase of the measured wrap guarantee: models can drift
  * (variable-font expansion responds per glyph, not per calibration
  * string), and a line whose layout width exceeds the measure makes the
@@ -590,34 +792,7 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
     for (let li = 0; li < lineElements.length; li++) {
       const entries = lineElements[li]!;
       if (entries.length === 0) continue;
-      // Third-party code (e.g. browser extensions) may have split a
-      // segment's text node or wrapped pieces of it. The measurements below
-      // index into those nodes with write-time offsets, so a foreign-mutated
-      // line cannot be measured against the model — leave its provisional
-      // wrap-safety margin standing instead.
-      const mutated = entries.some(({ el, seg }) => {
-        if (seg === null) return false;
-        const singleText =
-          el.childNodes.length === 1 &&
-          el.firstChild?.nodeType === 3 &&
-          (el.firstChild as Text).data === seg.text;
-        if (!(seg.physicalEndHangPx !== undefined && seg.physicalEndHangPx > 0)) {
-          return !singleText;
-        }
-        // A physical-end-hang segment legitimately holds text around its
-        // own hanging-cluster span (or a lone text node when every cluster
-        // is whitespace); anything else is foreign.
-        const mid = el.childNodes[1] as Element | undefined;
-        const hangShape =
-          el.childNodes.length === 3 &&
-          el.firstChild?.nodeType === 3 &&
-          mid?.nodeType === 1 &&
-          mid.className === "justif-hanging-end" &&
-          el.lastChild?.nodeType === 3 &&
-          el.textContent === seg.text;
-        return !(singleText || hangShape);
-      });
-      if (mutated) {
+      if (foreignMutated(entries)) {
         // Ink must still come from a real rect read (valid regardless of
         // child mutation): asserting it would drop a layout-skipped
         // paragraph out of the hidden re-park pipeline and lose its
@@ -628,36 +803,7 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
         continue;
       }
       const availableWidth = lineWidths[li] ?? lineWidths[lineWidths.length - 1] ?? 0;
-      let rectPx = 0;
-      let modelPx = 0;
-      let ownMargins = 0;
-      let lineRect: DOMRect | null = null;
-      for (const { el, seg, marginEndEl } of entries) {
-        let elRect: DOMRect | undefined;
-        if (lineRect === null) {
-          elRect = el.getBoundingClientRect();
-          lineRect = elRect;
-        }
-        if (seg === null || (seg.edgeTrim.lead === 0 && seg.edgeTrim.trail === 0)) {
-          rectPx += (elRect ?? el.getBoundingClientRect()).width;
-        } else {
-          // Position-independent width: trimmed glyph run (measured) plus
-          // exact model widths for the edge spaces.
-          const node = el.firstChild as Text;
-          range.setStart(node, seg.edgeTrim.lead);
-          range.setEnd(node, seg.text.length - seg.edgeTrim.trail);
-          rectPx += range.getBoundingClientRect().width;
-          modelPx += seg.edgeTrim.modelPx;
-        }
-        if (seg !== null && seg.decorPx !== undefined) modelPx += seg.decorPx;
-        // Start margins are never relocated; the exact modeled value is
-        // already on the segment (unlike end margins, whose carrier can be
-        // transferred to a hyphen or hoisted out of a closing clone).
-        modelPx += seg?.marginStartPx ?? 0;
-        const me = parseFloat(marginEndEl.style.marginInlineEnd) || 0;
-        modelPx += me;
-        ownMargins += me;
-      }
+      const { rectPx, modelPx, ownMargins, lineRect } = measureLineExtent(entries, range);
       // Skipped content (content-visibility: auto off-screen) measures
       // zero rects; model widths and margins still parse, so the "is this
       // paragraph actually rendered" test uses rect reads only.
@@ -698,48 +844,10 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
               deliberateOverflow);
         } else {
           const fragment = fragmentForLine(fragments.rects, lineRect!, rtl === true);
-          const contentEnd = rtl
-            ? fragment.left +
-              (parseFloat(paragraphStyle?.borderLeftWidth ?? "") || 0) +
-              (parseFloat(paragraphStyle?.paddingLeft ?? "") || 0)
-            : fragment.right -
-              (parseFloat(paragraphStyle?.borderRightWidth ?? "") || 0) -
-              (parseFloat(paragraphStyle?.paddingRight ?? "") || 0);
+          const contentEnd = contentEndOf(fragment, paragraphStyle, rtl === true);
           const paintEndEntry = entries[entries.length - 1]!;
-          let paintRect: DOMRect;
-          if (paintEndEntry.paintEndEl !== undefined) {
-            paintRect = paintEndEntry.paintEndEl.getBoundingClientRect();
-          } else if (
-            paintEndEntry.seg !== null &&
-            paintEndEntry.seg.marginEndOwner !== undefined &&
-            paintEndEntry.marginEndEl !== paintEndEntry.el
-          ) {
-            paintRect = paintEndEntry.marginEndEl.getBoundingClientRect();
-          } else if (paintEndEntry.seg === null) {
-            paintRect = paintEndEntry.el.getBoundingClientRect();
-          } else {
-            const node = endText?.el.firstChild;
-            const end =
-              endText === undefined ? 0 : endWithoutCollapsibleSpaces(endText.seg.text);
-            if (node?.nodeType === 3 && end > 0) {
-              range.setStart(node, 0);
-              range.setEnd(node, end);
-              paintRect = range.getBoundingClientRect();
-            } else paintRect = paintEndEntry.el.getBoundingClientRect();
-          }
-          let paintedEnd = rtl ? -paintRect.left : paintRect.right;
-          // A provisional margin on the final text span sits INSIDE a
-          // padded ancestor and pinches that ancestor's border box. The
-          // write phase hoists it to the ancestor's outside, restoring the
-          // missing inset. Measure the edge we will have after that hoist,
-          // or the safety pad gets converted into a visible 1.5px overhang.
-          if (
-            paintEndEntry.paintEndEl !== undefined &&
-            paintEndEntry.marginEndEl !== paintEndEntry.paintEndEl &&
-            paintEndEntry.paintEndEl.contains(paintEndEntry.marginEndEl)
-          ) {
-            paintedEnd -= parseFloat(paintEndEntry.marginEndEl.style.marginInlineEnd) || 0;
-          }
+          const painted = paintedEndOf(entries, endText, range, rtl === true);
+          const paintRect = painted.rect;
           // The hyphen carrier is the one line-end box the engine can move
           // off this line on its own (an emergency break at its segment
           // boundary — see the neutralizations in `justify`; a `!important`
@@ -761,56 +869,9 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
             }
           }
           const desiredEnd = (rtl ? -contentEnd : contentEnd) + rightHang + deliberateOverflow;
-          adjustmentPx = paintedEnd - desiredEnd;
+          adjustmentPx = painted.value - desiredEnd;
         }
-        // A retreated segment's collapsible prefix is discarded at the
-        // physical line start, so it cannot absorb distributed spacing.
-        // Other edge-trimmed spaces can sit at mid-line run boundaries and
-        // do paint; keep those in the divisor. (All edge trims are modeled
-        // separately only because their Range widths are position-sensitive.)
-        const correctionTexts = textEntries.map((entry, entryIndex) =>
-          entry.seg.text.slice(entryIndex === 0 ? entry.seg.edgeTrim.lead : 0),
-        );
-        const spaceCounts = textEntries.map(
-          (entry, entryIndex) =>
-            Math.max(
-              0,
-              entry.seg.adjustableSpaceCount -
-                (entryIndex === 0 ? entry.seg.edgeTrim.lead : 0),
-            ),
-        );
-        const spaces = spaceCounts.reduce((sum, count) => sum + count, 0);
-        const spacing: SpacingCorrection[] = [];
-        if (Math.abs(adjustmentPx) > 0.001 && spaces > 0) {
-          const delta = adjustmentPx / spaces;
-          for (let entryIndex = 0; entryIndex < textEntries.length; entryIndex++) {
-            if (spaceCounts[entryIndex] === 0) continue;
-            const entry = textEntries[entryIndex]!;
-            spacing.push({
-              el: entry.el,
-              property: "word-spacing",
-              px: (parseFloat(entry.el.style.wordSpacing) || 0) - delta,
-            });
-          }
-        } else if (Math.abs(adjustmentPx) > 0.001) {
-          const charCounts = correctionTexts.map((text, entryIndex) =>
-            textEntries[entryIndex]!.seg.allowLetterCorrection ? Array.from(text).length : 0,
-          );
-          const chars = charCounts.reduce((sum, count) => sum + count, 0);
-          if (chars > 0) {
-            const delta = adjustmentPx / chars;
-            for (let entryIndex = 0; entryIndex < textEntries.length; entryIndex++) {
-              if (charCounts[entryIndex] === 0) continue;
-              const entry = textEntries[entryIndex]!;
-              const computed = entry.el.ownerDocument.defaultView?.getComputedStyle(entry.el);
-              spacing.push({
-                el: entry.el,
-                property: "letter-spacing",
-                px: (parseFloat(computed?.letterSpacing ?? "") || 0) - delta,
-              });
-            }
-          }
-        }
+        const spacing = distributeAdjustment(textEntries, adjustmentPx);
         // With no legitimate spacing recipient, keep the provisional wrap
         // margin instead of changing an author no-break-space box. This is
         // the only faithful fallback for a line made solely of fixed boxes.
