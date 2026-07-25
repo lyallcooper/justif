@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.2 (2026-07-25)
+
 - Highlights made with third-party annotation tools (like Instapaper's
   browser extension) no longer silently fail to appear when the selected
   text crosses a hyphenated line break (#9).
