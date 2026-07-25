@@ -257,6 +257,45 @@ export function supportsSpec(spec: FontSpec): boolean {
 
 const widthCache = new Map<string, Map<string, number>>();
 const domWidthCache = new Map<string, Map<string, number>>();
+/**
+ * Ceiling on cached measurements, across every font. Word widths repay their
+ * entry many times over, but hyphenation measures each fragment over token
+ * PREFIXES ("beau", "beauti", …) and those strings are typically used once —
+ * a 15k-word document caches ~26k entries, and nothing evicts them while the
+ * fonts stay settled. Trimming keeps a long-lived single-page app from
+ * growing without bound; these are pure caches, so a dropped entry only costs
+ * one re-measurement and can never change a width.
+ */
+const MAX_CACHED_WIDTHS = 150_000;
+let cachedWidths = 0;
+
+/** Drop the oldest half of every per-font map (Map preserves insertion
+ * order, so this is an approximate FIFO — cheap, and it keeps the entries
+ * most likely to recur). */
+function trimWidthCaches(): void {
+  for (const cache of [widthCache, domWidthCache]) {
+    for (const [key, perFont] of cache) {
+      // A map of one entry halves to zero: without this the counter stays
+      // pinned over the cap and every later measurement re-walks every font.
+      const drop = perFont.size >> 1;
+      if (drop === 0) {
+        if (perFont.size === 0) cache.delete(key);
+        continue;
+      }
+      let dropped = 0;
+      for (const text of perFont.keys()) {
+        if (dropped >= drop) break;
+        perFont.delete(text);
+        dropped++;
+      }
+      cachedWidths -= dropped;
+    }
+  }
+}
+
+function noteCachedWidth(): void {
+  if (++cachedWidths > MAX_CACHED_WIDTHS) trimWidthCaches();
+}
 const pendingDomWidths = new Map<string, { spec: FontSpec; texts: Set<string> }>();
 let collectingDomWidths = false;
 let segmenter: Intl.Segmenter | null | undefined;
@@ -297,6 +336,7 @@ function measureCanvasWidth(text: string, spec: FontSpec): number {
     }
   }
   perFont.set(text, width);
+  noteCachedWidth();
   return width;
 }
 
@@ -337,6 +377,7 @@ function flushDomWidths(): void {
       if (perFont.has(text)) continue;
       if (text.length === 0) {
         perFont.set(text, 0);
+        noteCachedWidth();
         continue;
       }
       const span = document.createElement("span");
@@ -356,6 +397,7 @@ function flushDomWidths(): void {
     // lay them out as one batch rather than forcing a layout per word.
     for (const { span, text, spec } of probes) {
       domWidthCache.get(spec.key)!.set(text, span.getBoundingClientRect().width);
+      noteCachedWidth();
     }
   } finally {
     host.remove();
@@ -433,6 +475,7 @@ export function isMonospace(spec: FontSpec): boolean {
 export function clearMeasureCache(): void {
   widthCache.clear();
   domWidthCache.clear();
+  cachedWidths = 0;
   pendingDomWidths.clear();
   bearingCache.clear();
   currentKey = "";

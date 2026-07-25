@@ -7,6 +7,8 @@
   surrounding prose.
 - Enhancement is about 5% faster, and more for paragraphs set in a font with a
   hand-tuned protrusion configuration.
+- Pages that justify document after document no longer grow their memory
+  without bound as more text is measured.
 
 ## 0.6.3 (2026-07-25)
 
