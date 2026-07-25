@@ -43,12 +43,15 @@ import {
 } from "./dom/measure.js";
 import { createWidthObserver, type WidthObserver } from "./dom/observe.js";
 import {
+  beginScanBatch,
   contentWidthOf,
+  endScanBatch,
   floatIntrusionOf,
   floatInlineSizeOf,
   type HardBreak,
   type ParagraphScan,
   readParagraph,
+  type ScanBatch,
 } from "./dom/read.js";
 import { buildRenderSegments, buildRunMetrics, measureFor, runTexts } from "./dom/segments.js";
 import {
@@ -701,7 +704,7 @@ export function justify(
   /** Phase 1: normalized computed-style and DOM reads; no font measurement. */
   const scanned = new Map<HTMLElement, ParagraphScan>();
   const pendingSkips: Array<{ p: HTMLElement; reason: string }> = [];
-  const scanParagraph = (p: HTMLElement): boolean => {
+  const scanParagraph = (p: HTMLElement, batch: ScanBatch): boolean => {
     if (states.get(p)?.enhanced) return true; // idempotent (possibly foreign)
     if (bailed.has(p)) return false;
     if (scanned.has(p)) return true;
@@ -711,7 +714,7 @@ export function justify(
     // controller or poison its siblings.
     let scan: ParagraphScan | string;
     try {
-      scan = readParagraph(p);
+      scan = readParagraph(p, batch);
       if (typeof scan !== "string") {
         const bad = scan.specs.find((sp) => !supportsSpec(sp));
         if (bad !== undefined) {
@@ -1631,9 +1634,13 @@ export function justify(
   // fallback family. Probe advances are the only ground truth used here.)
   const restoreScanStyles = suppressAutosizingForScan(paragraphs);
   let scannable: HTMLElement[];
+  const scanBatch = beginScanBatch(paragraphs.length);
   try {
-    scannable = paragraphs.filter(scanParagraph);
+    scannable = paragraphs.filter((p) => scanParagraph(p, scanBatch));
   } finally {
+    // Ends here, not at controller teardown: the batch's conclusions about
+    // author CSS are only sound while no page script has run.
+    endScanBatch(scanBatch);
     restoreScanStyles();
   }
   for (const { p, reason } of pendingSkips) emitSkip(p, reason);

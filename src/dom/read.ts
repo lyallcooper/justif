@@ -774,12 +774,199 @@ function floatedFirstLetter(
   return { inlineSize, lines: affected, style: firstLetterStyle(style) };
 }
 
+/**
+ * Per-`justify()` scan state, threaded through readParagraph.
+ *
+ * It caches "can a `::first-letter` rule reach this root at all?", and the
+ * scoping is deliberate: a page is free to append a stylesheet between two
+ * justify() calls (lazy component CSS, a print/theme swap), and a cache that
+ * outlived the call — keyed on the document, say — would answer every later
+ * scan from a walk taken before that rule existed and silently flatten the
+ * drop cap. One batch is the longest window in which the answer cannot have
+ * changed under us, because nothing yields to page script inside it.
+ */
+/**
+ * Rules one paragraph's saved inspection can afford to have examined. The
+ * per-paragraph work this replaces measures ~8µs, and materializing a CSSRule
+ * to read its selector ~0.3µs, so stylesheets holding more than a few dozen
+ * rules per paragraph cannot repay the walk — a short article behind a large
+ * generated stylesheet would pay more than it saves. Counting a sheet's rules
+ * is free (only INDEXING the list materializes the wrappers), so the count
+ * decides whether to walk at all.
+ */
+const RULES_PER_PARAGRAPH = 24;
+
+export interface ScanBatch {
+  /** Roots already walked, with their answer. endScanBatch drops these so no
+   * Document or ShadowRoot outlives the scan that needed it. */
+  firstLetterRoots: Map<Document | ShadowRoot, boolean>;
+  /** Rules this batch may examine before the walk stops paying for itself. */
+  ruleBudget: number;
+}
+
+/** Open a scan batch. Pair with endScanBatch in a finally. */
+export function beginScanBatch(paragraphCount: number): ScanBatch {
+  return {
+    firstLetterRoots: new Map(),
+    ruleBudget: paragraphCount * RULES_PER_PARAGRAPH,
+  };
+}
+
+/** Close a scan batch, releasing its DOM references. */
+export function endScanBatch(batch: ScanBatch): void {
+  batch.firstLetterRoots.clear();
+}
+
+/** Nesting bound for grouping rules. @media/@supports/@layer/@container and
+ * CSS nesting can legitimately stack a few levels; a document that stacks
+ * more is reported as "may have a rule" rather than walked forever. */
+const MAX_RULE_DEPTH = 12;
+
+function rulesMentionFirstLetter(rules: CSSRuleList, depth: number): boolean {
+  // Absence is what has to be PROVEN here (see mayHaveFirstLetterRule), and a
+  // truncated walk proves nothing.
+  if (depth > MAX_RULE_DEPTH) return true;
+  for (let i = 0; i < rules.length; i += 1) {
+    const rule = rules[i] as
+      | (CSSRule & {
+          selectorText?: string;
+          cssRules?: CSSRuleList;
+          styleSheet?: CSSStyleSheet;
+        })
+      | undefined;
+    if (rule === undefined) continue;
+    // Both spellings reach the same pseudo-element: CSS keeps the legacy
+    // one-colon `:first-letter` valid alongside `::first-letter`. A substring
+    // test covers both, and over-matching (a `.first-letter` class) costs
+    // only the inspection we would otherwise have done anyway.
+    if (rule.selectorText !== undefined && rule.selectorText.includes("first-letter")) {
+      return true;
+    }
+    // @import exposes its target as a whole sheet, which may itself be
+    // cross-origin and throw where sheetMentionsFirstLetter reads it.
+    const imported = rule.styleSheet;
+    if (imported != null && sheetMentionsFirstLetter(imported, depth + 1)) return true;
+    // Grouping rules and nested style rules (`p { &::first-letter {} }`)
+    // both hang their children off cssRules.
+    const nested = rule.cssRules;
+    if (nested != null && rulesMentionFirstLetter(nested, depth + 1)) return true;
+  }
+  return false;
+}
+
+function sheetMentionsFirstLetter(sheet: CSSStyleSheet, depth: number): boolean {
+  let rules: CSSRuleList;
+  try {
+    rules = sheet.cssRules;
+  } catch {
+    // A cross-origin sheet (and anything else the engine guards) throws on
+    // cssRules. Its selectors are unknowable, so it counts as a sheet that
+    // may carry the rule.
+    return true;
+  }
+  return rulesMentionFirstLetter(rules, depth);
+}
+
+function rootMentionsFirstLetter(root: Document | ShadowRoot): boolean {
+  try {
+    const sheets = root.styleSheets;
+    for (let i = 0; i < sheets.length; i += 1) {
+      const sheet = sheets[i];
+      if (sheet !== undefined && sheetMentionsFirstLetter(sheet, 0)) return true;
+    }
+    // Constructed sheets never appear in styleSheets, and a shadow root's
+    // adopted list is entirely its own.
+    const adopted = (root as { adoptedStyleSheets?: readonly CSSStyleSheet[] }).adoptedStyleSheets;
+    if (adopted !== undefined) {
+      for (let i = 0; i < adopted.length; i += 1) {
+        const sheet = adopted[i];
+        if (sheet !== undefined && sheetMentionsFirstLetter(sheet, 0)) return true;
+      }
+    }
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Rules across a root's sheets, or null when one cannot be read — which
+ * settles the question conservatively on its own. Reading a list's length
+ * never materializes its rules, so this is free at any stylesheet size.
+ * Nested and imported rules go uncounted; the budget guards against one
+ * large flat sheet, which is the shape a generated stylesheet has.
+ */
+function countRules(root: Document | ShadowRoot): number | null {
+  let total = 0;
+  try {
+    const sheets = root.styleSheets;
+    for (let i = 0; i < sheets.length; i += 1) {
+      total += sheets[i]!.cssRules.length;
+    }
+    const adopted = (root as { adoptedStyleSheets?: readonly CSSStyleSheet[] }).adoptedStyleSheets;
+    if (adopted !== undefined) {
+      for (let i = 0; i < adopted.length; i += 1) {
+        total += adopted[i]!.cssRules.length;
+      }
+    }
+  } catch {
+    return null;
+  }
+  return total;
+}
+
+function rootMayHaveFirstLetterRule(batch: ScanBatch, root: Document | ShadowRoot): boolean {
+  const cached = batch.firstLetterRoots.get(root);
+  if (cached !== undefined) return cached;
+  const rules = countRules(root);
+  // Over budget answers the same "assume the rule may exist" an unreadable
+  // sheet does: the paragraphs then take the inspection they always took, and
+  // the batch is no worse off than never having asked.
+  const answer = rules === null || rules > batch.ruleBudget || rootMentionsFirstLetter(root);
+  batch.firstLetterRoots.set(root, answer);
+  return answer;
+}
+
+/**
+ * Can a `::first-letter` rule apply to this paragraph at all?
+ *
+ * Every answer is biased toward "yes": a wrong "yes" only costs the pseudo
+ * inspection that follows, while a wrong "no" would model a drop cap as
+ * ordinary text and mis-render the paragraph with no way to notice.
+ */
+function mayHaveFirstLetterRule(p: HTMLElement, batch: ScanBatch | undefined): boolean {
+  // No batch means no place to keep the answer for the rest of the scan, and
+  // the walk must never run per paragraph.
+  if (batch === undefined) return true;
+  // A slotted paragraph renders inside a shadow tree whose sheets are not in
+  // its own root, where `::slotted(p)::first-letter` would style it. (A
+  // closed root hides the slot assignment as well as its sheets.)
+  if (p.assignedSlot !== null) return true;
+  const doc = p.ownerDocument;
+  const root = p.getRootNode();
+  if (root === doc) return rootMayHaveFirstLetterRule(batch, doc);
+  // Realm-correct: paragraphs handed to justify() can belong to an iframe
+  // document, whose ShadowRoot is not this realm's.
+  const shadowRoot = doc.defaultView?.ShadowRoot;
+  if (shadowRoot === undefined || !(root instanceof shadowRoot)) return true;
+  return (
+    rootMayHaveFirstLetterRule(batch, root) ||
+    // The host document reaches into the shadow tree with
+    // `::part(x)::first-letter`.
+    rootMayHaveFirstLetterRule(batch, doc)
+  );
+}
+
 function floatDetailsOf(
   p: HTMLElement,
   text: string,
   paragraphStyle?: CSSStyleDeclaration,
   fragmentCount?: number,
+  batch?: ScanBatch,
 ): { intrusion: FloatIntrusion; span: { start: number; end: number } } | string | null {
+  // With no such rule in reach the pseudo-element cannot be generated, so it
+  // is neither a float nor a layout hazard — exactly the `null` below.
+  if (!mayHaveFirstLetterRule(p, batch)) return null;
   const view = p.ownerDocument.defaultView;
   if (view === null) return null;
   let style: CSSStyleDeclaration;
@@ -859,8 +1046,11 @@ export function floatInlineSizeOf(p: HTMLElement): number | null {
  * of scope — the caller leaves the paragraph untouched (author CSS
  * `text-align: justify` remains the fallback rendering) and can surface
  * the reason through JustifyOptions.onSkip.
+ *
+ * `batch` carries state shared by every paragraph of one scan; omitting it
+ * only makes the scan do more work.
  */
-export function readParagraph(p: HTMLElement): ParagraphScan | string {
+export function readParagraph(p: HTMLElement, batch?: ScanBatch): ParagraphScan | string {
   const view = p.ownerDocument.defaultView;
   if (view === null) return "detached from its document";
   const cs = view.getComputedStyle(p);
@@ -1067,7 +1257,7 @@ export function readParagraph(p: HTMLElement): ParagraphScan | string {
   const fragments = fragmentBoxesOf(p, cs);
   if (!fragments.ok) return fragments.reason;
 
-  const floatDetails = floatDetailsOf(p, text, cs, fragments.rects.length);
+  const floatDetails = floatDetailsOf(p, text, cs, fragments.rects.length, batch);
   if (typeof floatDetails === "string") return floatDetails;
   const floatIntrusion = floatDetails?.intrusion ?? null;
   if (floatDetails !== null) {
