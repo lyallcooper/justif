@@ -881,10 +881,17 @@ export function readParagraph(p: HTMLElement): ParagraphScan | string {
   const keyToIndex = new Map<string, number>();
   const indexSpec = (style: CSSStyleDeclaration): number => {
     const spec = fontSpecOf(style);
-    const existing = keyToIndex.get(spec.key);
+    // Deduped on MORE than the width-cache key: `hyphens` is deliberately
+    // outside FontSpec.key (it cannot change a measurement, so runs that
+    // differ only there must share cached widths) but it IS read per run, to
+    // suppress hyphenation. Folding it in here keeps `hyphens: none` on a run
+    // whose typography is otherwise identical to its paragraph's from
+    // collapsing into that paragraph's spec and inheriting `auto`.
+    const dedupeKey = `${spec.key}|${spec.hyphens}`;
+    const existing = keyToIndex.get(dedupeKey);
     if (existing !== undefined) return existing;
     specs.push(spec);
-    keyToIndex.set(spec.key, specs.length - 1);
+    keyToIndex.set(dedupeKey, specs.length - 1);
     return specs.length - 1;
   };
 

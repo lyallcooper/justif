@@ -3024,6 +3024,47 @@ test("hyphens render as pseudo-content; words stay whole for AT and find", async
   expect(text!.replace(/\s+/g, " ")).toContain("olden times when wishing still helped");
 });
 
+test("hyphens: none is honored on a run whose typography matches its paragraph", async ({
+  page,
+}) => {
+  // `hyphens` is deliberately absent from the measurement cache key (it
+  // cannot change a width), so a run that differs ONLY there must still get
+  // its own styling context: otherwise it collapses into the paragraph's and
+  // silently inherits `auto`. The distinct-key paragraph is the reference —
+  // one hundredth of a pixel of letter-spacing used to be what decided
+  // whether the same CSS worked.
+  const result = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    host.style.width = "150px";
+    const make = (id: string, spanStyle: string): HTMLParagraphElement => {
+      const p = document.createElement("p");
+      p.id = id;
+      p.style.hyphens = "auto";
+      p.innerHTML = `Fox <span class="target" style="${spanStyle}">incomprehensibilities</span> end.`;
+      return p;
+    };
+    const sameKey = make("nohyph-same", "hyphens: none");
+    const distinctKey = make("nohyph-distinct", "hyphens: none; letter-spacing: 0.01px");
+    const control = make("nohyph-control", "");
+    host.replaceChildren(sameKey, distinctKey, control);
+    const c = window.__justif.justify([sameKey, distinctKey, control], {
+      hyphenate: window.__justif.hyphenateEnUS,
+    });
+    await c.ready;
+    const fragments = (p: HTMLElement): string[] =>
+      [...p.querySelectorAll<HTMLElement>(".target .justif-seg")].map((s) => s.textContent ?? "");
+    return {
+      same: fragments(sameKey),
+      distinct: fragments(distinctKey),
+      control: fragments(control),
+    };
+  });
+  // The control proves the measure really does force a break inside the word.
+  expect(result.control.length).toBeGreaterThan(1);
+  expect(result.same).toEqual(["incomprehensibilities"]);
+  expect(result.distinct).toEqual(["incomprehensibilities"]);
+});
+
 test("find-in-page matches phrases across line breaks", async ({ page }) => {
   await enhance(page, { hyphenate: true, protrusion: false, expansion: false });
   const result = await page.evaluate(() => {

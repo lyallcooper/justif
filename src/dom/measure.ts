@@ -42,7 +42,15 @@ export interface FontSpec {
    * mirrored brackets; enforced by an e2e guard test).
    */
   direction: "ltr" | "rtl";
-  /** Canonical cache key. */
+  /**
+   * Canonical cache key. Two specs sharing it must be interchangeable for
+   * EVERY measurement: the reader can hand out either one (a paragraph holds
+   * separate entries for runs differing only in `hyphens`, and the per-key
+   * measure map keeps one of them). So a field left out of this key may not be
+   * read by anything that measures — `direction` qualifies only because
+   * advances are direction-independent AND a paragraph's direction is uniform
+   * (mixed-direction content bails in read.ts).
+   */
   key: string;
 }
 
