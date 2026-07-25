@@ -15,10 +15,18 @@ export interface PatternData {
 }
 
 interface TrieNode {
-  children: Map<string, TrieNode> | null;
-  /** Inter-letter digit values for a pattern ending at this node. */
-  points: number[] | null;
+  /**
+   * Keyed by character code rather than a one-character string: the match
+   * loop below probes one transition per (start, length) pair, and a numeric
+   * key avoids materializing (and hashing) a substring on every probe.
+   */
+  children: Map<number, TrieNode> | null;
+  /** Inter-letter digit values (0-9) for a pattern ending at this node. */
+  points: Uint8Array | null;
 }
+
+/** Character code of the "." word-boundary sentinel. */
+const DOT = 46;
 
 export function createHyphenator(data: PatternData): (word: string) => string[] {
   const leftmin = data.leftmin ?? 2;
@@ -30,26 +38,26 @@ export function createHyphenator(data: PatternData): (word: string) => string[] 
     root = { children: new Map(), points: null };
     for (const pattern of data.patterns.split(/\s+/)) {
       if (pattern.length === 0) continue;
-      const chars: string[] = [];
+      const codes: number[] = [];
       const points: number[] = [0];
       for (const ch of pattern) {
         if (ch >= "0" && ch <= "9") points[points.length - 1] = ch.charCodeAt(0) - 48;
         else {
-          chars.push(ch);
+          codes.push(ch.codePointAt(0)!);
           points.push(0);
         }
       }
       let node = root;
-      for (const ch of chars) {
+      for (const code of codes) {
         node.children ??= new Map();
-        let next = node.children.get(ch);
+        let next = node.children.get(code);
         if (next === undefined) {
           next = { children: null, points: null };
-          node.children.set(ch, next);
+          node.children.set(code, next);
         }
         node = next;
       }
-      node.points = points;
+      node.points = Uint8Array.from(points);
     }
     exceptionMap = new Map();
     if (data.exceptions !== undefined) {
@@ -60,20 +68,27 @@ export function createHyphenator(data: PatternData): (word: string) => string[] 
     }
   }
 
+  // Gap accumulator, reused across calls instead of allocated fresh per word;
+  // only the prefix the current word needs is cleared before each use.
+  let points = new Uint8Array(64);
+
   return function hyphenate(word: string): string[] {
     if (word.length < leftmin + rightmin) return [word];
     if (root === null) compile();
     const exception = exceptionMap!.get(word);
     if (exception !== undefined) return exception.slice();
 
-    const w = "." + word + ".";
-    const n = w.length;
-    // points[g] is the accumulated digit for the gap before w[g].
-    const points = new Array<number>(n + 1).fill(0);
+    // Walk ".word." without materializing the sentinel string: index j
+    // addresses the sentinels at j===0 and j===n-1, and word[j-1] between.
+    const n = word.length + 2;
+    // points[g] is the accumulated digit for the gap before dotted index g.
+    if (points.length < n + 1) points = new Uint8Array(2 * (n + 1));
+    else points.fill(0, 0, n + 1);
     for (let i = 0; i < n; i++) {
       let node: TrieNode | null | undefined = root;
       for (let j = i; j < n; j++) {
-        node = node!.children?.get(w[j]!);
+        const code = j === 0 || j === n - 1 ? DOT : word.charCodeAt(j - 1);
+        node = node!.children?.get(code);
         if (node === undefined) break;
         const pts = node.points;
         if (pts !== null) {
