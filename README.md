@@ -1,14 +1,14 @@
-# justif
+# Justif
 
 _Publication-grade text justification for the web._
 
-justif is a JavaScript library that applies TeX-style paragraph layout to
+Justif is a JavaScript library that applies TeX-style paragraph layout to
 existing HTML. It chooses line breaks across the whole paragraph and uses
 hyphenation and microtypography techniques to produce more even spacing than
 the browser's built-in justification.
 
 It is a progressive enhancement. Your HTML and CSS provide the initial and
-fallback rendering, while justif upgrades paragraphs it can measure reliably.
+fallback rendering, while Justif upgrades paragraphs it can measure reliably.
 Unsupported paragraphs are left untouched. When JavaScript is disabled, native
 rendering is unchanged.
 
@@ -25,14 +25,14 @@ poor break near the end of the paragraph.
   <a href="https://justif.lyall.co">
     <img
       src="docs/images/browser-vs-justif.png"
-      alt="Native browser justification with uneven spacing compared with justif's more balanced line breaks"
+      alt="Native browser justification with uneven spacing compared with Justif's more balanced line breaks"
       width="760"
     >
   </a><br>
-  <em>Native browser vs. justif rendering, Google Chrome.</em>
+  <em>Native browser vs. Justif rendering, Google Chrome.</em>
 </p>
 
-justif uses the [Knuth–Plass line-breaking
+Justif uses the [Knuth–Plass line-breaking
 algorithm](https://en.wikipedia.org/wiki/Knuth%E2%80%93Plass_line-breaking_algorithm)
 to evaluate a paragraph as a whole. It can also:
 
@@ -92,7 +92,7 @@ With the JavaScript API, pass `onSkip` instead.
 ### Loading and first paint
 
 Adding `blocking="render"` prevents the browser from painting native
-justification before justif runs. The trade-off is a slower first paint: the
+justification before Justif runs. The trade-off is a slower first paint: the
 browser waits for the script to download and execute. Omit the attribute if
 first-paint speed matters more than avoiding the visible change.
 Browsers without support, [currently
@@ -111,7 +111,7 @@ A few things make the loading experience smoother:
   justified in the fallback font and re-justifies when the font arrives, so
   the earlier that happens, the better.
 - On very long pages, keep off-screen paragraphs out of layout work.
-  justif keeps their placeholder heights exact, so scrollbars and anchors
+  Justif keeps their placeholder heights exact, so scrollbars and anchors
   stay stable:
 
   ```css
@@ -163,7 +163,7 @@ fail, and for any resulting font-driven layout to finish. Call
 observers.
 
 Container width changes and newly loaded web fonts are handled automatically.
-`refresh()` forces a re-measure for changes justif cannot observe — for
+`refresh()` forces a re-measure for changes Justif cannot observe — for
 example a container width change with `observeResize: false`. If paragraph
 content or its computed text styles change, call `destroy()` and
 run `justify()` again so the paragraph can be rescanned.
@@ -270,7 +270,7 @@ uneven word spacing; lower is better.
 
 ## Supported content
 
-justif supports horizontal LTR text, CJK text, and pure RTL Hebrew or Arabic
+Justif supports horizontal LTR text, CJK text, and pure RTL Hebrew or Arabic
 paragraphs. Computed `font-variant-*` values and low-level
 `font-feature-settings` are preserved and measured with their actual glyph
 substitutions.
@@ -310,13 +310,13 @@ breaks and spacing may be adjusted to try and meet the configured
 `lastLineMinWidth` value. This behavior is analagous to TeX's `\newline`, with
 our `lastLineMinWidth` policy layered on top.
 
-If the paragraph element has a `text-align-last` value of `justify`, then justif
+If the paragraph element has a `text-align-last` value of `justify`, then Justif
 will attempt to fully justify lines ending with `<br>`. This is analagous to
 TeX's `\linebreak`.
 
 ### Browser fallback
 
-justif leaves a paragraph on native browser layout when it cannot reproduce it
+Justif leaves a paragraph on native browser layout when it cannot reproduce it
 reliably. This includes:
 
 - mixed LTR and RTL text;
@@ -334,7 +334,7 @@ enhanced.
 
 ### Interactive inline content
 
-While justif manages a paragraph, it renders its inline descendants as clones.
+While Justif manages a paragraph, it renders its inline descendants as clones.
 Use delegated event handlers for interactive inline content. Event listeners
 attached directly to the original descendants are not copied to the clones;
 they work again after `destroy()`. Existing JavaScript references still point
@@ -344,7 +344,7 @@ to the originals, not the rendered clones.
 
 ### Requirements
 
-justif requires a modern browser with canvas text measurement, the CSS
+Justif requires a modern browser with canvas text measurement, the CSS
 Font Loading API (`document.fonts`), and CSS logical margins.
 `ResizeObserver` is needed for the default `observeResize: true`
 re-layout; `IntersectionObserver` is an optimization used when available.
@@ -354,7 +354,7 @@ content in a browser. The DOM-free layout engine is available from
 
 ### iOS Safari text sizing
 
-On iOS Safari, justif disables automatic text inflation on enhanced
+On iOS Safari, Justif disables automatic text inflation on enhanced
 paragraphs. Font boosting can change after measurement and uses fragment
 heuristics that measurement probes cannot reproduce, invalidating per-line
 spacing after rotation.
@@ -366,7 +366,7 @@ paragraphs out of the justification target.
 
 ## AI Usage Disclosure
 
-AI/LLM-based tools are used as part of the justif development process.
+AI/LLM-based tools are used as part of the Justif development process.
 Nonetheless, we hold ourselves and the project to a high standard. We strive to
 ensure that every feature is well tested and every design choice well
 considered. Our goal is to use AI tools where appropriate to achieve a

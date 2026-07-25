@@ -7,7 +7,7 @@
 - Highlights made with third-party annotation tools (like Instapaper's
   browser extension) no longer silently fail to appear when the selected
   text crosses a hyphenated line break (#9).
-- Browser extensions that highlight by splitting or wrapping justif's
+- Browser extensions that highlight by splitting or wrapping Justif's
   rendered text no longer trigger errors in the deferred line-width
   corrections; affected lines keep their safe provisional spacing.
 
@@ -25,7 +25,7 @@
   instead of the bounding box of the whole spread. Fragmented drop caps and
   unequal-width page fragments safely remain in native layout.
 - Paragraphs containing inline `<br>` elements are now enhanced instead of
-  staying in browser layout. Set `text-align-last: justify` to tell justif to
+  staying in browser layout. Set `text-align-last: justify` to tell Justif to
   justify lines ending in `<br>` instead of leaving them ragged.
 
 ## 0.5.1 (2026-07-23)
@@ -41,7 +41,7 @@
 ## 0.5.0 (2026-07-22)
 
 - Paragraphs beginning with floated `::first-letter` drop caps can now use
-  justif's paragraph-wide line breaking. The drop cap keeps its styling and
+  Justif's paragraph-wide line breaking. The drop cap keeps its styling and
   browser-native intrusion, including logical float directions and first
   letters split across styled inline content. Unsupported or too-narrow
   layouts safely remain browser-native, and drop-cap geometry is refreshed
@@ -71,11 +71,11 @@
 ## 0.4.1 (2026-07-18)
 
 - Short labels and other one-line text are no longer stretched by the default
-  paragraph-ending rules. justif leaves them in the browser's normal layout
+  paragraph-ending rules. Justif leaves them in the browser's normal layout
   until they wrap onto multiple lines. `lastLineMinWidth: 1` and CSS
   `text-align: justify-all` still explicitly request a full-width line.
 - Fixed iOS Safari rendering parts of a justified paragraph at different text
-  sizes after rotation. To keep enhanced paragraphs stable, justif now
+  sizes after rotation. To keep enhanced paragraphs stable, Justif now
   disables Safari's automatic text inflation for them; pages that rely on that
   inflation may display enhanced prose slightly smaller than nearby text.
 
@@ -125,7 +125,7 @@
 - Fixed a critical compatibility issue where production builds using the
   default Vite 6 or Astro 5 target could silently leave every paragraph
   unenhanced.
-- Added `onSkip(paragraph, reason)` to report paragraphs justif cannot enhance
+- Added `onSkip(paragraph, reason)` to report paragraphs Justif cannot enhance
   and explain why. The drop-in script provides the same diagnostics when
   `data-justif-debug` is present.
 - Fixed small-caps lines appearing under-filled on Linux WebKit.
@@ -174,6 +174,6 @@ Initial release.
 - Enhanced text remains ordinary inline content, preserving links,
   find-in-page, selection, copying, and accessibility. Layout updates
   automatically on resize, and `destroy()` restores the original markup.
-- Unsupported content safely remains in browser layout. justif works under a
+- Unsupported content safely remains in browser layout. Justif works under a
   strict Content Security Policy, inside shadow DOM, and with
   `content-visibility` on long pages.
