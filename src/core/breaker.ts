@@ -42,6 +42,99 @@ interface Node {
 }
 
 /**
+ * No boxes (empty or whitespace-only input): the only content is the
+ * parfillskip tail — break at the final forced penalty without running any
+ * passes. layoutLines emits zero lines for such paragraphs. Returns null when
+ * the paragraph does have content.
+ */
+function boxlessResult(para: ParagraphItems, opts: BreakOptions): BreakResult | null {
+  if (para.firstBoxAfter[0] !== para.items.length) return null;
+  return {
+    breakpoints: [para.items.length - 1],
+    pass: 1,
+    overfull: [false],
+    demerits: 0,
+    endingMinWidth: opts.lastLineMinWidth,
+  };
+}
+
+/**
+ * Unwind a solved chain into the public result. Shared with tryHyphenFree so
+ * a solution found by the speculative pass 1 is indistinguishable — field for
+ * field — from the same solution found inside a ladder.
+ */
+function resultFrom(end: Node, pass: 1 | 2 | 3, achieved: number): BreakResult {
+  const breakpoints: number[] = [];
+  const overfull: boolean[] = [];
+  for (let node: Node | null = end; node !== null && node.item >= 0; node = node.prev) {
+    breakpoints.push(node.item);
+    overfull.push(node.overfull);
+  }
+  breakpoints.reverse();
+  overfull.reverse();
+  return {
+    breakpoints,
+    pass,
+    overfull,
+    demerits: end.totalDemerits,
+    endingMinWidth: achieved,
+  };
+}
+
+/**
+ * Rung 1 of EVERY ladder below: the hyphen-free attempt at `pretolerance`.
+ * `strictEnding` is derived from the threshold rather than passed, because
+ * that IS how the two ladders differ here and the derivation is exact: the
+ * rectangle hunt only ever runs at a POSITIVE threshold (its descent levels
+ * are absolute sixteenths, and its first level is a positive request), while
+ * every `ladder` call site passes 0 — the option-off comparison explicitly,
+ * and the plain `ladder(opts)` case only reachable once the branches above it
+ * have absorbed every positive threshold. One expression, so the speculative
+ * entry point below cannot drift from the ladder it stands in for.
+ */
+function firstPass(
+  para: ParagraphItems,
+  widths: LineWidths,
+  opts: BreakOptions,
+): Node | null {
+  if (opts.pretolerance < 0) return null;
+  return attempt(para, widths, opts, {
+    tolerance: opts.pretolerance,
+    hyphens: false,
+    extraStretch: 0,
+    rescue: false,
+    strictEnding: opts.lastLineMinWidth > 0,
+  });
+}
+
+/**
+ * Precisely the first attempt `breakParagraph` would make, and nothing else:
+ * on success the returned result IS what `breakParagraph` returns for the
+ * same arguments, so a caller may take it verbatim; on failure it returns
+ * null, having proved only that pass 1 does not settle this paragraph.
+ *
+ * The point is what it lets the CALLER skip. Pass 1 never breaks at a
+ * hyphenation point (penalties flagged `hyphen`), so it explores exactly the
+ * candidates an item stream built with `BuildOptions.hyphenate` UNSET
+ * contains — which means a caller can build the cheap stream, try this, and
+ * only pay for the hyphenator (trie probes plus a measured width per word
+ * fragment) on the paragraphs that actually need it. See the speculation gate
+ * in justify(), which owns that bet and the float caveat that comes with it.
+ */
+export function tryHyphenFree(
+  para: ParagraphItems,
+  widths: LineWidths,
+  opts: BreakOptions,
+): BreakResult | null {
+  const boxless = boxlessResult(para, opts);
+  if (boxless !== null) return boxless;
+  const end = firstPass(para, widths, opts);
+  // `achieved` is the requested threshold: a pass-1 hunt that succeeds does so
+  // at the full request, so no descent and no off-comparison can intervene.
+  return end === null ? null : resultFrom(end, 1, opts.lastLineMinWidth);
+}
+
+/**
  * Knuth-Plass total-fit line breaking with TeX's three-pass escalation:
  * pass 1 ignores hyphenation points at `pretolerance`, pass 2 enables them at
  * `tolerance`, pass 3 adds emergency stretch to the badness computation only.
@@ -53,18 +146,8 @@ export function breakParagraph(
   widths: LineWidths,
   opts: BreakOptions,
 ): BreakResult {
-  // No boxes (empty or whitespace-only input): the only content is the
-  // parfillskip tail — break at the final forced penalty without running
-  // any passes. layoutLines emits zero lines for such paragraphs.
-  if (para.firstBoxAfter[0] === para.items.length) {
-    return {
-      breakpoints: [para.items.length - 1],
-      pass: 1,
-      overfull: [false],
-      demerits: 0,
-      endingMinWidth: opts.lastLineMinWidth,
-    };
-  }
+  const boxless = boxlessResult(para, opts);
+  if (boxless !== null) return boxless;
 
   let emergency = 0;
   if (opts.emergencyStretch === "auto") {
@@ -93,17 +176,8 @@ export function breakParagraph(
   // first line for a flush ending).
   const hunt = (minWidth: number): { end: Node | null; pass: 1 | 2 | 3 } => {
     const o = { ...opts, lastLineMinWidth: minWidth };
-    let e: Node | null = null;
     let p: 1 | 2 | 3 = 1;
-    if (o.pretolerance >= 0) {
-      e = attempt(para, widths, o, {
-        tolerance: o.pretolerance,
-        hyphens: false,
-        extraStretch: 0,
-        rescue: false,
-        strictEnding: true,
-      });
-    }
+    let e: Node | null = firstPass(para, widths, o);
     if (e === null) {
       p = 2;
       e = attempt(para, widths, o, {
@@ -157,17 +231,8 @@ export function breakParagraph(
   // at genuinely unbreakable material, which overflows exactly like an
   // unbreakable word does in a browser).
   const ladder = (o: BreakOptions): { end: Node | null; pass: 1 | 2 | 3 } => {
-    let e: Node | null = null;
     let p: 1 | 2 | 3 = 1;
-    if (o.pretolerance >= 0) {
-      e = attempt(para, widths, o, {
-        tolerance: o.pretolerance,
-        hyphens: false,
-        extraStretch: 0,
-        rescue: false,
-        strictEnding: false,
-      });
-    }
+    let e: Node | null = firstPass(para, widths, o);
     if (e === null) {
       p = 2;
       e = attempt(para, widths, o, {
@@ -257,22 +322,7 @@ export function breakParagraph(
     ({ end, pass } = ladder(opts));
   }
   if (end === null) throw new Error("justif: rescue pass failed (bug)");
-
-  const breakpoints: number[] = [];
-  const overfull: boolean[] = [];
-  for (let node: Node | null = end; node !== null && node.item >= 0; node = node.prev) {
-    breakpoints.push(node.item);
-    overfull.push(node.overfull);
-  }
-  breakpoints.reverse();
-  overfull.reverse();
-  return {
-    breakpoints,
-    pass,
-    overfull,
-    demerits: end.totalDemerits,
-    endingMinWidth: achieved,
-  };
+  return resultFrom(end, pass, achieved);
 }
 
 /**

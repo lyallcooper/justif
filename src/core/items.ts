@@ -453,6 +453,15 @@ export function buildItems(
    * points, APPENDING the fragments to the scratch arrays. Returns whether
    * they came from the hyphenator, which decides the penalty's `hyphen` flag
    * (and so whether pass 1 may break there).
+   *
+   * That flag carries an invariant the pipeline leans on: the ONLY thing
+   * `opts.hyphenate` adds to the stream is penalties flagged `hyphen`, which
+   * is exactly the set pass 1 refuses to break at. So a stream built with
+   * `hyphenate` unset offers pass 1 precisely the candidates the full stream
+   * does — which is what lets justify() build the cheap stream first and pay
+   * for the hyphenator only where pass 1 fails. Soft-hyphen and explicit-hyphen
+   * breaks are the author's own and stay UNflagged in both builds; do not
+   * "unify" them with the hyphenator's, or pass 1 would stop seeing them.
    */
   const chunkPieces = (chunk: string, noHyphens: boolean): boolean => {
     if (noHyphens) {
