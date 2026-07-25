@@ -331,8 +331,11 @@ function resolveOptions(options: JustifyOptions): ResolvedOptions {
   breakOpts.lastLineMinWidth = lastLineMinWidth;
   /** User's explicit per-char overrides, kept separate so they also win
    * over any per-font config matched in buildRunMetrics. */
+  // Copied, not aliased: every other option is snapshotted at justify() time,
+  // and the per-family composition is now memoized, so a caller mutating its
+  // own table afterwards would otherwise see a partial, inconsistent effect.
   const protrusionUser: ProtrusionTable | null =
-    typeof options.protrusion === "object" ? options.protrusion : null;
+    typeof options.protrusion === "object" ? { ...options.protrusion } : null;
   const hangMode: HangingPunctuationMode =
     options.hangingPunctuation === false
       ? false

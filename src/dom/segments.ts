@@ -121,20 +121,61 @@ export function runTexts(scan: ParagraphScan): RunText[] {
   }));
 }
 
+/**
+ * Per-family protrusion tables under one controller's protrusion settings.
+ * Keyed by the CSS family list; the cache is invalidated whenever the
+ * settings object identity changes, which happens once per controller.
+ */
+interface ProtrusionSettings {
+  enabled: boolean;
+  user: ProtrusionTable | null;
+  hang: HangingPunctuationMode;
+}
+type ComposedTables = { rest: ProtrusionTable; first?: ProtrusionTable } | null;
+/** Weakly keyed on the settings object, so two live controllers don't evict
+ * each other and a destroyed one's tables are collectable. */
+const composedBySettings = new WeakMap<ProtrusionSettings, Map<string, ComposedTables>>();
+
+function composedForFamily(
+  family: string,
+  settings: ProtrusionSettings | undefined,
+): ComposedTables {
+  if (settings === undefined || !settings.enabled) return null;
+  let composedCache = composedBySettings.get(settings);
+  if (composedCache === undefined) {
+    composedCache = new Map();
+    composedBySettings.set(settings, composedCache);
+  }
+  const hit = composedCache.get(family);
+  if (hit !== undefined) return hit;
+  const matched = fontProtrusion(family);
+  let tables: ComposedTables = null;
+  if (matched !== undefined) {
+    const composed = composeProtrusion(
+      { ...latinProtrusion, ...matched },
+      settings.user,
+      settings.hang,
+    );
+    tables = {
+      rest: composed.rest,
+      first: composed.first !== composed.rest ? composed.first : undefined,
+    };
+  }
+  composedCache.set(family, tables);
+  return tables;
+}
+
 export function buildRunMetrics(
   scan: ParagraphScan,
   expansion: ExpansionOptions | false,
   spacing: { stretch: number; shrink: number; pull?: number },
-  protrusion?: {
-    enabled: boolean;
-    user: ProtrusionTable | null;
-    hang: HangingPunctuationMode;
-  },
+  protrusion?: ProtrusionSettings,
 ): RunMetrics[] {
   // Base-space context is the whole paragraph: the base font's spaces sit
   // between whatever script the paragraph is written in.
+  const baseSpec = scan.specs[scan.baseSpec]!;
   const paragraphText = scan.runs.map((r) => r.text).join(" ");
-  const baseSpaceWidth = spaceWidthIn(scan.specs[scan.baseSpec]!, paragraphText);
+  const baseSpaceWidth = spaceWidthIn(baseSpec, paragraphText);
   const pull = spacing.pull ?? 0.7;
   // Every quantized stretch value the layout can emit gets its own
   // measurement (linear interpolation between the endpoints errs by
@@ -153,21 +194,13 @@ export function buildRunMetrics(
     const spec = scan.specs[run.spec]!;
     // Hand-tuned microtype config for this run's font, when one exists.
     // Precedence: generic table < per-font config < hang overlays (side-
-    // and position-scoped) < user overrides.
-    let perFont: ProtrusionTable | undefined;
-    let perFontFirst: ProtrusionTable | undefined;
-    if (protrusion !== undefined && protrusion.enabled) {
-      const matched = fontProtrusion(spec.family);
-      if (matched !== undefined) {
-        const composed = composeProtrusion(
-          { ...latinProtrusion, ...matched },
-          protrusion.user,
-          protrusion.hang,
-        );
-        perFont = composed.rest;
-        if (composed.first !== composed.rest) perFontFirst = composed.first;
-      }
-    }
+    // and position-scoped) < user overrides. Memoized per family: composing
+    // it spreads the generic table and builds two overlays, and it was
+    // repeated for every run of every paragraph even though the user table
+    // and hang mode are fixed for the controller.
+    const perFontTables = composedForFamily(spec.family, protrusion);
+    const perFont = perFontTables?.rest;
+    const perFontFirst = perFontTables?.first;
     const naturalSpace = spaceWidthIn(spec, run.text);
     // Oversized secondary-font spaces (monospace inline code — a full cell
     // wide) get downward pressure toward the paragraph's base space: the
@@ -227,7 +260,7 @@ export function buildRunMetrics(
       // paragraph set in a mono font owns its margin: it protrudes like any
       // other font (full cell hangs under hangingPunctuation — the
       // typewriter-tradition grid behavior).
-      protrudeInkOnly: isMonospace(spec) && spec.key !== scan.specs[scan.baseSpec]!.key,
+      protrudeInkOnly: isMonospace(spec) && spec.key !== baseSpec.key,
       protrusion: perFont,
       protrusionFirst: perFontFirst,
     };
