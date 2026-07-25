@@ -63,8 +63,8 @@ your `<head>`:
 <script
   type="module"
   blocking="render"
-  src="https://cdn.jsdelivr.net/npm/justif@0.6.2/dist/auto.js"
-  integrity="sha384-4kWmDGFQjdKePkKz514dyaA1C3Nc898OGngMDk7GVHCfpPsn4jOelkAgn1Kyd+bR"
+  src="https://cdn.jsdelivr.net/npm/justif@0.6.3/dist/auto.js"
+  integrity="sha384-etPkRux0yMCo9jsDYyUYTSifMS4bqL50A1BDj/lbCMulx21JiKiTY0K/T/UdabB0"
   crossorigin="anonymous"
 ></script>
 ```

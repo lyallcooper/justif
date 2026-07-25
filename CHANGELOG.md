@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.3 (2026-07-25)
+
 - Fixed a few lines of a paragraph stretching to word spacing tens of pixels
   wide on pages whose CSS lets the browser break long words:
   `overflow-wrap: break-word` or `anywhere`, `word-break: break-all`, or
