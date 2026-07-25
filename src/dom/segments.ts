@@ -40,6 +40,12 @@ import { type RenderSegment, WRAP_SAFETY_PAD_PX } from "./write.js";
 const AUTHOR_NO_BREAK_SPACE = /[\u00A0\u202F]/;
 const DASH_JUNCTION = /[\u002D\u2010-\u2015]/;
 
+// Both tags are literals, so these patterns are constant. They are consulted
+// twice per rendered segment, on every patch and every resize step, which is
+// often enough that rebuilding the RegExp per call showed up in a profile.
+const LIGA_EXPLICITLY_OFF = /["']liga["']\s*(?:0|off)\b/i;
+const CLIG_EXPLICITLY_OFF = /["']clig["']\s*(?:0|off)\b/i;
+
 /** Browsers commonly suppress common ligatures when letter-spacing is
  * nonzero. Tracking introduces letter-spacing, so explicitly retain those
  * defaults without overriding an author's own ligature choices or losing
@@ -51,10 +57,8 @@ function trackingFeatureSettings(spec: FontSpec, active: boolean): string | unde
   }
 
   const settings = spec.featureSettings === "normal" ? [] : [spec.featureSettings];
-  const explicitlyOff = (tag: string): boolean =>
-    new RegExp(`["']${tag}["']\\s*(?:0|off)\\b`, "i").test(spec.featureSettings);
-  if (!explicitlyOff("liga")) settings.push('"liga" 1');
-  if (!explicitlyOff("clig")) settings.push('"clig" 1');
+  if (!LIGA_EXPLICITLY_OFF.test(spec.featureSettings)) settings.push('"liga" 1');
+  if (!CLIG_EXPLICITLY_OFF.test(spec.featureSettings)) settings.push('"clig" 1');
   return settings.length > 0 ? settings.join(", ") : undefined;
 }
 
