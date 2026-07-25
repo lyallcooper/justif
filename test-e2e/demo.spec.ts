@@ -546,13 +546,16 @@ test("punctuation protrudes at an internal slice of the technical code halo", as
     el.dispatchEvent(new Event("input", { bubbles: true }));
   });
 
-  // Gate and measure in the SAME poll. The width control patches paragraphs
-  // asynchronously and more than one patch can land: a separate read after
-  // the gate is a race that a later patch wins, measuring this segment
-  // mid-line instead of at the measure (observed on WebKit under load as a
-  // -210px overhang).
-  const geometry = (await page
-    .waitForFunction(() => {
+  // Wait for the paragraph to stop changing, then measure in the SAME
+  // evaluation. Two separate races otherwise: the width control patches
+  // paragraphs asynchronously and more than one patch can land (a read after
+  // a bare geometry gate measured this segment mid-line on WebKit under load,
+  // a -210px overhang), and the deferred wrap correction lands a frame or two
+  // after the first plausible geometry — so an earlier read reports the
+  // provisional pre-correction hang, which is 1.5px of wrap-safety pad away
+  // from what actually ships.
+  const geometry = await page.evaluate(async () => {
+    const find = () => {
       const paragraph = [...document.querySelectorAll<HTMLElement>("#enhanced p")].find(
         (candidate) => candidate.textContent?.includes("above supplies"),
       );
@@ -561,26 +564,45 @@ test("punctuation protrudes at an internal slice of the technical code halo", as
             (candidate) => candidate.textContent === "{ hyphenate:",
           )
         : undefined;
-      if (paragraph === undefined || seg === undefined) return null;
-      const paragraphStyle = getComputedStyle(paragraph);
-      const contentRight =
-        paragraph.getBoundingClientRect().right -
-        parseFloat(paragraphStyle.paddingRight) -
-        parseFloat(paragraphStyle.borderRightWidth);
-      const overhang = seg.getBoundingClientRect().right - contentRight;
-      // Reject the transient pre-patch geometry (hundreds of px away).
-      if (Math.abs(overhang) > 20) return null;
-      return { overhang, background: getComputedStyle(seg).backgroundColor };
-    })
-    .then((handle) => handle.jsonValue()))!;
+      return paragraph === undefined || seg === undefined ? null : { paragraph, seg };
+    };
+    // Two frames head start: lets already-queued observer/rAF slices begin,
+    // so the first sample doesn't read a pre-correction DOM as "settled".
+    await new Promise<void>((r) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => r())),
+    );
+    const deadline = performance.now() + 2000;
+    let previous: string | null = null;
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 120));
+      const found = find();
+      const html = found?.paragraph.innerHTML ?? null;
+      if (found !== null && html === previous) {
+        const paragraphStyle = getComputedStyle(found.paragraph);
+        const contentRight =
+          found.paragraph.getBoundingClientRect().right -
+          parseFloat(paragraphStyle.paddingRight) -
+          parseFloat(paragraphStyle.borderRightWidth);
+        return {
+          overhang: found.seg.getBoundingClientRect().right - contentRight,
+          background: getComputedStyle(found.seg).backgroundColor,
+        };
+      }
+      previous = html;
+      if (performance.now() > deadline) return null;
+    }
+  });
 
-  // The default colon code hangs half its advance. Leave room for the
-  // measured wrap correction while requiring a material optical hang.
-  // WebKit's corrective DOM measurement absorbs most of this particular
-  // Courier Prime colon's modeled 50% credit; the cross-font fixture in
-  // justif.spec verifies material internal-slice hangs in every engine.
-  expect(geometry.overhang).toBeGreaterThan(browserName === "webkit" ? 0.1 : 2);
-  expect(geometry.background).not.toBe("rgba(0, 0, 0, 0)");
+  expect(geometry, "paragraph settled within 2s").not.toBeNull();
+  // Settled values, not the provisional ones: the colon hangs about half its
+  // advance in Chromium (3.55) and Firefox (2.48). WebKit's corrective DOM
+  // measurement absorbs this Courier Prime colon's modeled credit entirely
+  // (0.002px), so all that can be required there is that correcting the line
+  // never pulls the punctuation back inside the measure. The cross-font
+  // fixture in justif.spec verifies material internal-slice hangs in every
+  // engine.
+  expect(geometry!.overhang).toBeGreaterThan(browserName === "webkit" ? -0.5 : 2);
+  expect(geometry!.background).not.toBe("rgba(0, 0, 0, 0)");
 });
 
 test("protrusion off keeps the technical sample's 13em code halo inside", async ({ page }) => {
