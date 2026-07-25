@@ -90,6 +90,45 @@ export function endingFloorRatio(
 }
 
 /**
+ * Code-point-wise first/last character and length, without materializing the
+ * `Array.from(text)` these replace: they run per BOX (tens of thousands per
+ * document), and the arrays were the single largest source of allocation
+ * churn in a cold enhance. Lone surrogates are passed through unpaired,
+ * exactly as the string iterator does.
+ */
+function firstCodePoint(text: string): string {
+  const code = text.charCodeAt(0);
+  if (code >= 0xd800 && code <= 0xdbff && text.length > 1) {
+    const next = text.charCodeAt(1);
+    if (next >= 0xdc00 && next <= 0xdfff) return text.slice(0, 2);
+  }
+  return text[0]!;
+}
+
+function lastCodePoint(text: string): string {
+  const n = text.length;
+  const code = text.charCodeAt(n - 1);
+  if (code >= 0xdc00 && code <= 0xdfff && n > 1) {
+    const prev = text.charCodeAt(n - 2);
+    if (prev >= 0xd800 && prev <= 0xdbff) return text.slice(n - 2);
+  }
+  return text[n - 1]!;
+}
+
+function codePointLength(text: string): number {
+  let count = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff && i + 1 < text.length) {
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) i++;
+    }
+    count++;
+  }
+  return count;
+}
+
+/**
  * Split a token after every explicit hyphen that is followed by a non-hyphen:
  * "self-made" → ["self-", "made"], while "a--b" keeps its run of dashes
  * together ("a--", "b"). Written as a loop rather than the equivalent
@@ -269,7 +308,8 @@ export function buildItems(
     }
     items.push(box);
     hasBox = true;
-    if ((box.flowChars ?? Array.from(box.text).length) > 0) hasFlowBox = true;
+    // Emptiness only: UTF-16 length and code-point count are zero together.
+    if ((box.flowChars ?? box.text.length) > 0) hasFlowBox = true;
     lastBox = box;
     lastBoxRun = runIndex;
     lastBoxKey = pieceKey;
@@ -290,9 +330,8 @@ export function buildItems(
     let rp = 0;
     let lpFirst = 0;
     if (opts.protrusion !== false && flowText.length > 0) {
-      const chars = Array.from(flowText);
-      const first = chars[0]!;
-      const last = chars[chars.length - 1]!;
+      const first = firstCodePoint(flowText);
+      const last = lastCodePoint(flowText);
       if (!piecePaintedStart) {
         const firstAdv = measure.charAdvance(first, run);
         lp = protrusionHang(opts, measure, first, run, firstAdv, "l");
@@ -317,14 +356,19 @@ export function buildItems(
       trackStretch = width * opts.tracking.max;
       trackShrink = width * opts.tracking.shrink;
     }
-    const textChars = Array.from(text).length;
-    const flowChars = Array.from(flowText).length;
+    // Only a float-excluded box has a flow length of its own; the ordinary
+    // case measures nothing (`flowText` IS `text`).
+    let boxFlowChars: number | undefined;
+    if (flowText !== text) {
+      const flowChars = codePointLength(flowText);
+      if (flowChars !== codePointLength(text)) boxFlowChars = flowChars;
+    }
     return {
       type: ItemType.Box,
       width,
       run: runIndex,
       text,
-      flowChars: flowChars === textChars ? undefined : flowChars,
+      flowChars: boxFlowChars,
       flowExclusion,
       lp,
       lpFirst,
