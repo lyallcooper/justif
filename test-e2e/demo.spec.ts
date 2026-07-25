@@ -359,6 +359,13 @@ test("comparison controls stay stable and explain flicker once", async ({ page }
   await text.dispatchEvent("pointerup", { button: 0 });
   await expect(page.locator("body")).not.toHaveClass(/show-browser/);
 
+  // The masthead github link is normal navigation, not part of the
+  // comparison: pressing it must not swap layers.
+  const ghLink = page.locator(".gh-link a");
+  await ghLink.dispatchEvent("pointerdown", { button: 0 });
+  await expect(page.locator("body")).not.toHaveClass(/show-browser/);
+  await ghLink.dispatchEvent("pointerup", { button: 0 });
+
   await page.waitForFunction(
     () => !document.getElementById("flicker-hint")!.hasAttribute("data-visible"),
     undefined,

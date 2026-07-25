@@ -3781,10 +3781,14 @@ await controller.ready;</code></pre>
     // underneath it.
     if (e.button !== 0) return;
     const t = e.target;
-    // Links stay inside the hold region (a quick tap still navigates; see
-    // the click guard below) — everything else interactive keeps its
-    // normal behavior.
-    if (t.closest("#dock, select, input, textarea, button, [popover]") !== null) {
+    // Links inside the specimen stay in the hold region (a quick tap still
+    // navigates; see the click guard below) — everything else interactive,
+    // masthead links included, keeps its normal behavior.
+    if (
+      t.closest(
+        "#dock, .masthead a, select, input, textarea, button, [popover]",
+      ) !== null
+    ) {
       return;
     }
     holdStartedAt = performance.now();
