@@ -5,6 +5,8 @@
 - Justif now loads on Safari and iOS below 16.4.
 - `hyphens: none` is now honored on an inline run whose type matches the
   surrounding prose.
+- Enhancement is about 5% faster, and more for paragraphs set in a font with a
+  hand-tuned protrusion configuration.
 
 ## 0.6.3 (2026-07-25)
 

@@ -559,15 +559,37 @@ function collectFontProbes(
   scans: readonly ParagraphScan[],
   hyphenating: boolean,
 ): FontProbe[] {
-  const fontSample = new Map<string, { chars: Set<string>; kern: string }>();
+  const fontSample = new Map<
+    string,
+    { chars: Set<string>; ascii: Uint8Array; kern: string }
+  >();
   for (const scan of scans) {
     for (const spec of scan.specs) {
       const font = ctxFontOf(spec);
-      if (!fontSample.has(font)) fontSample.set(font, { chars: new Set(), kern: "" });
+      if (!fontSample.has(font)) {
+        fontSample.set(font, { chars: new Set(), ascii: new Uint8Array(128), kern: "" });
+      }
     }
     for (const run of scan.runs) {
       const s = fontSample.get(ctxFontOf(scan.specs[run.spec]!))!;
-      for (const ch of run.text) s.chars.add(ch);
+      // ASCII — nearly every code unit of a Latin document — is screened by a
+      // flat table first: this walk covers every character of every run, and
+      // hashing the same 70-odd strings into a Set was most of its cost.
+      const text = run.text;
+      for (let i = 0; i < text.length; i++) {
+        const code = text.charCodeAt(i);
+        if (code < 128) {
+          if (s.ascii[code] === 1) continue;
+          s.ascii[code] = 1;
+          s.chars.add(text[i]!);
+        } else {
+          // Non-ASCII: take the whole code point, so a surrogate pair enters
+          // the set as one character exactly as the string iterator gave it.
+          const cp = String.fromCodePoint(text.codePointAt(i)!);
+          s.chars.add(cp);
+          i += cp.length - 1;
+        }
+      }
       if (s.kern.length < KERN_SAMPLE_MAX) {
         s.kern += run.text.slice(0, KERN_SAMPLE_MAX - s.kern.length);
       }
