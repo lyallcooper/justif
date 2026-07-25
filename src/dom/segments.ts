@@ -70,11 +70,18 @@ function trackingFeatureSettings(spec: FontSpec, active: boolean): string | unde
  * fixture words render). LTR paragraphs cannot reach this path with RTL
  * text (they bail), and keep the one-glyph measurement unchanged.
  */
-function spaceWidthIn(spec: FontSpec, runText: string): number {
+function spaceWidthIn(spec: FontSpec, context: () => string): number {
+  // `context` is a thunk: only the paths below that actually probe in script
+  // or letter context need the text, and materializing a paragraph-wide
+  // string for the ordinary case was pure waste. Memoized because an RTL spec
+  // in neither Arabic nor Hebrew falls through to the variant path and would
+  // otherwise rebuild it twice.
+  let text: string | undefined;
+  const runText = (): string => (text ??= context());
   if (spec.direction === "rtl") {
-    const probe = /\p{Script=Arabic}/u.test(runText)
+    const probe = /\p{Script=Arabic}/u.test(runText())
       ? "ل" // Arabic lam
-      : /\p{Script=Hebrew}/u.test(runText)
+      : /\p{Script=Hebrew}/u.test(runText())
         ? "א" // Hebrew alef
         : null;
     if (probe !== null) {
@@ -92,7 +99,7 @@ function spaceWidthIn(spec: FontSpec, runText: string): number {
     // spaces into its own shaping segment (Firefox shapes sub/super
     // contextually across a run), so their spaces really do render alone
     // and the lone-space measurement is the matching one.
-    const letter = /\p{L}/u.exec(runText)?.[0] ?? "n";
+    const letter = /\p{L}/u.exec(runText())?.[0] ?? "n";
     return measureWidth(`${letter} ${letter}`, spec) - 2 * measureWidth(letter, spec);
   }
   return measureWidth(" ", spec);
@@ -172,10 +179,13 @@ export function buildRunMetrics(
   protrusion?: ProtrusionSettings,
 ): RunMetrics[] {
   // Base-space context is the whole paragraph: the base font's spaces sit
-  // between whatever script the paragraph is written in.
+  // between whatever script the paragraph is written in. Materialized LAZILY —
+  // spaceWidthIn ignores its text for the ordinary LTR, variant-free spec, so
+  // the common paragraph never pays for a copy of its own text.
   const baseSpec = scan.specs[scan.baseSpec]!;
-  const paragraphText = scan.runs.map((r) => r.text).join(" ");
-  const baseSpaceWidth = spaceWidthIn(baseSpec, paragraphText);
+  const baseSpaceWidth = spaceWidthIn(baseSpec, () =>
+    scan.runs.map((r) => r.text).join(" "),
+  );
   const pull = spacing.pull ?? 0.7;
   // Every quantized stretch value the layout can emit gets its own
   // measurement (linear interpolation between the endpoints errs by
@@ -201,7 +211,7 @@ export function buildRunMetrics(
     const perFontTables = composedForFamily(spec.family, protrusion);
     const perFont = perFontTables?.rest;
     const perFontFirst = perFontTables?.first;
-    const naturalSpace = spaceWidthIn(spec, run.text);
+    const naturalSpace = spaceWidthIn(spec, () => run.text);
     // Oversized secondary-font spaces (monospace inline code — a full cell
     // wide) get downward pressure toward the paragraph's base space: the
     // line's rhythm is set by the base font, and a raw cell-space reads as
@@ -303,7 +313,8 @@ export function buildRenderSegments(
       // The rendered space advance (script-contextual — see spaceWidthIn)
       // is what CSS word-spacing adds to; the offset closes the gap from
       // that advance to the glue width the engine assigned.
-      const widthOffset = metrics.space.width - spaceWidthIn(spec, scan.runs[runIndex]!.text);
+      const widthOffset =
+        metrics.space.width - spaceWidthIn(spec, () => scan.runs[runIndex]!.text);
       const pool = flexOf ?? metrics.space;
       const flex = line.glueRatio >= 0 ? pool.stretch : pool.shrink;
       return spec.wordSpacingPx + widthOffset + line.glueRatio * flex;
@@ -381,7 +392,7 @@ export function buildRenderSegments(
       const wordSpacing = fixedNoBreakBox
         ? spec.wordSpacingPx
         : desired(run, rigidFlex ?? undefined);
-      const spacePx = spaceWidthIn(spec, scan.runs[run]!.text) * ratio + wordSpacing;
+      const spacePx = spaceWidthIn(spec, () => scan.runs[run]!.text) * ratio + wordSpacing;
       const srcRun = scan.runs[run]!;
       let decorPx: number | undefined;
       if (srcRun.padStartPx !== undefined && !decorStartSeen.has(run)) {
