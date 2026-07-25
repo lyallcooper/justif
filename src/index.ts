@@ -297,30 +297,36 @@ function withOverrides<T extends object>(defaults: T, overrides: Partial<T>): T 
   return merged;
 }
 
-export function justify(
-  targets: Element | Iterable<Element>,
-  options: JustifyOptions = {},
-): JustifyController {
-  if (typeof document === "undefined" || typeof window === "undefined") {
-    return noopController();
-  }
+/** Message for an `onSkip` reason: anything can be thrown, including
+ * non-Errors from hostile content. */
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
-  const paragraphs: HTMLElement[] = [];
-  for (const el of targets instanceof Element ? [targets] : targets) {
-    if (el instanceof HTMLElement) paragraphs.push(el);
-  }
+/** Everything the option object decides before any paragraph is touched.
+ * Pure: computed once per controller, then shared by every phase. */
+interface ResolvedOptions {
+  breakOpts: BreakOptions;
+  buildOpts: BuildOptions;
+  /** The clamped public value, feeding breaker pricing AND the layout floor
+   * — the two must see the same number. */
+  lastLineMinWidth: number;
+  expansion: ExpansionOptions | false;
+  spacing: Required<NonNullable<JustifyOptions["spacing"]>>;
+  /** Per-run protrusion resolution context for `buildRunMetrics`. */
+  protrusionCtx: {
+    enabled: boolean;
+    user: ProtrusionTable | null;
+    hang: HangingPunctuationMode;
+  };
+  /** Memoized word splitter, or undefined when hyphenation is off. */
+  hyphenate: ((word: string) => readonly string[]) | undefined;
+}
 
-  const owner = Symbol("justif-controller");
-  /** Per-controller, so a destroy() + justify() retry gets a fresh chance
-   * after content that previously caused a bail has been fixed. */
-  const bailed = new WeakSet<HTMLElement>();
-  let destroyed = false;
-
+function resolveOptions(options: JustifyOptions): ResolvedOptions {
   const breakOpts = withOverrides(defaultBreakOptions, options);
   // The public default is Bringhurst's third (the CORE default stays 0 =
-  // classic TeX, like tracking's core-off/public-on split). One clamped
-  // value feeds breaker pricing AND the layout floor — the two must see
-  // the same number.
+  // classic TeX, like tracking's core-off/public-on split).
   const lastLineMinWidth = Math.max(0, Math.min(1, options.lastLineMinWidth ?? 0.33));
   breakOpts.lastLineMinWidth = lastLineMinWidth;
   /** User's explicit per-char overrides, kept separate so they also win
@@ -340,15 +346,18 @@ export function justify(
   const protrusion: ProtrusionTable | false = composed === null ? false : composed.rest;
   const protrusionFirst =
     composed !== null && composed.first !== composed.rest ? composed.first : undefined;
-  const protrusionCtx = { enabled: composed !== null, user: protrusionUser, hang: hangMode };
   const expansion = options.expansion === undefined ? DEFAULT_EXPANSION : options.expansion;
-  const spacing = options.spacing ?? DEFAULT_SPACING;
+  // withOverrides, never a spread: object spread copies an explicitly present
+  // `boundaryShrink: undefined` — the shape a wrapper building options from
+  // its own optional config emits — over the default, and a family-boundary
+  // glue shrink of `NaN` then silently changes chosen breaks.
+  const spacing = withOverrides(DEFAULT_SPACING, options.spacing ?? {});
   const tracking: TrackingOptions | false =
     options.tracking === false
       ? false
       : options.tracking === true || options.tracking === undefined
         ? DEFAULT_TRACKING
-        : { ...DEFAULT_TRACKING, ...options.tracking };
+        : withOverrides(DEFAULT_TRACKING, options.tracking);
 
   let hyphenate = options.hyphenate;
   if (hyphenate !== undefined) {
@@ -363,51 +372,241 @@ export function justify(
       return pieces;
     };
   }
-  const buildOpts: BuildOptions = {
-    ...defaultBuildOptions,
-    hyphenate,
-    lastLineFit: Math.max(0, Math.min(1, options.lastLineFit ?? 0)),
-    lastLineMinWidth,
-    hyphenPenalty: options.hyphenPenalty ?? defaultBuildOptions.hyphenPenalty,
-    exHyphenPenalty: options.exHyphenPenalty ?? defaultBuildOptions.exHyphenPenalty,
-    protrusion,
-    protrusionFirst,
-    expansion,
-    tracking,
-    boundaryShrink: spacing.boundaryShrink ?? defaultBuildOptions.boundaryShrink,
-  };
 
-  /**
-   * Temporarily suppress text autosizing on every source run before the scan.
-   * WebKit exposes an already-active autosizing multiplier through computed
-   * font sizes; applying the permanent opt-out only when output was written
-   * would therefore measure boosted text and render it unboosted. Do all
-   * writes up front so the first computed-style read pays one batched style
-   * recalculation, then restore every style attribute byte-for-byte before
-   * measurement or user code can observe the temporary declarations.
-   */
-  const disableTextAutosizingForScan = (): (() => void) => {
-    const saved: Array<{ el: HTMLElement; style: string | null }> = [];
-    const seen = new WeakSet<HTMLElement>();
-    const disable = (el: HTMLElement): void => {
-      if (seen.has(el)) return;
-      seen.add(el);
-      saved.push({ el, style: el.getAttribute("style") });
-      disableTextAutosizing(el);
-    };
-    for (const p of paragraphs) {
-      if (states.get(p)?.enhanced) continue;
-      disable(p);
-      for (const el of p.querySelectorAll("*")) {
-        if (el instanceof HTMLElement) disable(el);
-      }
-    }
-    return () => {
-      for (const { el, style } of saved) {
-        restoreStyleAttribute(el, style);
-      }
-    };
+  return {
+    breakOpts,
+    // NOTE: JustifyOptions.protrusion/tracking are wider than BuildOptions',
+    // so withOverrides(defaultBuildOptions, options) does NOT typecheck —
+    // keep these explicit.
+    buildOpts: {
+      ...defaultBuildOptions,
+      hyphenate,
+      lastLineFit: Math.max(0, Math.min(1, options.lastLineFit ?? 0)),
+      lastLineMinWidth,
+      hyphenPenalty: options.hyphenPenalty ?? defaultBuildOptions.hyphenPenalty,
+      exHyphenPenalty: options.exHyphenPenalty ?? defaultBuildOptions.exHyphenPenalty,
+      protrusion,
+      protrusionFirst,
+      expansion,
+      tracking,
+      boundaryShrink: spacing.boundaryShrink,
+    },
+    lastLineMinWidth,
+    expansion,
+    spacing,
+    protrusionCtx: { enabled: composed !== null, user: protrusionUser, hang: hangMode },
+    hyphenate,
   };
+}
+
+/**
+ * Take over a paragraph: stash its author DOM and neutralize the CSS that
+ * would fight the model's own line breaking. Everything written here is an
+ * inline declaration on the paragraph, restored byte-for-byte with the rest
+ * of the style attribute by destroy().
+ */
+function beginEnhancement(p: HTMLElement, state: ParaState): void {
+  state.original.append(...p.childNodes);
+  state.enhanced = true;
+  p.setAttribute("data-justif", "");
+  if (state.scan.floatIntrusion !== null) p.setAttribute("data-justif-dropcap", "");
+  disableTextAutosizing(p);
+  // Neutralize the author's text-align: justify (the browser must not
+  // re-justify our exactly-filled lines) — toward the line-START edge,
+  // which is the right edge in an RTL paragraph.
+  p.style.textAlign = state.scan.direction === "rtl" ? "right" : "left";
+  // text-align-last also applies to lines terminated by <br>. The core
+  // has already implemented its `justify` case by setting each segment
+  // ending as a rectangle, so neutralize that native second pass.
+  // Other author alignments remain useful: the browser can center/end-
+  // align our already-sized ragged ending without changing its breaks.
+  if (state.scan.justifyAll) {
+    p.style.textAlignLast = state.scan.direction === "rtl" ? "right" : "left";
+  }
+  // Neutralize CSS hanging-punctuation (Safari): it would hang quotes
+  // and stops on top of our protrusion — a double hang — and shift
+  // rendered widths our wrap model doesn't know about. A no-op in
+  // engines that don't support the property. Use `hangingPunctuation`
+  // (the protrusion preset) for the full-hang style instead.
+  p.style.setProperty("hanging-punctuation", "none");
+  // Reset the properties that decide where the engine MAY break. The
+  // model chose every break and each glyph run is `nowrap`, so neither
+  // the permissive values (which license a break where the text offers
+  // no opportunity) nor the restrictive ones (`keep-all`, `strict`,
+  // `loose`) have legitimate work left in the enhanced DOM: measured
+  // identical layout for CJK either way, and a too-wide token overflows
+  // the same as before, `break-all` or not. What the permissive values do
+  // have is a way to break the wrap guarantee. A line's ink deliberately
+  // overhangs the measure (a hanging hyphen protrudes, and every line
+  // carries the provisional wrap-safety pad), and Chromium and Firefox
+  // read that overhang as "this line overflows" and re-break it at the one
+  // boundary still available: between a segment and the `.justif-hyphen`
+  // carrying its hyphen glyph, which then paints at the START of the next
+  // line. WebKit takes the same break far more rarely, but does take it.
+  // `line-break: anywhere` would be the most destructive — its
+  // opportunities apply *inside* a nowrap run. The segment rules cover the
+  // licences an author rule grants closer to the break point than this
+  // (see SHEET_TEXT).
+  p.style.setProperty("overflow-wrap", "normal");
+  p.style.setProperty("word-break", "normal");
+  p.style.setProperty("line-break", "auto");
+  // Neutralize CSS `hyphens: auto`: the model chose every break, so
+  // auto-hyphenation has no work left in the enhanced DOM (the
+  // `hyphenate` option is the replacement) — and it makes Chromium's
+  // beside-float fit test stop hanging the trailing break space,
+  // dropping every line planned to wrap a drop cap below the float at
+  // its narrow measure. Written only when it changes the computed
+  // value: setting -webkit-hyphens at all (even to its initial
+  // `manual`) moves WebKit onto a text path with subtly different
+  // glyph advances. An author's `hyphens: auto !important` still wins,
+  // deliberately: like text-align above (and unlike text-size-adjust,
+  // where measurement integrity is at stake), enhancement never
+  // escalates against an explicit author override.
+  if (state.scan.specs[state.scan.baseSpec]!.hyphens === "auto") {
+    p.style.setProperty("hyphens", "manual");
+    p.style.setProperty("-webkit-hyphens", "manual");
+  }
+}
+
+/**
+ * Temporarily suppress text autosizing on every source run before the scan,
+ * returning the undo. WebKit exposes an already-active autosizing multiplier
+ * through computed font sizes; applying the permanent opt-out only when output
+ * was written would therefore measure boosted text and render it unboosted. Do
+ * all writes up front so the first computed-style read pays one batched style
+ * recalculation, then restore every style attribute byte-for-byte before
+ * measurement or user code can observe the temporary declarations.
+ */
+function suppressAutosizingForScan(paragraphs: readonly HTMLElement[]): () => void {
+  const saved: Array<{ el: HTMLElement; style: string | null }> = [];
+  const seen = new WeakSet<HTMLElement>();
+  const disable = (el: HTMLElement): void => {
+    if (seen.has(el)) return;
+    seen.add(el);
+    saved.push({ el, style: el.getAttribute("style") });
+    disableTextAutosizing(el);
+  };
+  for (const p of paragraphs) {
+    if (states.get(p)?.enhanced) continue;
+    disable(p);
+    for (const el of p.querySelectorAll("*")) {
+      if (el instanceof HTMLElement) disable(el);
+    }
+  }
+  return () => {
+    for (const { el, style } of saved) {
+      restoreStyleAttribute(el, style);
+    }
+  };
+}
+
+/** Block-level tags whose boundaries become blank lines in a plain-text copy. */
+const BLOCKY_TAGS =
+  /^(?:P|DIV|LI|UL|OL|BLOCKQUOTE|H[1-6]|PRE|TABLE|TR|SECTION|ARTICLE|HEADER|FOOTER|FIGURE|FIGCAPTION)$/;
+
+/**
+ * text/plain for a copied fragment. Taken from the cloned nodes rather than
+ * Selection.toString(): Firefox's toString() folds NBSP to a plain space,
+ * which would drop the very author NBSPs the cleanup guard exists to
+ * preserve.
+ */
+function plainTextOf(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) return node.nodeValue ?? "";
+  let out = "";
+  for (let c = node.firstChild; c !== null; c = c.nextSibling) out += plainTextOf(c);
+  if (node.nodeType === Node.ELEMENT_NODE) {
+    const tag = (node as Element).tagName;
+    if (tag === "BR") out += "\n";
+    else if (BLOCKY_TAGS.test(tag)) out += "\n\n";
+  }
+  return out;
+}
+
+/** One entry per ctx font the content needs. `sample` holds every distinct
+ * code point set in that font — faces are matched by unicode-range against
+ * concrete text, so both the load() await and the change probe must carry the
+ * scripts the content really uses (document.fonts.load() defaults to U+0020; a
+ * fixed Latin sentinel is blind to a Greek/CJK/symbol subset face).
+ * `kernSample` is a slice of RAW run text: real letter sequences, so a face
+ * that differs from its fallback only in kerning/shaping of adjacent pairs —
+ * metric-clone families, size-adjust-tuned fallbacks — still moves a probe
+ * even when per-glyph advances match. Baselines are the advances as of the
+ * last commit/re-measure. */
+interface FontProbe {
+  font: string;
+  sample: string;
+  kernSample: string;
+  baseline: number;
+  kernBaseline: number;
+}
+
+const KERN_SAMPLE_MAX = 256;
+
+/**
+ * Per-font samples: every DISTINCT code point the content sets in that font,
+ * spaces included (they size the glue), plus a raw-text kerning slice. No
+ * injected seed — foreign-script filler would force unrelated subset faces to
+ * download — and no cap on the code points: discarding later ones would blind
+ * both the load() await and the change probe to exactly the scripts it dropped
+ * (CJK documents, aggressively partitioned unicode-range families).
+ * Distinctness bounds the sample; probeAdvance measures in chunks, so cost
+ * stays flat even for ideographic content.
+ */
+function collectFontProbes(
+  scans: readonly ParagraphScan[],
+  hyphenating: boolean,
+): FontProbe[] {
+  const fontSample = new Map<string, { chars: Set<string>; kern: string }>();
+  for (const scan of scans) {
+    for (const spec of scan.specs) {
+      const font = ctxFontOf(spec);
+      if (!fontSample.has(font)) fontSample.set(font, { chars: new Set(), kern: "" });
+    }
+    for (const run of scan.runs) {
+      const s = fontSample.get(ctxFontOf(scan.specs[run.spec]!))!;
+      for (const ch of run.text) s.chars.add(ch);
+      if (s.kern.length < KERN_SAMPLE_MAX) {
+        s.kern += run.text.slice(0, KERN_SAMPLE_MAX - s.kern.length);
+      }
+      // Hyphenatable content renders a "-" the runs may not contain (the
+      // break glyph is measured per spec and painted via ::after) — a face
+      // serving U+002D must be awaited and watched too.
+      if (hyphenating || run.text.includes("\u00AD")) s.chars.add("-");
+    }
+  }
+  // A font no run draws from (a base spec whose text all sits in inline
+  // children) still sizes the paragraph's word spaces — its space glyph is
+  // the one piece of it the layout consumes.
+  return [...fontSample].map(([font, s]) => ({
+    font,
+    sample: s.chars.size === 0 ? " " : [...s.chars].join(""),
+    kernSample: s.kern,
+    baseline: 0,
+    kernBaseline: 0,
+  }));
+}
+
+export function justify(
+  targets: Element | Iterable<Element>,
+  options: JustifyOptions = {},
+): JustifyController {
+  if (typeof document === "undefined" || typeof window === "undefined") {
+    return noopController();
+  }
+
+  const paragraphs: HTMLElement[] = [];
+  for (const el of targets instanceof Element ? [targets] : targets) {
+    if (el instanceof HTMLElement) paragraphs.push(el);
+  }
+
+  const owner = Symbol("justif-controller");
+  /** Per-controller, so a destroy() + justify() retry gets a fresh chance
+   * after content that previously caused a bail has been fixed. */
+  const bailed = new WeakSet<HTMLElement>();
+  let destroyed = false;
+
+  const { breakOpts, buildOpts, lastLineMinWidth, expansion, spacing, protrusionCtx, hyphenate } =
+    resolveOptions(options);
 
   /** Phase 1: normalized computed-style and DOM reads; no font measurement. */
   const scanned = new Map<HTMLElement, ParagraphScan>();
@@ -433,7 +632,7 @@ export function justify(
         }
       }
     } catch (error) {
-      scan = `threw while scanning: ${error instanceof Error ? error.message : String(error)}`;
+      scan = `threw while scanning: ${describeError(error)}`;
     }
     if (typeof scan === "string") {
       bailed.add(p);
@@ -482,6 +681,29 @@ export function justify(
     return parts;
   };
 
+  /**
+   * Pre-shape every string that needs real DOM measurement, in ONE hidden
+   * batch: variant-bearing runs (small-caps and friends) can't be measured on
+   * canvas, and discovering them one paragraph at a time would pay a hidden
+   * layout each. The build results are thrown away — the pass that follows
+   * reads the exact cached widths. Throws are swallowed: the real pass owns
+   * the per-paragraph fail-safe and will bail that paragraph alone.
+   */
+  const warmDomWidths = (
+    entries: readonly { scan: ParagraphScan; specByKey: Map<string, FontSpec> }[],
+  ): void => {
+    collectDomMeasurements(() => {
+      for (const { scan, specByKey } of entries) {
+        if (!scan.specs.some(requiresDomMeasurement)) continue;
+        try {
+          buildParts(scan, buildRunMetrics(scan, expansion, spacing, protrusionCtx), specByKey);
+        } catch {
+          /* deliberately ignored; see above */
+        }
+      }
+    });
+  };
+
   /** Phase 2: measurement + item building, against the fonts currently
    * rendering (still-loading faces measure as their fallbacks and
    * converge later). */
@@ -495,6 +717,9 @@ export function justify(
     scanned.delete(p);
 
     try {
+      // Keyed on the MEASUREMENT key, so specs that differ only in a
+      // key-excluded field (`hyphens`) collapse to one entry — deliberately:
+      // they measure identically. See FontSpec.key.
       const specByKey = new Map<string, FontSpec>();
       for (const spec of scan.specs) specByKey.set(spec.key, spec);
       const runsMetrics = buildRunMetrics(scan, expansion, spacing, protrusionCtx);
@@ -513,7 +738,7 @@ export function justify(
     } catch (error) {
       // Same fail-safe as the scan: this paragraph stays native.
       bailed.add(p);
-      emitSkip(p, `threw while measuring: ${error instanceof Error ? error.message : String(error)}`);
+      emitSkip(p, `threw while measuring: ${describeError(error)}`);
       return false;
     }
     return true;
@@ -545,11 +770,10 @@ export function justify(
     try {
       return patchOne(p);
     } catch (error) {
-      const changed = states.get(p)?.enhanced === true;
-      restore(p);
-      bailed.add(p);
-      emitSkip(p, `threw while rendering: ${error instanceof Error ? error.message : String(error)}`);
-      return { changed, pending: null };
+      return {
+        changed: bailToNative(p, `threw while rendering: ${describeError(error)}`),
+        pending: null,
+      };
     }
   };
 
@@ -573,9 +797,39 @@ export function justify(
     }
   };
 
-  const patchOne = (p: HTMLElement): PatchOutcome => {
+  /** Owned live state for `p` — undefined when another controller took it
+   * over, or none manages it at all. */
+  const ownedState = (p: HTMLElement): ParaState | undefined => {
     const state = states.get(p);
-    if (state === undefined || state.owner !== owner) return { changed: false, pending: null };
+    return state !== undefined && state.owner === owner ? state : undefined;
+  };
+
+  /** Forget every queued width and correction for `p`. (The queues are
+   * declared below; every call happens long after initialization.) */
+  const dropQueued = (p: HTMLElement): void => {
+    pendingWidths.delete(p);
+    pendingCorrections.delete(p);
+    hiddenCorrections.delete(p);
+  };
+
+  /** Leave `p` in its author DOM for good and tell user code why. Returns
+   * whether its rendering changed (a relayout notification is then due). */
+  const bailToNative = (p: HTMLElement, reason: string): boolean => {
+    const changed = states.get(p)?.enhanced === true;
+    restore(p);
+    bailed.add(p);
+    emitSkip(p, reason);
+    return changed;
+  };
+
+  /**
+   * The paragraph's per-line measures. A text-indent and a floated
+   * ::first-letter each narrow their own leading lines; everything after
+   * them takes the full width. Returns null when the float leaves too little
+   * room for any line to set beside it — the breaker has no vertical escape,
+   * so that paragraph stays native until a resize restores usable space.
+   */
+  const lineWidthsFor = (state: ParaState): LineWidths | null => {
     // Percentage indents resolve against the LIVE width (the scan-time
     // resolution would go stale across resizes).
     const indentPx =
@@ -584,31 +838,49 @@ export function justify(
         : state.scan.textIndent;
     const intrusion = state.scan.floatIntrusion;
     const varyingLines = Math.max(indentPx !== 0 ? 1 : 0, intrusion?.lines ?? 0);
-    const rawWidths =
-      varyingLines > 0
-        ? Array.from({ length: varyingLines + 1 }, (_, line) =>
-            state.width -
-            (line === 0 ? indentPx : 0) -
-            (intrusion !== null && line < intrusion.lines ? intrusion.inlineSize : 0),
-          )
-        : state.width;
+    if (varyingLines === 0) return state.width;
+    const widths = Array.from(
+      { length: varyingLines + 1 },
+      (_, line) =>
+        state.width -
+        (line === 0 ? indentPx : 0) -
+        (intrusion !== null && line < intrusion.lines ? intrusion.inlineSize : 0),
+    );
     if (
       intrusion !== null &&
-      Array.isArray(rawWidths) &&
-      rawWidths.slice(0, intrusion.lines).some((width) => width < MIN_FLOAT_LINE_WIDTH_PX)
+      widths.slice(0, intrusion.lines).some((width) => width < MIN_FLOAT_LINE_WIDTH_PX)
     ) {
-      pendingWidths.delete(p);
-      pendingCorrections.delete(p);
-      hiddenCorrections.delete(p);
-      return { changed: restoreManagedOutput(p, state), pending: null };
+      return null;
     }
-    const widths = Array.isArray(rawWidths)
-      ? rawWidths.map((width) => Math.max(0, width))
-      : rawWidths;
-    // `justify-all` is the CSS-level rectangular mode: it requests that
-    // even the final (or only) line fill the measure. The ordinary public
-    // default remains 0.33 for multi-line endings only.
-    const paragraphMinWidth = state.scan.justifyAll ? 1 : lastLineMinWidth;
+    return widths.map((width) => Math.max(0, width));
+  };
+
+  /** One paragraph's chosen breaks, ready to write. */
+  interface PartsLayout {
+    rendered: RenderContent[];
+    /** Set width per visual line, including native `<br>`-only lines. */
+    lineWidths: number[];
+    /** Identity of this layout, for skipping no-op re-renders. */
+    fingerprint: string;
+    visualLineCount: number;
+    /** The sole modeled line, when the whole paragraph produced exactly one
+     * (with its break result); null otherwise. */
+    onlyLine: Line | null;
+    onlyResult: BreakResult | null;
+  }
+
+  /**
+   * Break and lay out every hard-break-delimited part of a paragraph against
+   * the given measures. With drop-cap line widths this deliberately commits
+   * each part's line count before choosing the next part's width slice: it
+   * does not backtrack across a `<br>` for a globally prettier allocation
+   * inside the overlap.
+   */
+  const layoutParts = (
+    state: ParaState,
+    widths: LineWidths,
+    paragraphMinWidth: number,
+  ): PartsLayout => {
     const paragraphBreakOpts =
       paragraphMinWidth === lastLineMinWidth
         ? breakOpts
@@ -618,13 +890,9 @@ export function justify(
         ? buildOpts
         : { ...buildOpts, lastLineMinWidth: paragraphMinWidth };
     const widthAt = (line: number): number =>
-      typeof widths === "number"
-        ? widths
-        : (widths[Math.min(line, widths.length - 1)] ?? 0);
+      typeof widths === "number" ? widths : (widths[Math.min(line, widths.length - 1)] ?? 0);
     const widthsFrom = (line: number): LineWidths =>
-      typeof widths === "number"
-        ? widths
-        : widths.slice(Math.min(line, widths.length - 1));
+      typeof widths === "number" ? widths : widths.slice(Math.min(line, widths.length - 1));
 
     const rendered: RenderContent[] = [];
     const lineWidths: number[] = [];
@@ -635,23 +903,21 @@ export function justify(
     let onlyLine: Line | null = null;
     let onlyResult: BreakResult | null = null;
 
-    // With drop-cap line widths, this deliberately commits each part's line
-    // count before choosing the next part's width slice. It does not backtrack
-    // across a <br> for a globally prettier allocation inside the overlap.
     for (let partIndex = 0; partIndex < state.parts.length; partIndex++) {
       const part = state.parts[partIndex]!;
       const partLineOffset = visualLineCount;
       const partWidths = widthsFrom(partLineOffset);
       const isFinal = part.breakAfter === null;
-      let result: BreakResult | null = null;
       let lines: Line[] = [];
 
       if (part.para.firstBoxAfter[0] !== part.para.items.length) {
+        // Only the paragraph's real ending is body color for lastLineFit; a
+        // hard-terminated segment's own ending is set naturally.
         const partBuildOpts =
           !isFinal && paragraphBuildOpts.lastLineFit !== 0
             ? { ...paragraphBuildOpts, lastLineFit: 0 }
             : paragraphBuildOpts;
-        result = breakParagraph(part.para, partWidths, paragraphBreakOpts);
+        const result = breakParagraph(part.para, partWidths, paragraphBreakOpts);
         lines = layoutLines(
           part.para,
           result,
@@ -660,13 +926,7 @@ export function justify(
           isFinal ? priorLastLineFit : undefined,
         );
         rendered.push(
-          ...buildRenderSegments(
-            state.scan,
-            state.runsMetrics,
-            part.para,
-            lines,
-            partLineOffset,
-          ),
+          ...buildRenderSegments(state.scan, state.runsMetrics, part.para, lines, partLineOffset),
         );
         for (const line of lines) lineWidths.push(line.width);
         visualLineCount += lines.length;
@@ -686,14 +946,10 @@ export function justify(
           priorLastLineFit.count++;
         }
         fingerprintParts.push(
-          `${partIndex}:${result.breakpoints.join(",")}:${
-            result.endingMinWidth ?? ""
-          }:${lines
+          `${partIndex}:${result.breakpoints.join(",")}:${result.endingMinWidth ?? ""}:${lines
             .map(
               (line) =>
-                `${line.glueRatio.toFixed(4)}:${line.trackRatio.toFixed(4)}:${
-                  line.fontStretch
-                }`,
+                `${line.glueRatio.toFixed(4)}:${line.trackRatio.toFixed(4)}:${line.fontStretch}`,
             )
             .join(",")}`,
         );
@@ -717,115 +973,79 @@ export function justify(
       }
     }
 
+    return {
+      rendered,
+      lineWidths,
+      fingerprint: fingerprintParts.join("|"),
+      visualLineCount,
+      onlyLine,
+      onlyResult,
+    };
+  };
+
+  /**
+   * A normal one-line paragraph has no short ending to repair and gains
+   * nothing from DOM rewriting, so it keeps its native rendering. Rectangular
+   * mode is the sole exception, and only when the breaker reached the FULL
+   * target rather than one of lastLineMinWidth's degraded fallback rungs: an
+   * unreachable line remains native instead of being partially widened.
+   */
+  const oneLineStaysNative = (layout: PartsLayout, paragraphMinWidth: number): boolean => {
+    const { onlyLine, onlyResult } = layout;
+    if (onlyLine === null || onlyResult === null) return false;
+    const adjusted =
+      Math.abs(onlyLine.glueRatio) > 1e-9 ||
+      Math.abs(onlyLine.trackRatio) > 1e-9 ||
+      Math.abs(onlyLine.fontStretch - 100) > 1e-9;
+    const reachedFullWidth =
+      paragraphMinWidth === 1 &&
+      (onlyResult.endingMinWidth ?? paragraphMinWidth) >= 1 - 1e-9 &&
+      onlyLine.overfull !== true &&
+      adjusted;
+    return !reachedFullWidth;
+  };
+
+  const patchOne = (p: HTMLElement): PatchOutcome => {
+    const state = ownedState(p);
+    if (state === undefined) return { changed: false, pending: null };
+    const widths = lineWidthsFor(state);
+    if (widths === null) {
+      dropQueued(p);
+      return { changed: restoreManagedOutput(p, state), pending: null };
+    }
+    // `justify-all` is the CSS-level rectangular mode: it requests that
+    // even the final (or only) line fill the measure. The ordinary public
+    // default remains 0.33 for multi-line endings only.
+    const paragraphMinWidth = state.scan.justifyAll ? 1 : lastLineMinWidth;
+    const layout = layoutParts(state, widths, paragraphMinWidth);
+
     if (
-      visualLineCount === 1 &&
+      layout.visualLineCount === 1 &&
       state.scan.hardBreaks.length === 0 &&
-      onlyLine !== null &&
-      onlyResult !== null
+      oneLineStaysNative(layout, paragraphMinWidth)
     ) {
-      // A normal one-line paragraph has no short ending to repair and gains
-      // nothing from DOM rewriting. Rectangular mode is the sole exception,
-      // and only when the breaker reached the FULL target rather than one
-      // of lastLineMinWidth's degraded fallback rungs. An unreachable line
-      // remains native instead of being partially widened.
-      const adjusted =
-        Math.abs(onlyLine.glueRatio) > 1e-9 ||
-        Math.abs(onlyLine.trackRatio) > 1e-9 ||
-        Math.abs(onlyLine.fontStretch - 100) > 1e-9;
-      const reachedFullWidth =
-        paragraphMinWidth === 1 &&
-        (onlyResult.endingMinWidth ?? paragraphMinWidth) >= 1 - 1e-9 &&
-        onlyLine.overfull !== true &&
-        adjusted;
-      if (!reachedFullWidth) {
-        pendingWidths.delete(p);
-        pendingCorrections.delete(p);
-        hiddenCorrections.delete(p);
-        return { changed: restoreManagedOutput(p, state), pending: null };
-      }
+      dropQueued(p);
+      return { changed: restoreManagedOutput(p, state), pending: null };
     }
 
-    const fingerprint = fingerprintParts.join("|");
-    if (fingerprint === state.lastPatch) return { changed: false, pending: null };
-    state.lastPatch = fingerprint;
+    if (layout.fingerprint === state.lastPatch) return { changed: false, pending: null };
+    state.lastPatch = layout.fingerprint;
 
-    if (!state.enhanced) {
-      state.original.append(...p.childNodes);
-      state.enhanced = true;
-      p.setAttribute("data-justif", "");
-      if (state.scan.floatIntrusion !== null) p.setAttribute("data-justif-dropcap", "");
-      disableTextAutosizing(p);
-      // Neutralize the author's text-align: justify (the browser must not
-      // re-justify our exactly-filled lines) — toward the line-START edge,
-      // which is the right edge in an RTL paragraph.
-      p.style.textAlign = state.scan.direction === "rtl" ? "right" : "left";
-      // text-align-last also applies to lines terminated by <br>. The core
-      // has already implemented its `justify` case by setting each segment
-      // ending as a rectangle, so neutralize that native second pass.
-      // Other author alignments remain useful: the browser can center/end-
-      // align our already-sized ragged ending without changing its breaks.
-      if (state.scan.justifyAll) {
-        p.style.textAlignLast = state.scan.direction === "rtl" ? "right" : "left";
-      }
-      // Neutralize CSS hanging-punctuation (Safari): it would hang quotes
-      // and stops on top of our protrusion — a double hang — and shift
-      // rendered widths our wrap model doesn't know about. A no-op in
-      // engines that don't support the property; restored by destroy()
-      // with the rest of the style attribute. Use `hangingPunctuation`
-      // (the protrusion preset) for the full-hang style instead.
-      p.style.setProperty("hanging-punctuation", "none");
-      // Reset the properties that decide where the engine MAY break. The
-      // model chose every break and each glyph run is `nowrap`, so neither
-      // the permissive values (which license a break where the text offers
-      // no opportunity) nor the restrictive ones (`keep-all`, `strict`,
-      // `loose`) have legitimate work left in the enhanced DOM: measured
-      // identical layout for CJK either way, and a too-wide token overflows
-      // the same as before, `break-all` or not. What the permissive values do
-      // have is a way to break the wrap guarantee. A line's ink deliberately
-      // overhangs the measure (a hanging hyphen protrudes, and every line
-      // carries the provisional wrap-safety pad), and Chromium and Firefox
-      // read that overhang as "this line overflows" and re-break it at the one
-      // boundary still available: between a segment and the `.justif-hyphen`
-      // carrying its hyphen glyph, which then paints at the START of the next
-      // line. WebKit takes the same break far more rarely, but does take it. `line-break: anywhere` would be the most
-      // destructive — its opportunities apply *inside* a nowrap run. The
-      // segment rules cover the licences an author rule grants closer to the
-      // break point than this (see SHEET_TEXT). Restored by destroy() with
-      // the rest of the style attribute.
-      p.style.setProperty("overflow-wrap", "normal");
-      p.style.setProperty("word-break", "normal");
-      p.style.setProperty("line-break", "auto");
-      // Neutralize CSS `hyphens: auto`: the model chose every break, so
-      // auto-hyphenation has no work left in the enhanced DOM (the
-      // `hyphenate` option is the replacement) — and it makes Chromium's
-      // beside-float fit test stop hanging the trailing break space,
-      // dropping every line planned to wrap a drop cap below the float at
-      // its narrow measure. Written only when it changes the computed
-      // value: setting -webkit-hyphens at all (even to its initial
-      // `manual`) moves WebKit onto a text path with subtly different
-      // glyph advances. Restored by destroy() with the rest of the style
-      // attribute. An author's `hyphens: auto !important` still wins,
-      // deliberately: like text-align above (and unlike text-size-adjust,
-      // where measurement integrity is at stake), enhancement never
-      // escalates against an explicit author override.
-      if (state.scan.specs[state.scan.baseSpec]!.hyphens === "auto") {
-        p.style.setProperty("hyphens", "manual");
-        p.style.setProperty("-webkit-hyphens", "manual");
-      }
-    }
+    if (!state.enhanced) beginEnhancement(p, state);
     // Exact placeholder geometry for content-visibility authors: line boxes
     // are uniform (nowrap segments and native empty <br> lines), so the
-    // model height is visual lines × line-height. Skipped paragraphs then occupy exactly their rendered
-    // size — find-in-page scroll targets, anchors, and scrollbars stay
-    // stable across reveals even in engines whose remembered-size
-    // recording is unreliable (WebKit).
+    // model height is visual lines × line-height. Skipped paragraphs then
+    // occupy exactly their rendered size — find-in-page scroll targets,
+    // anchors, and scrollbars stay stable across reveals even in engines
+    // whose remembered-size recording is unreliable (WebKit).
     if (state.scan.pinIntrinsicSize && state.scan.lineHeightPx !== null) {
       p.style.containIntrinsicBlockSize = `auto ${
-        Math.round(visualLineCount * state.scan.lineHeightPx * 1000) / 1000
+        Math.round(layout.visualLineCount * state.scan.lineHeightPx * 1000) / 1000
       }px`;
     }
     // This re-patch detaches any previous segment DOM: corrections queued
-    // for the old nodes are stale and must never be measured or parked.
+    // for the old nodes are stale and must never be measured or parked. A
+    // queued WIDTH stays — it describes the element, not the old nodes.
     pendingCorrections.delete(p);
     hiddenCorrections.delete(p);
     // Per-line target widths: an indented first line has its own measure,
@@ -834,9 +1054,9 @@ export function justify(
       changed: true,
       pending: writeParagraph(
         p,
-        rendered,
-        lineWidths,
-        intrusion?.lines ?? 0,
+        layout.rendered,
+        layout.lineWidths,
+        state.scan.floatIntrusion?.lines ?? 0,
       ),
     };
   };
@@ -878,16 +1098,9 @@ export function justify(
       }
       for (const { index, reason } of invalid) {
         const e = measure[index]!;
-        const state = states.get(e.p);
-        if (state === undefined || state.owner !== owner) continue;
-        pendingWidths.delete(e.p);
-        pendingCorrections.delete(e.p);
-        hiddenCorrections.delete(e.p);
-        const changed = state.enhanced;
-        restore(e.p);
-        bailed.add(e.p);
-        emitSkip(e.p, reason);
-        if (changed) emitRelayout(e.p);
+        if (ownedState(e.p) === undefined) continue;
+        dropQueued(e.p);
+        if (bailToNative(e.p, reason)) emitRelayout(e.p);
       }
     }
   };
@@ -903,24 +1116,14 @@ export function justify(
    * the probe guard in onFontsLoaded.
    */
   const commit = (scannable: readonly HTMLElement[]): void => {
-    // Discover every string needed by variant-bearing runs using disposable
-    // canvas estimates, then shape all of those strings in one hidden DOM
-    // batch. The real prepare pass below reads exact cached widths.
-    collectDomMeasurements(() => {
-      for (const p of scannable) {
+    warmDomWidths(
+      scannable.flatMap((p) => {
         const scan = scanned.get(p);
-        if (scan === undefined) continue;
-        if (!scan.specs.some(requiresDomMeasurement)) continue;
-        try {
-          const specByKey = new Map(scan.specs.map((spec) => [spec.key, spec]));
-          const runsMetrics = buildRunMetrics(scan, expansion, spacing, protrusionCtx);
-          buildParts(scan, runsMetrics, specByKey);
-        } catch {
-          // prepare() owns the per-paragraph fail-safe and will bail this
-          // paragraph without affecting its siblings.
-        }
-      }
-    });
+        return scan === undefined || !scan.specs.some(requiresDomMeasurement)
+          ? []
+          : [{ scan, specByKey: new Map(scan.specs.map((spec) => [spec.key, spec])) }];
+      }),
+    );
     const batch: PatchEntry[] = [];
     const changed: HTMLElement[] = [];
     for (const p of scannable) {
@@ -933,24 +1136,8 @@ export function justify(
     for (const p of changed) emitRelayout(p);
   };
 
-  /** One entry per ctx font the content needs. `sample` holds every
-   * distinct code point set in that font — faces are matched by
-   * unicode-range against concrete text, so both the load() await and the
-   * change probe must carry the scripts the content really uses
-   * (document.fonts.load() defaults to U+0020; a fixed Latin sentinel is
-   * blind to a Greek/CJK/symbol subset face). `kernSample` is a slice of
-   * RAW run text: real letter sequences, so a face that differs from its
-   * fallback only in kerning/shaping of adjacent pairs — metric-clone
-   * families, size-adjust-tuned fallbacks — still moves a probe even when
-   * per-glyph advances match. Baselines are the advances as of the last
-   * commit/re-measure. */
-  interface FontProbe {
-    font: string;
-    sample: string;
-    kernSample: string;
-    baseline: number;
-    kernBaseline: number;
-  }
+  /** Font probes for this controller's content; baselines are refreshed at
+   * every commit and re-measure. */
   let fontProbes: FontProbe[] = [];
   /** True once the needed faces settled (loaded or failed) and the layout
    * was reconciled with them — the module-level measure caches then hold
@@ -973,14 +1160,8 @@ export function justify(
   const refreshFloatIntrusions = (): boolean => {
     let changed = false;
     for (const p of paragraphs) {
-      const state = states.get(p);
-      if (
-        state === undefined ||
-        state.owner !== owner ||
-        state.scan.floatIntrusion === null
-      ) {
-        continue;
-      }
+      const state = ownedState(p);
+      if (state === undefined || state.scan.floatIntrusion === null) continue;
       const nextInlineSize = floatInlineSizeOf(p);
       if (nextInlineSize === null) continue;
       // With unchanged font probes, only the live inline size needs this
@@ -1009,16 +1190,12 @@ export function justify(
   const refreshNativeFloatIntrusions = (): boolean => {
     if (destroyed) return false;
     const candidates = paragraphs.flatMap((p) => {
-      const state = states.get(p);
-      return state !== undefined && state.owner === owner && state.scan.floatIntrusion !== null
-        ? [{ p, state }]
-        : [];
+      const state = ownedState(p);
+      return state !== undefined && state.scan.floatIntrusion !== null ? [{ p, state }] : [];
     });
     let changed = false;
     for (const { p, state } of candidates) {
-      pendingWidths.delete(p);
-      pendingCorrections.delete(p);
-      hiddenCorrections.delete(p);
+      dropQueued(p);
       if (restoreManagedOutput(p, state)) changed = true;
     }
     for (const { p, state } of candidates) {
@@ -1050,37 +1227,20 @@ export function justify(
     clearMeasureCache();
     clearCalibrationCache();
     reprobeBaselines();
-    const mine = paragraphs.filter((p) => states.get(p)?.owner === owner);
+    const mine = paragraphs.filter((p) => ownedState(p) !== undefined);
     // All width reads first, then all patches, then one correction flush —
     // interleaving reads with the DOM writes would force a layout per
     // paragraph.
     const widths = new Map(mine.map((p) => [p, contentWidthOf(p)]));
-    collectDomMeasurements(() => {
-      for (const p of mine) {
-        const state = states.get(p)!;
-        if (!state.scan.specs.some(requiresDomMeasurement)) continue;
-        try {
-          const runsMetrics = buildRunMetrics(state.scan, expansion, spacing, protrusionCtx);
-          buildParts(state.scan, runsMetrics, state.specByKey);
-        } catch {
-          // The actual pass below owns restoration and native fallback.
-        }
-      }
-    });
+    warmDomWidths(mine.map((p) => states.get(p)!));
     const batch: PatchEntry[] = [];
     const changed: HTMLElement[] = [];
     for (const p of mine) {
       const state = states.get(p)!;
       const width = widths.get(p)!;
       if (typeof width === "string") {
-        pendingWidths.delete(p);
-        pendingCorrections.delete(p);
-        hiddenCorrections.delete(p);
-        const wasEnhanced = state.enhanced;
-        restore(p);
-        bailed.add(p);
-        emitSkip(p, width);
-        if (wasEnhanced) changed.push(p);
+        dropQueued(p);
+        if (bailToNative(p, width)) changed.push(p);
         continue;
       }
       state.runsMetrics = buildRunMetrics(state.scan, expansion, spacing, protrusionCtx);
@@ -1184,8 +1344,8 @@ export function justify(
     const parked = hiddenCorrections.get(el);
     if (parked === undefined) return false;
     hiddenCorrections.delete(el);
-    const s = states.get(el);
-    if (s === undefined || s.owner !== owner || !s.enhanced) return false;
+    const s = ownedState(el);
+    if (s === undefined || !s.enhanced) return false;
     pendingCorrections.set(el, parked);
     return true;
   };
@@ -1259,8 +1419,8 @@ export function justify(
       // revert to the current width while the stale order still lists them.
       if (width === undefined) continue;
       pendingWidths.delete(el);
-      const state = states.get(el);
-      if (state === undefined || state.owner !== owner) continue;
+      const state = ownedState(el);
+      if (state === undefined) continue;
       if (Math.abs(width - state.width) < 0.05) continue;
       state.width = width;
       const outcome = safePatch(el);
@@ -1307,8 +1467,8 @@ export function justify(
     let touches = false;
     let authorNbsp = false;
     for (const p of paragraphs) {
-      const state = states.get(p);
-      if (state === undefined || state.owner !== owner || !state.enhanced) continue;
+      const state = ownedState(p);
+      if (state === undefined || !state.enhanced) continue;
       if (!sel.containsNode(p, true)) continue;
       touches = true;
       if (state.scan.runs.some((r) => /[\u00A0\u202F]/.test(r.text))) authorNbsp = true;
@@ -1319,22 +1479,6 @@ export function justify(
       const noWj = v.replace(/\u2060/g, "");
       return authorNbsp ? noWj : noWj.replace(/\u00A0/g, " ");
     };
-    // text/plain comes from the cloned fragments, not Selection.toString():
-    // Firefox's toString() folds NBSP to a plain space, which would drop
-    // the very author NBSPs the authorNbsp guard exists to preserve.
-    const BLOCKY =
-      /^(?:P|DIV|LI|UL|OL|BLOCKQUOTE|H[1-6]|PRE|TABLE|TR|SECTION|ARTICLE|HEADER|FOOTER|FIGURE|FIGCAPTION)$/;
-    const plainOf = (node: Node): string => {
-      if (node.nodeType === Node.TEXT_NODE) return node.nodeValue ?? "";
-      let out = "";
-      for (let c = node.firstChild; c !== null; c = c.nextSibling) out += plainOf(c);
-      if (node.nodeType === Node.ELEMENT_NODE) {
-        const tag = (node as Element).tagName;
-        if (tag === "BR") out += "\n";
-        else if (BLOCKY.test(tag)) out += "\n\n";
-      }
-      return out;
-    };
     const html = document.createElement("div");
     let plain = "";
     for (let i = 0; i < sel.rangeCount; i++) {
@@ -1343,7 +1487,7 @@ export function justify(
       for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
         n.nodeValue = clean(n.nodeValue ?? "");
       }
-      plain += plainOf(frag);
+      plain += plainTextOf(frag);
       html.append(frag);
     }
     e.clipboardData.setData("text/plain", plain.replace(/\n+$/, ""));
@@ -1375,8 +1519,7 @@ export function justify(
     // observers must run even with observeResize: false — without them the
     // measured wrap-guarantee would never fire at all.
     for (const p of paragraphs) {
-      const s = states.get(p);
-      if (s !== undefined && s.owner === owner) {
+      if (ownedState(p) !== undefined) {
         viewObserver?.observe(p);
         revealObserver?.observe(p);
       }
@@ -1384,8 +1527,8 @@ export function justify(
     if (options.observeResize !== false) {
       observer = createWidthObserver((widths) => {
         for (const [el, width] of widths) {
-          const state = states.get(el as HTMLElement);
-          if (state === undefined || state.owner !== owner) continue;
+          const state = ownedState(el as HTMLElement);
+          if (state === undefined) continue;
           if (Math.abs(width - state.width) < 0.05) {
             // Reverted to the current width: drop any queued intermediate
             // width, or a stale patch would land after the resize settled.
@@ -1405,8 +1548,7 @@ export function justify(
         }
       });
       for (const p of paragraphs) {
-        const s = states.get(p);
-        if (s !== undefined && s.owner === owner) observer.observe(p);
+        if (ownedState(p) !== undefined) observer.observe(p);
       }
     }
     document.fonts.addEventListener("loadingdone", onFontsLoaded);
@@ -1426,7 +1568,7 @@ export function justify(
   // document.fonts.check() is no arbiter either: WebKit answers true for
   // a still-loading face whenever the font string carries an available
   // fallback family. Probe advances are the only ground truth used here.)
-  const restoreScanStyles = disableTextAutosizingForScan();
+  const restoreScanStyles = suppressAutosizingForScan(paragraphs);
   let scannable: HTMLElement[];
   try {
     scannable = paragraphs.filter(scanParagraph);
@@ -1434,45 +1576,10 @@ export function justify(
     restoreScanStyles();
   }
   for (const { p, reason } of pendingSkips) emitSkip(p, reason);
-  // Per-font samples: every DISTINCT code point the content sets in that
-  // font, spaces included (they size the glue), plus a raw-text kerning
-  // slice. No injected seed — foreign-script filler would force unrelated
-  // subset faces to download — and no cap: discarding later code points
-  // would blind both the load() await and the change probe to exactly the
-  // scripts it dropped (CJK documents, aggressively partitioned
-  // unicode-range families). Distinctness bounds the sample; probeAdvance
-  // measures in chunks, so cost stays flat even for ideographic content.
-  const KERN_SAMPLE_MAX = 256;
-  const fontSample = new Map<string, { chars: Set<string>; kern: string }>();
-  for (const p of scannable) {
-    const scan = scanned.get(p);
-    if (scan === undefined) continue;
-    for (const spec of scan.specs) {
-      const font = ctxFontOf(spec);
-      if (!fontSample.has(font)) fontSample.set(font, { chars: new Set(), kern: "" });
-    }
-    for (const run of scan.runs) {
-      const s = fontSample.get(ctxFontOf(scan.specs[run.spec]!))!;
-      for (const ch of run.text) s.chars.add(ch);
-      if (s.kern.length < KERN_SAMPLE_MAX) {
-        s.kern += run.text.slice(0, KERN_SAMPLE_MAX - s.kern.length);
-      }
-      // Hyphenatable content renders a "-" the runs may not contain (the
-      // break glyph is measured per spec and painted via ::after) — a
-      // face serving U+002D must be awaited and watched too.
-      if (hyphenate !== undefined || run.text.includes("\u00AD")) s.chars.add("-");
-    }
-  }
-  // A font no run draws from (a base spec whose text all sits in inline
-  // children) still sizes the paragraph's word spaces — its space glyph
-  // is the one piece of it the layout consumes.
-  fontProbes = [...fontSample].map(([font, s]) => ({
-    font,
-    sample: s.chars.size === 0 ? " " : [...s.chars].join(""),
-    kernSample: s.kern,
-    baseline: 0,
-    kernBaseline: 0,
-  }));
+  fontProbes = collectFontProbes(
+    scannable.flatMap((p) => scanned.get(p) ?? []),
+    hyphenate !== undefined,
+  );
 
   let ready: Promise<void>;
   try {
@@ -1499,7 +1606,7 @@ export function justify(
   } catch (error) {
     // Unexpected controller-level failures surface through `ready`,
     // never as a synchronous justify() throw.
-    ready = Promise.reject(error instanceof Error ? error : new Error(String(error)));
+    ready = Promise.reject(error instanceof Error ? error : new Error(describeError(error)));
   }
   // Fire-and-forget callers must not trigger unhandled-rejection noise;
   // callers who await `ready` still observe failures.
@@ -1536,7 +1643,7 @@ export function justify(
       observer?.disconnect();
       observer = null;
       for (const p of paragraphs) {
-        if (states.get(p)?.owner === owner) restore(p);
+        if (ownedState(p) !== undefined) restore(p);
       }
     },
   };
