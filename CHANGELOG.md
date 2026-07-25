@@ -7,6 +7,8 @@
   surrounding prose.
 - Enhancement is about 5% faster, and more for paragraphs set in a font with a
   hand-tuned protrusion configuration.
+- Copying a selection that spans paragraphs from separate `justify()` calls no
+  longer drops author non-breaking spaces.
 - Pages that justify document after document no longer grow their memory
   without bound as more text is measured.
 

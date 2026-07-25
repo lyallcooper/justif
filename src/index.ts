@@ -611,6 +611,71 @@ function collectFontProbes(
   }));
 }
 
+/**
+ * Clipboard cleanup is a DOCUMENT-level concern, so all controllers share one
+ * listener: registering per controller meant a page that re-justifies without
+ * destroying accumulated handlers, each one cloning the whole selection on
+ * every copy, and whichever ran last decided the NBSP question for everyone —
+ * so an author NBSP in one controller's paragraph could be normalized away by
+ * another's handler. One listener, unioning every participant, removes both.
+ */
+interface ClipboardParticipant {
+  /** Enhanced paragraphs this controller owns, with their scans. */
+  enhanced(): Iterable<readonly [HTMLElement, ParagraphScan]>;
+}
+
+const clipboardParticipants = new Set<ClipboardParticipant>();
+
+const onDocumentCopy = (e: ClipboardEvent): void => {
+  if (e.clipboardData === null) return;
+  const sel = document.getSelection();
+  if (sel === null || sel.rangeCount === 0 || sel.isCollapsed) return;
+  let touches = false;
+  let authorNbsp = false;
+  for (const participant of clipboardParticipants) {
+    for (const [p, scan] of participant.enhanced()) {
+      if (!sel.containsNode(p, true)) continue;
+      touches = true;
+      if (scan.runs.some((r) => /[\u00A0\u202F]/.test(r.text))) authorNbsp = true;
+    }
+  }
+  if (!touches) return;
+
+  const clean = (v: string): string => {
+    const noWj = v.replace(/\u2060/g, "");
+    return authorNbsp ? noWj : noWj.replace(/\u00A0/g, " ");
+  };
+  const html = document.createElement("div");
+  let plain = "";
+  for (let i = 0; i < sel.rangeCount; i++) {
+    const frag = sel.getRangeAt(i).cloneContents();
+    const walker = document.createTreeWalker(frag, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
+      n.nodeValue = clean(n.nodeValue ?? "");
+    }
+    plain += plainTextOf(frag);
+    html.append(frag);
+  }
+  e.clipboardData.setData("text/plain", plain.replace(/\n+$/, ""));
+  e.clipboardData.setData("text/html", html.innerHTML);
+  e.preventDefault();
+};
+
+/** Join the shared copy handler; returns the leave function. The document
+ * listener exists only while at least one controller wants cleanup. */
+function joinClipboardCleanup(participant: ClipboardParticipant): () => void {
+  if (clipboardParticipants.size === 0) {
+    document.addEventListener("copy", onDocumentCopy);
+  }
+  clipboardParticipants.add(participant);
+  return () => {
+    if (!clipboardParticipants.delete(participant)) return;
+    if (clipboardParticipants.size === 0) {
+      document.removeEventListener("copy", onDocumentCopy);
+    }
+  };
+}
+
 export function justify(
   targets: Element | Iterable<Element>,
   options: JustifyOptions = {},
@@ -1479,47 +1544,18 @@ export function justify(
     if (pendingCorrections.size > 0 || pendingWidths.size > 0) scheduleSlice();
   };
 
-  /**
-   * Rewrites copies that touch enhanced paragraphs: strips the word
-   * joiners and (when no author NBSP is at stake) normalizes the
-   * run-boundary NBSPs back to ordinary spaces, for both text/plain and
-   * text/html flavors.
-   */
-  const onCopy = (e: ClipboardEvent): void => {
-    if (e.clipboardData === null) return;
-    const sel = document.getSelection();
-    if (sel === null || sel.rangeCount === 0 || sel.isCollapsed) return;
-    let touches = false;
-    let authorNbsp = false;
-    for (const p of paragraphs) {
-      const state = ownedState(p);
-      if (state === undefined || !state.enhanced) continue;
-      if (!sel.containsNode(p, true)) continue;
-      touches = true;
-      if (state.scan.runs.some((r) => /[\u00A0\u202F]/.test(r.text))) authorNbsp = true;
-    }
-    if (!touches) return;
-
-    const clean = (v: string): string => {
-      const noWj = v.replace(/\u2060/g, "");
-      return authorNbsp ? noWj : noWj.replace(/\u00A0/g, " ");
-    };
-    const html = document.createElement("div");
-    let plain = "";
-    for (let i = 0; i < sel.rangeCount; i++) {
-      const frag = sel.getRangeAt(i).cloneContents();
-      const walker = document.createTreeWalker(frag, NodeFilter.SHOW_TEXT);
-      for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
-        n.nodeValue = clean(n.nodeValue ?? "");
-      }
-      plain += plainTextOf(frag);
-      html.append(frag);
-    }
-    e.clipboardData.setData("text/plain", plain.replace(/\n+$/, ""));
-    e.clipboardData.setData("text/html", html.innerHTML);
-    e.preventDefault();
-  };
-  if (options.cleanClipboard !== false) document.addEventListener("copy", onCopy);
+  /** This controller's contribution to the shared copy handler. */
+  const leaveClipboardCleanup =
+    options.cleanClipboard === false
+      ? null
+      : joinClipboardCleanup({
+          *enhanced() {
+            for (const p of paragraphs) {
+              const state = ownedState(p);
+              if (state !== undefined && state.enhanced) yield [p, state.scan] as const;
+            }
+          },
+        });
 
   let observer: WidthObserver | null = null;
   /** Late font loads only matter if they change what canvas measures: a
@@ -1661,7 +1697,7 @@ export function justify(
       pendingCorrections.clear();
       hiddenCorrections.clear();
       pendingOrder = [];
-      document.removeEventListener("copy", onCopy);
+      leaveClipboardCleanup?.();
       document.fonts.removeEventListener("loadingdone", onFontsLoaded);
       viewObserver?.disconnect();
       revealObserver?.disconnect();
