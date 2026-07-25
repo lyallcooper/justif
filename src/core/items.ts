@@ -89,6 +89,63 @@ export function endingFloorRatio(
   return glueY > 0 ? (need - flexY * flexCap) / glueY : flexCap;
 }
 
+/** Half-open range of text consumed by a floated ::first-letter. */
+interface Exclusion {
+  start: number;
+  end: number;
+}
+
+/**
+ * `exclusion` — expressed in coordinates where the substring of `length`
+ * begins at `start` — re-expressed relative to that substring, or null when
+ * the two don't overlap. Used at each level of the tokenizer's descent
+ * (piece → part → fragment/cluster), since every level slices text a
+ * floated first letter may sit inside.
+ */
+function clipExclusion(
+  exclusion: Exclusion | undefined,
+  start: number,
+  length: number,
+): Exclusion | null {
+  const end = start + length;
+  // The `start >= end` conjunct is what the three inline blocks this replaced
+  // each carried: an empty or inverted range must produce no exclusion, not a
+  // backwards slice that DUPLICATES text into the box. The reader only ever
+  // emits well-formed ranges, but this is now the single choke point for every
+  // level of the tokenizer's descent, so it defends itself.
+  if (
+    exclusion === undefined ||
+    exclusion.start >= exclusion.end ||
+    exclusion.start >= end ||
+    exclusion.end <= start
+  ) {
+    return null;
+  }
+  return {
+    start: Math.max(0, exclusion.start - start),
+    end: Math.min(length, exclusion.end - start),
+  };
+}
+
+/**
+ * The part of `text` (beginning at `start` in the enclosing token) that stays
+ * in normal flow once `exclusion` is removed, plus that removal expressed
+ * relative to `text`. The excluded characters are rendered by the real float,
+ * so they are measured out of the box's width but kept in its source text.
+ */
+function excludeFlow(
+  text: string,
+  start: number,
+  exclusion: Exclusion | null,
+): { flowText: string; flowExclusion?: Exclusion } {
+  const clipped = clipExclusion(exclusion ?? undefined, start, text.length);
+  if (clipped === null) return { flowText: text };
+  return {
+    flowText: text.slice(0, clipped.start) + text.slice(clipped.end),
+    flowExclusion: clipped,
+  };
+}
+
 /**
  * Protrusion hang for `ch` at a line edge, in px: code/1000 × advance
  * (pdfTeX semantics), from the run's own hand-tuned table when one matched
@@ -201,7 +258,7 @@ export function buildItems(
     runIndex: number,
     width: number,
     flowText = text,
-    flowExclusion?: { start: number; end: number },
+    flowExclusion?: Exclusion,
   ): Box => {
     const run = runs[runIndex]!;
     let lp = 0;
@@ -353,7 +410,7 @@ export function buildItems(
   const pushWord = (
     token: string,
     runIndex: number,
-    exclusion: { start: number; end: number } | null,
+    exclusion: Exclusion | null,
   ): void => {
     const run = runs[runIndex]!;
 
@@ -408,18 +465,12 @@ export function buildItems(
     for (const plan of plans) {
       acc += plan.text;
       const start = tokenOffset;
-      const end = start + plan.text.length;
-      const excludedStart = exclusion === null ? end : Math.max(start, exclusion.start);
-      const excludedEnd = exclusion === null ? start : Math.min(end, exclusion.end);
-      const flowText =
-        excludedStart < excludedEnd
-          ? plan.text.slice(0, excludedStart - start) + plan.text.slice(excludedEnd - start)
-          : plan.text;
-      const boxExclusion =
-        excludedStart < excludedEnd
-          ? { start: excludedStart - start, end: excludedEnd - start }
-          : undefined;
-      tokenOffset = end;
+      const { flowText, flowExclusion: boxExclusion } = excludeFlow(
+        plan.text,
+        start,
+        exclusion,
+      );
+      tokenOffset = start + plan.text.length;
       const flowPrefix =
         exclusion === null
           ? acc
@@ -464,7 +515,7 @@ export function buildItems(
   const pushCJKToken = (
     token: string,
     runIndex: number,
-    exclusion: { start: number; end: number } | null,
+    exclusion: Exclusion | null,
   ): void => {
     const run = runs[runIndex]!;
     // Soft hyphens are meaningless between ideographs; strip them (the
@@ -478,25 +529,19 @@ export function buildItems(
       cjk: boolean;
       text: string;
       flowText: string;
-      flowExclusion?: { start: number; end: number };
+      flowExclusion?: Exclusion;
     }
     const groups: Group[] = [];
     let tokenOffset = 0;
     for (const cluster of graphemes(clean)) {
       const cjk = CJK_CHAR.test(cluster);
       const start = tokenOffset;
-      const end = start + cluster.length;
-      const excludedStart = exclusion === null ? end : Math.max(start, exclusion.start);
-      const excludedEnd = exclusion === null ? start : Math.min(end, exclusion.end);
-      const flowText =
-        excludedStart < excludedEnd
-          ? cluster.slice(0, excludedStart - start) + cluster.slice(excludedEnd - start)
-          : cluster;
-      const clusterExclusion =
-        excludedStart < excludedEnd
-          ? { start: excludedStart - start, end: excludedEnd - start }
-          : undefined;
-      tokenOffset = end;
+      const { flowText, flowExclusion: clusterExclusion } = excludeFlow(
+        cluster,
+        start,
+        exclusion,
+      );
+      tokenOffset = start + cluster.length;
       const last = groups[groups.length - 1];
       if (!cjk && last !== undefined && !last.cjk) {
         const previousLength = last.text.length;
@@ -592,16 +637,8 @@ export function buildItems(
     for (const part of parts) {
       if (part.length === 0) continue;
       const partStart = pieceOffset;
-      const partEnd = partStart + part.length;
-      pieceOffset = partEnd;
-      const exclusion = piece.flowExclusion;
-      const overlap =
-        exclusion !== undefined && exclusion.start < partEnd && exclusion.end > partStart
-          ? {
-              start: Math.max(0, exclusion.start - partStart),
-              end: Math.min(part.length, exclusion.end - partStart),
-            }
-          : null;
+      pieceOffset = partStart + part.length;
+      const overlap = clipExclusion(piece.flowExclusion, partStart, part.length);
       if (BREAKABLE_SPACE.test(part[0]!)) {
         if (hasBox) {
           pendingSpaceRun = run;
