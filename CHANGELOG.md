@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Fixed a few lines of a paragraph stretching to word spacing tens of pixels
+  wide on pages whose CSS lets the browser break long words:
+  `overflow-wrap: break-word` or `anywhere`, `word-break: break-all`, or
+  `line-break: anywhere`. Those declarations could also move an inserted
+  hyphen to the start of the following line; hyphens now stay at the end of
+  the line they break (#10). Only paragraphs on screen when
+  `justify()` ran showed the spacing, so the same text could look correct
+  until it was scrolled into view.
+
 ## 0.6.2 (2026-07-25)
 
 - Highlights made with third-party annotation tools (like Instapaper's

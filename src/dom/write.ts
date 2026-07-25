@@ -157,12 +157,25 @@ const STYLE_ID = "justif-style";
 const px = (v: number): string => `${Math.round(v * 1000) / 1000}px`;
 
 const SHEET_TEXT =
+  // Emergency-break licences are neutralized on the paragraph too, but
+  // Firefox resolves them from the element AT the break point, so the
+  // paragraph reset alone leaves it breaking whenever an author rule grants
+  // one closer in — `!important`, or a nested inline the segments are cloned
+  // into (`a{overflow-wrap:break-word}`). This rule is what covers Firefox
+  // in those cases; Chromium consults the block container and ignores it.
+  ".justif-seg,.justif-hyphen,.justif-break{overflow-wrap:normal;word-break:normal;line-break:auto}" +
   ".justif-seg{white-space:nowrap}" +
   // Once the source letter is a real float, Firefox retargets the
   // paragraph pseudo to the first normal-flow letter. Neutralize that
   // second pseudo; the real float carries the snapshotted author styles.
   "[data-justif-dropcap]::first-letter{all:unset!important}" +
-  '.justif-hyphen::after{content:"-"}' +
+  // nowrap on the hyphen carrier too, and it is the broadest of these
+  // defenses: it is the only one that stops Chromium breaking between a
+  // segment and the hyphen glyph ending the same line when the licence
+  // reaches the break point past the resets above — an author `!important`,
+  // or a rule on a nested inline. The wanted break stays on the following
+  // `.justif-break`, outside this element.
+  '.justif-hyphen{white-space:nowrap}.justif-hyphen::after{content:"-"}' +
   // Zero-width joints carry their break opportunity as a generated ZWSP
   // instead of a <wbr>: DOM-walking annotation tools treat unrecognized
   // elements as word separators, splitting the hyphenated word a quote
@@ -726,6 +739,26 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
             paintEndEntry.paintEndEl.contains(paintEndEntry.marginEndEl)
           ) {
             paintedEnd -= parseFloat(paintEndEntry.marginEndEl.style.marginInlineEnd) || 0;
+          }
+          // The hyphen carrier is the one line-end box the engine can move
+          // off this line on its own (an emergency break at its segment
+          // boundary — see the neutralizations in `justify`; a `!important`
+          // author licence still reaches it). A moved carrier reports the
+          // next line's start, or the next column's top, and correcting to
+          // that coordinate is what turns the deferred pass into a 50–75px
+          // word-spacing blowout. It shares a line box with the text it
+          // follows (same styling context, so same rect top) and the
+          // fragment that line was measured against; failing either, the
+          // line has re-wrapped and no correction can be measured — leave
+          // its provisional pad standing, as for a foreign-mutated line.
+          if (paintEndEntry.seg === null && endText !== undefined) {
+            const textRect = endText.el.getBoundingClientRect();
+            if (
+              Math.abs(paintRect.top - textRect.top) > 0.5 ||
+              fragmentForLine(fragments.rects, paintRect, rtl === true) !== fragment
+            ) {
+              continue;
+            }
           }
           const desiredEnd = (rtl ? -contentEnd : contentEnd) + rightHang + deliberateOverflow;
           adjustmentPx = paintedEnd - desiredEnd;

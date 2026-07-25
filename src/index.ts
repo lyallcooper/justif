@@ -774,6 +774,27 @@ export function justify(
       // with the rest of the style attribute. Use `hangingPunctuation`
       // (the protrusion preset) for the full-hang style instead.
       p.style.setProperty("hanging-punctuation", "none");
+      // Reset the properties that decide where the engine MAY break. The
+      // model chose every break and each glyph run is `nowrap`, so neither
+      // the permissive values (which license a break where the text offers
+      // no opportunity) nor the restrictive ones (`keep-all`, `strict`,
+      // `loose`) have legitimate work left in the enhanced DOM: measured
+      // identical layout for CJK either way, and a too-wide token overflows
+      // the same as before, `break-all` or not. What the permissive values do
+      // have is a way to break the wrap guarantee. A line's ink deliberately
+      // overhangs the measure (a hanging hyphen protrudes, and every line
+      // carries the provisional wrap-safety pad), and Chromium and Firefox
+      // read that overhang as "this line overflows" and re-break it at the one
+      // boundary still available: between a segment and the `.justif-hyphen`
+      // carrying its hyphen glyph, which then paints at the START of the next
+      // line. WebKit takes the same break far more rarely, but does take it. `line-break: anywhere` would be the most
+      // destructive — its opportunities apply *inside* a nowrap run. The
+      // segment rules cover the licences an author rule grants closer to the
+      // break point than this (see SHEET_TEXT). Restored by destroy() with
+      // the rest of the style attribute.
+      p.style.setProperty("overflow-wrap", "normal");
+      p.style.setProperty("word-break", "normal");
+      p.style.setProperty("line-break", "auto");
       // Neutralize CSS `hyphens: auto`: the model chose every break, so
       // auto-hyphenation has no work left in the enhanced DOM (the
       // `hyphenate` option is the replacement) — and it makes Chromium's

@@ -2923,6 +2923,71 @@ test("pseudo-hyphens sit after their word, never overlapping it", async ({ page 
   }
 });
 
+test("author emergency-break licences never strand a hyphen or blow spacing out", async ({
+  page,
+}) => {
+  // overflow-wrap/word-break/line-break all let the engine break where the
+  // text offers no opportunity. A line's ink deliberately overhangs the
+  // measure (hanging hyphen + wrap-safety pad), so Chromium and Firefox read
+  // it as overflowing and re-break at the segment/hyphen boundary, painting
+  // the hyphen at the START of the next line. The deferred correction pass
+  // then measures that coordinate as the line's painted end and stretches
+  // word-spacing by most of a column width (50-75px, issue #10).
+  for (const licence of [
+    { "overflow-wrap": "break-word" },
+    { "overflow-wrap": "anywhere" },
+    { "word-break": "break-all" },
+    { "line-break": "anywhere" },
+  ]) {
+    // A fresh document per licence. enhance() destroys the previous
+    // controller first, and destroy() restores the style attribute snapshotted
+    // at the FIRST justify() — writing the next licence before that would put
+    // every iteration back on the first one.
+    await openFixture(page);
+    await page.evaluate((declarations) => {
+      // Narrow measure: pass 2 must hyphenate for the licence to have a
+      // segment/hyphen boundary to break at.
+      document.getElementById("host")!.style.width = "230px";
+      for (const p of document.querySelectorAll<HTMLElement>("#host p")) {
+        for (const [property, value] of Object.entries(declarations)) {
+          p.style.setProperty(property, value);
+        }
+      }
+    }, licence);
+    const label = Object.entries(licence)[0]!.join(": ");
+    // Assert the licence is live on the paragraph BEFORE enhancement — which
+    // deliberately overrides it — so this loop can't retest one licence four
+    // times and read as four-way coverage.
+    const applied = await page.evaluate(
+      (property) =>
+        getComputedStyle(document.querySelector<HTMLElement>("#host p")!).getPropertyValue(
+          property,
+        ),
+      Object.keys(licence)[0]!,
+    );
+    expect(applied, `${label}: licence live before enhancement`).toBe(
+      Object.values(licence)[0],
+    );
+    await enhance(page, { hyphenate: true });
+    const lines = await page.evaluate(() =>
+      [...document.querySelectorAll<HTMLElement>("#host p")].flatMap((p) =>
+        window.__justifLines(p).lines.map((l) => l.texts),
+      ),
+    );
+    expect(lines.some((texts) => texts.includes("-")), `${label}: hyphenated`).toBe(true);
+    for (const texts of lines) {
+      // A hyphen belongs to the line it ends. Stranded, it leads the next one.
+      expect(texts.indexOf("-"), `${label}: line "${texts.join(" ").slice(0, 40)}"`).not.toBe(0);
+    }
+    const spacing = await page.evaluate(() =>
+      [...document.querySelectorAll<HTMLElement>("#host .justif-seg")].map(
+        (s) => parseFloat(getComputedStyle(s).wordSpacing) || 0,
+      ),
+    );
+    expect(Math.max(...spacing), `${label}: max word-spacing`).toBeLessThan(10);
+  }
+});
+
 test("hyphens render as pseudo-content; words stay whole for AT and find", async ({ page }) => {
   // Narrow measure + no emergency stretch: pass 2 must hyphenate.
   await page.evaluate(() => {
