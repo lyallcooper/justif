@@ -596,11 +596,12 @@ export function buildRenderSegments(
       // Unflagged zero-width penalties come in two kinds, told apart by
       // the `cjk` discriminator. Hand-built zero-width penalties sit BEFORE a
       // glue at a real space: the break consumes that space, which must
-      // still appear in the DOM text — a <wbr> there would silently delete
-      // it from copies and find-in-page. CJK inter-character penalties
-      // have NO source space: a space joint would inject one into copies
-      // (and render a visible gap), so they get the bare <wbr>.
-      // Explicit-hyphen breaks are flagged and keep the <wbr> below.
+      // still appear in the DOM text — a zero-width joint there would
+      // silently delete it from copies and find-in-page. CJK inter-character
+      // penalties have NO source space: a space joint would inject one into
+      // copies (and render a visible gap), so they get the bare zero-width
+      // joint. Explicit-hyphen breaks are flagged and keep the zero-width
+      // joint below.
       pendingJoint = brk.cjk === true ? "wbr" : "space";
     } else pendingJoint = "wbr"; // zero-width flagged penalty (explicit hyphen)
   }

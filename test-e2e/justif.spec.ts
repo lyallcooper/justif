@@ -2935,7 +2935,7 @@ test("hyphens render as pseudo-content; words stay whole for AT and find", async
     [...document.querySelectorAll(".justif-hyphen")].map((el) => el.textContent),
   );
   expect(hyphenTexts.every((t) => t === "")).toBe(true);
-  // A hyphenated word is findable as one word across the break (<wbr>).
+  // A hyphenated word is findable as one word across the zero-width joint.
   const found = await page.evaluate(() => {
     const hyphen = document.querySelector(".justif-hyphen")!;
     // The hyphen's previous sibling is the .justif-seg SPAN holding the
@@ -3833,7 +3833,7 @@ test("text-indent paragraphs: indented first line, all lines flush", async ({ pa
   }
 });
 
-test("Japanese: multiple flush lines, bare <wbr> joints, space-free copies", async ({ page }) => {
+test("Japanese: multiple flush lines, bare zero-width joints, space-free copies", async ({ page }) => {
   const r = await page.evaluate(async () => {
     const p = document.getElementById("pja")!;
     const original = p.textContent!;
@@ -3854,7 +3854,7 @@ test("Japanese: multiple flush lines, bare <wbr> joints, space-free copies", asy
       enhanced,
       copied,
       text: p.textContent!,
-      wbrs: p.querySelectorAll("wbr").length,
+      joints: p.querySelectorAll(".justif-break").length,
       contentRight: g.contentRight,
       lines: g.lines.map((l) => ({ right: l.right, text: l.texts.join("") })),
     };
@@ -3870,9 +3870,10 @@ test("Japanese: multiple flush lines, bare <wbr> joints, space-free copies", asy
       .soft(Math.abs(line.right - r.contentRight), `line ${i}: "${line.text.slice(0, 14)}"`)
       .toBeLessThan(1);
   }
-  // Line joints are bare <wbr>s: the DOM text stays byte-identical to the
-  // source — no space, NBSP, or hyphen injected between characters.
-  expect(r.wbrs).toBeGreaterThan(0);
+  // Line joints are bare zero-width break spans: the DOM text stays
+  // byte-identical to the source — no space, NBSP, or hyphen injected
+  // between characters.
+  expect(r.joints).toBeGreaterThan(0);
   expect(r.text).toBe(r.original);
   // Copies too: selection across the line breaks carries no whitespace.
   expect(r.copied).not.toMatch(/[ \u00A0\u2060\u2010-]/);

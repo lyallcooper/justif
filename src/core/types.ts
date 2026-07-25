@@ -200,7 +200,7 @@ export interface Penalty {
   run: number;
   /**
    * CJK inter-character break: the break site has NO source space, so a
-   * line broken here must render a bare <wbr> joint, never a space. This is
+   * line broken here must render a bare zero-width joint, never a space. This is
    * what distinguishes it from other unflagged zero-width penalties (from
    * hand-built withSums streams), which sit at real spaces and must keep
    * rendering the space they consumed.

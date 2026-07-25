@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Highlights made with third-party annotation tools (like Instapaper's
+  browser extension) no longer silently fail to appear when the selected
+  text crosses a hyphenated line break (#9).
+- Browser extensions that highlight by splitting or wrapping justif's
+  rendered text no longer trigger errors in the deferred line-width
+  corrections; affected lines keep their safe provisional spacing.
+
 ## 0.6.1 (2026-07-24)
 
 - Fixed author-written non-breaking spaces (U+00A0 and narrow U+202F) stretching

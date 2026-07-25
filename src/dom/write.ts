@@ -1,8 +1,8 @@
 /**
  * DOM emission via native soft wrap: each line's content is one or more
  * INLINE `white-space: nowrap` segments carrying that line's word-spacing /
- * font-stretch, with the real break space (or a <wbr> at hyphen points) left
- * between lines. Because every justified line fills the measure exactly, the
+ * font-stretch, with the real break space (or a zero-width break span at
+ * hyphen points) left between lines. Because every justified line fills the measure exactly, the
  * browser's own greedy wrap is forced to break at precisely the chosen
  * points — and because the flow stays inline:
  *   - assistive tech reads one continuous paragraph (no block boundaries),
@@ -120,8 +120,10 @@ export interface RenderSegment {
    * What separates this segment from the previous one:
    * "none" — same-line continuation (no break opportunity),
    * "space" — line boundary at a space (bare text node, hangs at wrap),
-   * "hyphen" — line boundary at a hyphenation point (pseudo-hyphen + <wbr>),
-   * "wbr" — line boundary after an explicit hyphen (zero-width, <wbr>).
+   * "hyphen" — line boundary at a hyphenation point (pseudo-hyphen +
+   *   zero-width break span),
+   * "wbr" — zero-width line boundary (explicit hyphen or CJK), rendered as
+   *   a break span whose ::after is a generated ZWSP.
    */
   joint: "none" | "space" | "hyphen" | "wbr";
 }
@@ -161,7 +163,15 @@ const SHEET_TEXT =
   // second pseudo; the real float carries the snapshotted author styles.
   "[data-justif-dropcap]::first-letter{all:unset!important}" +
   '.justif-hyphen::after{content:"-"}' +
-  '@supports (content:"-" / ""){.justif-hyphen::after{content:"-" / ""}}';
+  // Zero-width joints carry their break opportunity as a generated ZWSP
+  // instead of a <wbr>: DOM-walking annotation tools treat unrecognized
+  // elements as word separators, splitting the hyphenated word a quote
+  // must match. A bare hyphen-letter boundary is NOT sufficient in its
+  // place: Firefox follows UAX14 in refusing to break a hyphen-digit
+  // pair, so the ZWSP stays load-bearing.
+  '.justif-break::after{content:"\u200B"}' +
+  '@supports (content:"-" / ""){.justif-hyphen::after{content:"-" / ""}' +
+  '.justif-break::after{content:"\u200B" / ""}}';
 
 /**
  * Pin rendered text to the CSS font size. iOS Safari's automatic text
@@ -358,7 +368,15 @@ export function writeParagraph(
       stack.length = depth;
       const container = containerAt(depth);
       if (segment.joint === "space") container.append(doc.createTextNode(" "));
-      else container.append(doc.createElement("wbr"));
+      else {
+        // Zero-width break opportunity via generated content, not a <wbr>
+        // element and not a ZWSP text node (see SHEET_TEXT): the text
+        // layer — selection, clipboard, find-in-page — stays byte-identical
+        // to the source.
+        const brk = doc.createElement("span");
+        brk.className = "justif-break";
+        container.append(brk);
+      }
     }
 
     const container = containerFor(segment.ancestors);
@@ -559,6 +577,43 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
     for (let li = 0; li < lineElements.length; li++) {
       const entries = lineElements[li]!;
       if (entries.length === 0) continue;
+      // Third-party code (e.g. browser extensions) may have split a
+      // segment's text node or wrapped pieces of it. The measurements below
+      // index into those nodes with write-time offsets, so a foreign-mutated
+      // line cannot be measured against the model — leave its provisional
+      // wrap-safety margin standing instead.
+      const mutated = entries.some(({ el, seg }) => {
+        if (seg === null) return false;
+        const singleText =
+          el.childNodes.length === 1 &&
+          el.firstChild?.nodeType === 3 &&
+          (el.firstChild as Text).data === seg.text;
+        if (!(seg.physicalEndHangPx !== undefined && seg.physicalEndHangPx > 0)) {
+          return !singleText;
+        }
+        // A physical-end-hang segment legitimately holds text around its
+        // own hanging-cluster span (or a lone text node when every cluster
+        // is whitespace); anything else is foreign.
+        const mid = el.childNodes[1] as Element | undefined;
+        const hangShape =
+          el.childNodes.length === 3 &&
+          el.firstChild?.nodeType === 3 &&
+          mid?.nodeType === 1 &&
+          mid.className === "justif-hanging-end" &&
+          el.lastChild?.nodeType === 3 &&
+          el.textContent === seg.text;
+        return !(singleText || hangShape);
+      });
+      if (mutated) {
+        // Ink must still come from a real rect read (valid regardless of
+        // child mutation): asserting it would drop a layout-skipped
+        // paragraph out of the hidden re-park pipeline and lose its
+        // guaranteed reveal retry.
+        if (!sawInk) {
+          sawInk = entries.some(({ el }) => el.getBoundingClientRect().width > 0);
+        }
+        continue;
+      }
       const availableWidth = lineWidths[li] ?? lineWidths[lineWidths.length - 1] ?? 0;
       let rectPx = 0;
       let modelPx = 0;
