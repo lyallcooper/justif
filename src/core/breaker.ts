@@ -31,6 +31,14 @@ interface Node {
   totalDemerits: number;
   prev: Node | null;
   next: Node | null;
+  /** Left-protrusion credit of the box at `start` under this node's `line`
+   * (0 when `start` is not a box) — a function of (start, line), both fixed
+   * at construction, so the per-candidate item load and type test in
+   * `attempt`'s inner loop is hoisted out here. */
+  lpAdj: number;
+  /** Target width of the line this node opens (lineWidthAt(widths, line)),
+   * likewise fixed at construction. */
+  lineW: number;
 }
 
 /**
@@ -317,6 +325,19 @@ interface AttemptMode {
   strictEnding: boolean;
 }
 
+/**
+ * Scratch key→slot index for the per-breakpoint candidate classes, with a
+ * generation stamp so a breakpoint costs no clearing at all: a slot counts
+ * only when its stamp is the current one. Module-level and grown on demand —
+ * `attempt` is not reentrant, and reusing one pair of buffers across every
+ * pass and paragraph keeps the whole candidate bookkeeping allocation-free.
+ * Sized 4·(n+2): keys are line·4 + fitness and a chain cannot hold more
+ * breaks than there are items, so `line` ≤ n.
+ */
+let slotOf = new Int32Array(0);
+let slotStamp = new Int32Array(0);
+let stamp = 0;
+
 function attempt(
   para: ParagraphItems,
   widths: LineWidths,
@@ -327,9 +348,18 @@ function attempt(
   const { items, cumW, cumY, cumYfil, cumZ, cumExpY, cumExpZ, cumTrackY, firstBoxAfter } = para;
   const n = items.length;
 
+  /** lineWidthAt + the box-at-start protrusion credit, resolved once per
+   * node instead of once per (node, breakpoint) pair. */
+  const lpAdjAt = (start: number, line: number): number => {
+    const it = items[start];
+    if (it === undefined || it.type !== ItemType.Box) return 0;
+    return line === 0 ? it.lpFirst : it.lp;
+  };
+
+  const firstStart = firstBoxAfter[0]!;
   let active: Node | null = {
     item: -1,
-    start: firstBoxAfter[0]!,
+    start: firstStart,
     line: 0,
     fitness: Fitness.Decent,
     flagged: false,
@@ -337,15 +367,37 @@ function attempt(
     totalDemerits: 0,
     prev: null,
     next: null,
+    lpAdj: lpAdjAt(firstStart, 0),
+    lineW: lineWidthAt(widths, 0),
   };
 
-  interface Candidate {
-    from: Node;
-    fitness: Fitness;
-    totalDemerits: number;
-    overfull: boolean;
+  // Best candidate per (line, fitness) class at the current breakpoint, held
+  // in parallel arrays reused for the whole pass rather than a fresh Map per
+  // breakpoint: nothing is allocated per breakpoint or per candidate.
+  // Insertion order is the active list's order — that is what decides how
+  // equal-demerits ties resolve, so the arrays must stay append-only and be
+  // consumed front to back.
+  //
+  // The class count is USUALLY a handful (typically 1–2, four fitnesses ×
+  // the few line numbers the active list spans), which tempts a linear scan
+  // over the live keys. Do not: under a narrow measure with long words the
+  // active list spans hundreds of line numbers — measured up to 5278 nodes
+  // and 930 live classes — and the scan turns quadratic (a 29% REGRESSION
+  // against the Map on that workload). The stamped index is O(1) either way.
+  let candN = 0;
+  const candFrom: Node[] = [];
+  const candFit: Fitness[] = [];
+  const candDem: number[] = [];
+  const candOver: boolean[] = [];
+  const cap = 4 * (n + 2);
+  // The stamp advances once per breakpoint and must stay inside Int32 for the
+  // stored/compared values to agree, so the reset leaves room for this pass's
+  // own n increments (cap > n) as well.
+  if (slotOf.length < cap || stamp > 0x7fffffff - cap) {
+    slotOf = new Int32Array(cap);
+    slotStamp = new Int32Array(cap);
+    stamp = 0; // fresh buffers read as stamp 0; the counter below starts at 1
   }
-  const candidates = new Map<number, Candidate>();
 
   for (let b = 0; b < n; b++) {
     const it = items[b]!;
@@ -372,7 +424,25 @@ function attempt(
 
     const forced = it.type === ItemType.Penalty && it.penalty <= -INF_PENALTY;
 
-    candidates.clear();
+    // The cumulative sums at the BREAKPOINT are invariant across the active
+    // list; hoisting them turns 7 typed-array loads per (node, breakpoint)
+    // pair into 7 per breakpoint.
+    // NB: this hoists LOADS ONLY — every per-node expression below keeps its
+    // original association order. Do not "simplify" `penWidth` or `rp` into
+    // `wB` (nor fold any of these sums together): the float roundings differ,
+    // and lines sitting on the tolerance boundary then flip. A sweep over
+    // widths × thresholds found ~3% of paragraphs choosing different breaks
+    // from exactly that re-association, with the whole test suite still green.
+    const wB = cumW[b]!;
+    const yB = cumY[b]!;
+    const yFilB = cumYfil[b]!;
+    const zB = cumZ[b]!;
+    const eyB = cumExpY[b]!;
+    const ezB = cumExpZ[b]!;
+    const tyB = cumTrackY[b]!;
+
+    candN = 0;
+    stamp++;
     let bestDead: Node | null = null;
     let bestDeadOver = Infinity;
     let prevLink: Node | null = null;
@@ -382,17 +452,14 @@ function attempt(
       const next: Node | null = node.next;
       const start = node.start;
 
-      let L = cumW[b]! - cumW[start]! + penWidth;
-      const startItem = items[start];
-      if (startItem !== undefined && startItem.type === ItemType.Box) {
-        L -= node.line === 0 ? startItem.lpFirst : startItem.lp;
-      }
+      let L = wB - cumW[start]! + penWidth;
+      L -= node.lpAdj;
       L -= rp;
 
-      const W = lineWidthAt(widths, node.line);
-      const Y = cumY[b]! - cumY[start]! + (cumExpY[b]! - cumExpY[start]!);
-      const Yfil = cumYfil[b]! - cumYfil[start]!;
-      const Z = cumZ[b]! - cumZ[start]! + (cumExpZ[b]! - cumExpZ[start]!);
+      const W = node.lineW;
+      const Y = yB - cumY[start]! + (eyB - cumExpY[start]!);
+      const Yfil = yFilB - cumYfil[start]!;
+      const Z = zB - cumZ[start]! + (ezB - cumExpZ[start]!);
 
       let r: number;
       if (L < W) r = Yfil > 0 ? 0 : Y > 0 ? (W - L) / Y : Infinity;
@@ -450,9 +517,9 @@ function attempt(
             // quantizes it, so a one-step sliver of endings can price as
             // rectangles yet render natural — a preference error, never
             // a wrap hazard.)
-            const trackY = cumTrackY[b]! - cumTrackY[start]!;
-            const glueOnly = Math.max(0, cumY[b]! - cumY[start]! - trackY);
-            const flexY = trackY + (cumExpY[b]! - cumExpY[start]!);
+            const trackY = tyB - cumTrackY[start]!;
+            const glueOnly = Math.max(0, yB - cumY[start]! - trackY);
+            const flexY = trackY + (eyB - cumExpY[start]!);
             const rFloor = endingFloorRatio(
               need,
               glueOnly,
@@ -489,9 +556,20 @@ function attempt(
           if (forced && b === n - 1 && node.flagged) d += opts.finalHyphenDemerits;
           const total = node.totalDemerits + d;
           const key = node.line * 4 + fit;
-          const existing = candidates.get(key);
-          if (existing === undefined || total < existing.totalDemerits) {
-            candidates.set(key, { from: node, fitness: fit, totalDemerits: total, overfull: false });
+          const slot = slotStamp[key] === stamp ? slotOf[key]! : -1;
+          if (slot < 0) {
+            slotStamp[key] = stamp;
+            slotOf[key] = candN;
+            candFrom[candN] = node;
+            candFit[candN] = fit;
+            candDem[candN] = total;
+            candOver[candN] = false;
+            candN++;
+          } else if (total < candDem[slot]!) {
+            candFrom[slot] = node;
+            candFit[slot] = fit;
+            candDem[slot] = total;
+            candOver[slot] = false;
           }
         }
       }
@@ -526,28 +604,31 @@ function attempt(
 
     // TeX's artificial demerits: in the rescue pass, never let the active
     // list die without a successor — break here at the least-bad dead node.
-    if (rescue && active === null && candidates.size === 0 && bestDead !== null) {
-      candidates.set(bestDead.line * 4 + Fitness.Decent, {
-        from: bestDead,
-        fitness: Fitness.Decent,
-        totalDemerits: bestDead.totalDemerits,
-        overfull: bestDeadOver > 0,
-      });
+    if (rescue && active === null && candN === 0 && bestDead !== null) {
+      candFrom[0] = bestDead;
+      candFit[0] = Fitness.Decent;
+      candDem[0] = bestDead.totalDemerits;
+      candOver[0] = bestDeadOver > 0;
+      candN = 1;
     }
 
-    if (candidates.size > 0) {
+    if (candN > 0) {
       const start = firstBoxAfter[b + 1]!;
-      for (const cand of candidates.values()) {
+      for (let q = 0; q < candN; q++) {
+        const from = candFrom[q]!;
+        const line = from.line + 1;
         const fresh: Node = {
           item: b,
           start,
-          line: cand.from.line + 1,
-          fitness: cand.fitness,
+          line,
+          fitness: candFit[q]!,
           flagged,
-          overfull: cand.overfull,
-          totalDemerits: cand.totalDemerits,
-          prev: cand.from,
+          overfull: candOver[q]!,
+          totalDemerits: candDem[q]!,
+          prev: from,
           next: active,
+          lpAdj: lpAdjAt(start, line),
+          lineW: lineWidthAt(widths, line),
         };
         active = fresh;
       }
