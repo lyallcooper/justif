@@ -89,6 +89,42 @@ To limit the automatic scan, add a `data-justif-selector` such as `"article
 Add `data-justif-debug` to log why a paragraph kept native justification.
 With the JavaScript API, pass `onSkip` instead.
 
+### Use the JavaScript API
+
+Install the package:
+
+```sh
+npm install justif
+```
+
+Then choose the elements and hyphenator explicitly:
+
+```js
+import { justify } from "justif";
+import { hyphenateEnUS } from "justif/hyphenate/en-us";
+
+const controller = justify(document.querySelectorAll("article p"), {
+  hyphenate: hyphenateEnUS,
+});
+```
+
+`justify()` applies its initial layout before returning. Await
+`controller.ready` only when you need to wait for relevant fonts to load or
+fail, and for any resulting font-driven layout to finish. Call
+`controller.destroy()` later to restore the original DOM and disconnect
+observers.
+
+Container width changes and newly loaded web fonts are handled automatically.
+`refresh()` forces a re-measure for changes Justif cannot observe, for
+example a container width change with `observeResize: false`. If paragraph
+content or its computed text styles change, call `destroy()` and
+run `justify()` again so the paragraph can be rescanned.
+
+`justify()` accepts one `Element` or any iterable of elements. The returned
+controller exposes `ready`, `refresh()`, `destroy()`, and the selected
+`paragraphs`. `unjustify(elements)` can restore elements without access to
+their original controller.
+
 ### Loading and first paint
 
 Adding `blocking="render"` prevents the browser from painting native
@@ -137,46 +173,10 @@ for (const controller of window.justif.controllers) {
 }
 ```
 
-### Use the JavaScript API
-
-Install the package:
-
-```sh
-npm install justif
-```
-
-Then choose the elements and hyphenator explicitly:
-
-```js
-import { justify } from "justif";
-import { hyphenateEnUS } from "justif/hyphenate/en-us";
-
-const controller = justify(document.querySelectorAll("article p"), {
-  hyphenate: hyphenateEnUS,
-});
-```
-
-`justify()` applies its initial layout before returning. Await
-`controller.ready` only when you need to wait for relevant fonts to load or
-fail, and for any resulting font-driven layout to finish. Call
-`controller.destroy()` later to restore the original DOM and disconnect
-observers.
-
-Container width changes and newly loaded web fonts are handled automatically.
-`refresh()` forces a re-measure for changes Justif cannot observe — for
-example a container width change with `observeResize: false`. If paragraph
-content or its computed text styles change, call `destroy()` and
-run `justify()` again so the paragraph can be rescanned.
-
-`justify()` accepts one `Element` or any iterable of elements. The returned
-controller exposes `ready`, `refresh()`, `destroy()`, and the selected
-`paragraphs`. `unjustify(elements)` can restore elements without access to
-their original controller.
-
 ## Hyphenation
 
-The automatic script selects hyphenators from the nearest `lang` attribute.
-With the JavaScript API, import one hyphenator per language group:
+The drop-in auto.js script selects hyphenators from the nearest `lang`
+attribute. With the JavaScript API, import one hyphenator per language group:
 
 ```js
 import { justify } from "justif";
@@ -251,9 +251,9 @@ or `tracking` to `false` to disable that adjustment.
 | `spacing.pull` | How strongly wider spaces from secondary fonts move toward the main font's space width; `0` preserves them and `1` matches the main font |
 | `spacing.boundaryShrink` | How much shrinking is allowed where font families meet, such as around inline code or chips; `0` prevents it and `1` uses the full shrink allowance |
 
-### Advanced line breaking
+### Advanced tuning
 
-Most applications should keep these defaults. “Badness” is TeX's score for
+Most applications should keep these defaults. “Badness” is a TeX-like score for
 uneven word spacing; lower is better.
 
 | Option | Default | What it controls |
