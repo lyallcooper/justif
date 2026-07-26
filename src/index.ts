@@ -8,7 +8,7 @@
  * (Bringhurst's ±3%). Resize re-runs arithmetic only; `destroy()` restores
  * the original DOM.
  */
-import { breakParagraph, tryHyphenFree } from "./core/breaker.js";
+import { breakParagraph } from "./core/breaker.js";
 import { buildItems } from "./core/items.js";
 import { layoutLines } from "./core/layout.js";
 import {
@@ -228,14 +228,6 @@ export interface JustifyController {
 interface ParaPart {
   para: ParagraphItems;
   breakAfter: HardBreak | null;
-  /**
-   * SPECULATIVE part: `para` was built with `hyphenate` unset, so it carries
-   * no hyphenation penalties and no per-fragment width measurements, and only
-   * `tryHyphenFree` may be run against it. Call this to get the real
-   * (hyphenated) stream for the same runs; null once `para` is that stream.
-   * See the speculation gate in justify().
-   */
-  rehyphenate: (() => ParagraphItems) | null;
 }
 
 interface ParaState {
@@ -746,123 +738,6 @@ export function justify(
     return true;
   };
 
-  /**
-   * UNHYPHENATED-FIRST SPECULATION, and the gate that decides whether to bet.
-   *
-   * Building the item stream with hyphenation is the single most expensive
-   * step of a cold enhance: every token long enough gets probed against the
-   * pattern trie and, when it splits, one measured width per fragment PREFIX.
-   * Yet the breaker's first pass never breaks at a hyphenation point, and on
-   * ordinary prose at an ordinary measure it succeeds — so most of that work
-   * is thrown away. The bet: build the cheap stream, run exactly that first
-   * pass (`tryHyphenFree`), and pay the hyphenator only for the paragraphs it
-   * turns out to be needed for.
-   *
-   * It is a bet on the MEASURE, not on the library, and un-gated it loses
-   * badly. Measured pass-1 hit rate on realistic English prose: 83% at 620px,
-   * 15% at 200px, 2% at 90px; on long-word or all-distinct-vocabulary content
-   * it is near zero until the measure is very wide. A miss costs the wasted
-   * lean build plus the wasted pass (~0.4× the paragraph's total), so the bet
-   * breaks even near a 40% hit rate — meaning an ungated version regresses
-   * narrow columns and technical vocabularies by tens of percent.
-   *
-   * So learn it, per controller, from the paragraphs already laid out: an
-   * exponential moving average of the hit rate, speculating only while it sits
-   * above a floor comfortably clear of breakeven. Two refinements the numbers
-   * demanded:
-   *   - Below the floor, speculate anyway on every PROBE_EVERY-th paragraph.
-   *     Without it the gate latches: a resize that widens the measure, or a
-   *     later batch of shorter paragraphs, could never be discovered.
-   *   - A probe's outcome moves the average much harder than an ordinary
-   *     paragraph's (PROBE_ALPHA vs ALPHA). A probe is the ONLY evidence
-   *     arriving while the gate is shut, so at the ordinary rate a document
-   *     whose regime had changed would need dozens of probes — hundreds of
-   *     paragraphs — to climb back. At PROBE_ALPHA one successful probe
-   *     re-opens the gate, and one subsequent miss closes it again; measured,
-   *     a corpus that switches character is speculating confidently again ten
-   *     paragraphs later.
-   *
-   * Measured against the single-phase pipeline over five corpora x six
-   * measures (noise floor ~1%): −29% to −36% wherever the hit rate is high
-   * (realistic English at 460px and up, real prose at 320px and up, even the
-   * hostile corpora at 900px), −9% to −12% on real prose at ordinary
-   * measures, and a worst case of +2.6% on the rows where nothing hits —
-   * which is the probe's standing cost, and the price of being able to
-   * recover at all.
-   *
-   * THE FLOAT CAVEAT, and why the equivalence is "identical" and not "exact".
-   * A token the hyphenator splits contributes several boxes to one stream and
-   * one box to the other. Its fragment widths are measured over token PREFIXES
-   * so they telescope to the kerned whole-token width — but withSums then
-   * accumulates them one at a time, and (c+w₁)+w₂ is not c+(w₁+w₂) in binary
-   * floating point. The derived flex pools are worse: they carry Σ(wᵢ·k)
-   * against w_total·k. So the two streams' cumulative sums at a SHARED
-   * breakpoint differ in their last bits — measured over 56,000 shared
-   * breakpoints of real and synthetic prose, at most 6.4e-12 px on cumW
-   * (1.1e-15 relative) and 5.7e-13 px on the stretch pool.
-   *
-   * A paragraph whose pass-1 feasibility sits within that distance of the
-   * boundary can resolve differently depending on which stream asked. That is
-   * constructible: bisecting the measure width at which pass 1 flips, lean and
-   * hyphenated thresholds land 1e-14 px apart (~2e-16 of the measure), and a
-   * width inside that window does render differently — a different break, a
-   * line shrinking to ratio −1 instead of hyphenating. It is not reachable in
-   * practice: the window is ~1e-12 of one 1/64-px device pixel, and no
-   * container width is known that precisely. Over 31,500 paragraph renderings
-   * across 8 corpora x 7 measures x 5 thresholds, nothing the page depends on
-   * — breaks, hyphen flags, overfull flags, hangs, fontStretch, overflow,
-   * pass, endingMinWidth — differed at all, and glueRatio/trackRatio differed
-   * by at most 2.5e-13. Do not "fix" this by summing fragment widths a
-   * different way: buildItems measures prefixes precisely so that adding break
-   * opportunities cannot move the lines that don't use them, which is the
-   * stronger property.
-   */
-  const SPECULATION_ALPHA = 0.15;
-  const SPECULATION_PROBE_ALPHA = 0.5;
-  const SPECULATION_FLOOR = 0.45;
-  const SPECULATION_PROBE_EVERY = 32;
-  /**
-   * Seeded AT the decision boundary, not at certainty: content that will hit
-   * climbs away from it on its first paragraph, while content that never will
-   * shuts the gate on its first miss. Starting optimistic instead threw away
-   * the first eight or nine paragraphs of every document that was going to
-   * lose — the head of the document, which is the part the reader sees.
-   */
-  let speculationEma = SPECULATION_FLOOR;
-  let speculationSeen = 0;
-
-  const speculateFor = (scan: ParagraphScan, runsMetrics: readonly RunMetrics[]): boolean => {
-    // No hyphenator, or no run allowed to use one (CSS hyphens:none, and
-    // every RTL run — see buildRunMetrics): the two streams are then the same
-    // stream, so a hit saves nothing and a miss pays for a duplicate build.
-    if (buildOpts.hyphenate === undefined) return false;
-    if (runsMetrics.every((r) => r.noHyphens === true)) return false;
-    // Variant-bearing runs (small-caps and friends) can only be measured in
-    // the DOM, and their strings are pre-shaped in ONE hidden batch before any
-    // build (warmDomWidths). A hyphenated rebuild discovered at LAYOUT time
-    // would ask for fragment prefixes that batch never saw, and measureWidth
-    // resolves a late miss by flushing immediately — one forced layout per
-    // fragment. Such paragraphs build hyphenated up front, always.
-    if (scan.specs.some(requiresDomMeasurement)) return false;
-    speculationSeen++;
-    return (
-      speculationEma >= SPECULATION_FLOOR ||
-      speculationSeen % SPECULATION_PROBE_EVERY === 0
-    );
-  };
-
-  const noteSpeculation = (hit: boolean): void => {
-    // A bet placed while the estimate sits below the floor is a PROBE, and
-    // learns at the probe rate. Read off the estimate rather than a flag set
-    // at decision time, because a lean part can be reattempted with no build
-    // (and so no decision) in front of it — every resize reattempts the parts
-    // still holding a lean stream, and that outcome at the NEW measure is the
-    // most valuable evidence the gate ever gets.
-    speculationEma +=
-      ((hit ? 1 : 0) - speculationEma) *
-      (speculationEma < SPECULATION_FLOOR ? SPECULATION_PROBE_ALPHA : SPECULATION_ALPHA);
-  };
-
   const buildParts = (
     scan: ParagraphScan,
     runsMetrics: RunMetrics[],
@@ -876,32 +751,20 @@ export function justify(
     const opts = scan.direction === "rtl" ? { ...buildOpts, tracking: false as const } : buildOpts;
     const texts = runTexts(scan);
     const measure = measureFor(specByKey);
-    const speculate = speculateFor(scan, runsMetrics);
-    const leanOpts: BuildOptions = speculate ? { ...opts, hyphenate: undefined } : opts;
     const parts: ParaPart[] = [];
     let startRun = 0;
     const append = (endRun: number, breakAfter: HardBreak | null): void => {
-      const runSlice = texts.slice(startRun, endRun);
+      const para = buildItems(texts.slice(startRun, endRun), runsMetrics, opts, measure);
       // First-line protrusion is a property of the CSS paragraph, not of
       // each independently optimized hard-break segment. A leading <br>
       // consumes that first formatted line too, so every later segment
       // uses ordinary line-start protrusion from its first box onward.
-      // (Inside the closure so a rehyphenated rebuild gets it too.)
-      const later = parts.length > 0;
-      const build = (o: BuildOptions): ParagraphItems => {
-        const para = buildItems(runSlice, runsMetrics, o, measure);
-        if (later) {
-          for (const item of para.items) {
-            if (item.type === ItemType.Box) item.lpFirst = item.lp;
-          }
+      if (parts.length > 0) {
+        for (const item of para.items) {
+          if (item.type === ItemType.Box) item.lpFirst = item.lp;
         }
-        return para;
-      };
-      parts.push({
-        para: build(leanOpts),
-        breakAfter,
-        rehyphenate: speculate ? (): ParagraphItems => build(opts) : null,
-      });
+      }
+      parts.push({ para, breakAfter });
       startRun = endRun;
     };
     for (const hardBreak of scan.hardBreaks) {
@@ -1147,28 +1010,7 @@ export function justify(
           !isFinal && paragraphBuildOpts.lastLineFit !== 0
             ? { ...paragraphBuildOpts, lastLineFit: 0 }
             : paragraphBuildOpts;
-        // A speculative part gets the hyphen-free first pass; on success that
-        // result IS breakParagraph's (tryHyphenFree runs the same attempt and
-        // reports it the same way), so it is taken verbatim. On failure the
-        // hyphenated stream is built now and the part stops being speculative
-        // for good — a narrowing resize therefore pays the rebuild once per
-        // part, not once per width. (The paragraph is asked here even when the
-        // gate has since shut: the lean stream is already in hand, and the
-        // outcome is exactly the evidence a widened measure needs.)
-        let result: BreakResult;
-        if (part.rehyphenate !== null) {
-          const quick = tryHyphenFree(part.para, partWidths, paragraphBreakOpts);
-          noteSpeculation(quick !== null);
-          if (quick !== null) {
-            result = quick;
-          } else {
-            part.para = part.rehyphenate();
-            part.rehyphenate = null;
-            result = breakParagraph(part.para, partWidths, paragraphBreakOpts);
-          }
-        } else {
-          result = breakParagraph(part.para, partWidths, paragraphBreakOpts);
-        }
+        const result = breakParagraph(part.para, partWidths, paragraphBreakOpts);
         lines = layoutLines(
           part.para,
           result,
@@ -1197,11 +1039,7 @@ export function justify(
           priorLastLineFit.count++;
         }
         fingerprintParts.push(
-          // The lean/hyphenated marker is load-bearing: `breakpoints` are item
-          // indices, and promoting a speculative part renumbers the stream, so
-          // without it two different renderings could in principle fingerprint
-          // alike across the one width change that promotes the part.
-          `${partIndex}:${part.rehyphenate === null ? "h" : "l"}:${result.breakpoints.join(",")}:${result.endingMinWidth ?? ""}:${lines
+          `${partIndex}:${result.breakpoints.join(",")}:${result.endingMinWidth ?? ""}:${lines
             .map(
               (line) =>
                 `${line.glueRatio.toFixed(4)}:${line.trackRatio.toFixed(4)}:${line.fontStretch}`,
@@ -1482,11 +1320,6 @@ export function justify(
     clearMeasureCache();
     clearCalibrationCache();
     reprobeBaselines();
-    // A font (or zoom) change re-measures every word, so the hit rate learned
-    // under the old metrics is stale evidence about the new ones — and every
-    // part is about to be rebuilt from scratch anyway, which is the one moment
-    // the speculation is free to re-evaluate. Back to the boundary.
-    speculationEma = SPECULATION_FLOOR;
     const mine = paragraphs.filter((p) => ownedState(p) !== undefined);
     // All width reads first, then all patches, then one correction flush —
     // interleaving reads with the DOM writes would force a layout per

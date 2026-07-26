@@ -5,8 +5,7 @@
 - Justif now loads on Safari and iOS below 16.4.
 - `hyphens: none` is now honored on an inline run whose type matches the
   surrounding prose.
-- Enhancement is 11% to 25% faster on body text, the larger gains at wider
-  measures.
+- Enhancement is about 13% faster on body text.
 - Copying a selection that spans paragraphs from separate `justify()` calls no
   longer drops author non-breaking spaces.
 - Pages that justify document after document no longer grow their memory
