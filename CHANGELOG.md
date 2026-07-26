@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.4 (2026-07-26)
+
 - Justif now loads on Safari and iOS below 16.4.
 - `hyphens: none` is now honored on an inline run whose type matches the
   surrounding prose.
