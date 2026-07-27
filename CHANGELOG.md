@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Long single-paragraph passages now reflow much faster, including the
+  4,400-word excerpt on the demo page.
+
 ## 0.6.4 (2026-07-26)
 
 - Justif now loads on Safari and iOS below 16.4.

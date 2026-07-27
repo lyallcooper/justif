@@ -12,5 +12,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src", "test", "test-e2e"]
+  "include": ["bench", "src", "test", "test-e2e"]
 }
