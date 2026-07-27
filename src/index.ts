@@ -1175,6 +1175,11 @@ export function justify(
     // off-screen paragraphs would dominate the drain. Far paragraphs are
     // parked unmeasured; the viewport observers promote them on approach.
     // Without an IntersectionObserver everything is measured directly.
+    //
+    // IntersectionObserver cannot populate nearViewport synchronously. Until
+    // its first report, classify this batch directly so visible corrections
+    // land in the same task as their initial patch.
+    if (viewObserver !== null && !viewObserverReady) seedNearViewport(batch);
     const measure: PatchEntry[] = [];
     for (const e of batch) {
       if (viewObserver === null || nearViewport.has(e.p)) measure.push(e);
@@ -1382,11 +1387,33 @@ export function justify(
    * guaranteed second stage, so no retry loop is possible).
    */
   const nearViewport = new Set<Element>();
+  /** False until IntersectionObserver has supplied the passive viewport state. */
+  let viewObserverReady = false;
+  /** Synchronous fallback for the observer's initial asynchronous report. */
+  const seedNearViewport = (batch: readonly PatchEntry[]): void => {
+    const root = document.documentElement;
+    const width = root.clientWidth || window.innerWidth;
+    const height = root.clientHeight || window.innerHeight;
+    // Percentage root margins resolve against the root's width.
+    const margin = width / 2;
+    for (const { p } of batch) {
+      const r = p.getBoundingClientRect();
+      if (
+        r.bottom >= -margin &&
+        r.top <= height + margin &&
+        r.right >= -margin &&
+        r.left <= width + margin
+      ) {
+        nearViewport.add(p);
+      } else nearViewport.delete(p);
+    }
+  };
   const viewObserver =
     typeof IntersectionObserver === "undefined"
       ? null
       : new IntersectionObserver(
           (entries) => {
+            viewObserverReady = true;
             let promoted = false;
             for (const e of entries) {
               if (e.isIntersecting) {
@@ -1577,11 +1604,11 @@ export function justify(
   };
 
   const attachObservers = (): void => {
-    // Viewport tracking is independent of resize observation: corrections
-    // park during the initial enhancement flush on ANY page (the measure/
-    // park split in flushPatches gates on nearViewport), so both viewport
-    // observers must run even with observeResize: false — without them the
-    // measured wrap-guarantee would never fire at all.
+    // Viewport tracking is independent of resize observation: the initial
+    // flush seeds nearViewport itself, but only for what is on screen THEN —
+    // every paragraph below the fold still parks, on any page. So both
+    // viewport observers must run even with observeResize: false, or those
+    // parked corrections would never fire at all.
     for (const p of paragraphs) {
       if (ownedState(p) !== undefined) {
         viewObserver?.observe(p);

@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en-US">
+<head>
+<meta charset="utf-8" />
+<title>justif no-shift fixture</title>
+<style>
+  body { margin: 0; font-family: Georgia, serif; }
+  #host { width: 420px; padding: 20px; }
+  #host p { font-size: 17px; line-height: 1.45; margin: 0 0 1em; text-align: justify; }
+  #host code { font-family: ui-monospace, Menlo, monospace; font-size: 0.9em; padding: 2px 6px; background: #eee; }
+</style>
+<!--
+  Frame recorder, installed before enhancement. rAF runs immediately before
+  paint, so the first sample with visible content is the geometry of the first
+  frame a reader can see.
+-->
+<script>
+  window.__frames = [];
+  (function record() {
+    requestAnimationFrame(() => {
+      const shot = [];
+      const host = document.getElementById("host");
+      for (const p of host?.querySelectorAll("p") ?? []) {
+        const r = p.getBoundingClientRect();
+        shot.push(`${p.id}:${r.top.toFixed(1)},${r.height.toFixed(1)}`);
+        // VISUAL lines, not inline boxes: enhancement splits each line into
+        // several .justif-seg spans, so the raw rect COUNT changes even when
+        // nothing moves. Merge rects sharing a top into one line extent —
+        // that is what the reader actually sees.
+        const range = document.createRange();
+        range.selectNodeContents(p);
+        const byTop = new Map();
+        for (const q of range.getClientRects()) {
+          if (q.width <= 0) continue;
+          const key = Math.round(q.top * 2) / 2;
+          const line = byTop.get(key);
+          if (line === undefined) byTop.set(key, { left: q.left, right: q.right });
+          else {
+            line.left = Math.min(line.left, q.left);
+            line.right = Math.max(line.right, q.right);
+          }
+        }
+        for (const [top, l] of [...byTop].sort((a, b) => a[0] - b[0])) {
+          shot.push(`${top.toFixed(1)}/${l.left.toFixed(1)}/${l.right.toFixed(1)}`);
+        }
+      }
+      window.__frames.push({
+        geometry: shot.join("|"),
+        visible: host !== null && getComputedStyle(host).visibility === "visible",
+      });
+      record();
+    });
+  })();
+</script>
+<!--
+  ?hide exercises the reveal recipe for engines that ignore
+  blocking="render" (Firefox today): hold the text invisible, then reveal it
+  in the same frame the enhancement lands. Costs a brief blank instead of a
+  reflow. The class is set inline so it applies before anything paints, and
+  the reveal listener is registered AFTER auto.js's module has evaluated, so
+  it runs after auto.js's own DOMContentLoaded handler has committed.
+-->
+<style id="hide-rule">.justif-pending #host { visibility: hidden; }</style>
+<script>
+  if (location.search.includes("hide")) {
+    document.documentElement.classList.add("justif-pending");
+  }
+</script>
+<!-- The recommended drop-in, verbatim from the README. -->
+<script type="module" blocking="render" src="/dist/auto.js"></script>
+<script type="module">
+  const reveal = () => document.documentElement.classList.remove("justif-pending");
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", reveal, { once: true });
+  } else {
+    reveal();
+  }
+</script>
+</head>
+<body>
+<div id="host">
+  <p id="p1">In olden times when wishing still helped one, there lived a king whose
+  daughters were all beautiful; and the youngest was so beautiful that the sun itself,
+  which has seen so much, was astonished whenever it shone in her face.</p>
+  <p id="p2">Close by the king's castle lay a great dark forest, and under an old
+  lime-tree in the forest was a well, and when the day was very warm, the king's child
+  went out into the forest and sat down by the side of the cool fountain.</p>
+  <p id="p3">The call site is <a href="#a">documented as <code>observe()</code></a> in the
+  reference, and the only reliable ordering is the one the specification spells out, not
+  the one every implementation happens to produce under load.</p>
+</div>
+</body>
+</html>

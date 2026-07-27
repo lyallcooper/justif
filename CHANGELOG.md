@@ -4,6 +4,8 @@
 
 - Long single-paragraph passages now reflow much faster, including the
   4,400-word excerpt on the demo page.
+- On-screen paragraphs now receive their final spacing before `justify()`
+  returns, avoiding a brief overhang when pages enhance before first paint.
 
 ## 0.6.4 (2026-07-26)
 
