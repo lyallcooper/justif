@@ -374,9 +374,10 @@ function attempt(
   // Best candidate per (line, fitness) class at the current breakpoint, held
   // in parallel arrays reused for the whole pass rather than a fresh Map per
   // breakpoint: nothing is allocated per breakpoint or per candidate.
-  // Insertion order is the active list's order — that is what decides how
-  // equal-demerits ties resolve, so the arrays must stay append-only and be
-  // consumed front to back.
+  // Insertion order is the active list's order — that decides how equal-
+  // demerits ties between distinct classes resolve, so the arrays stay
+  // append-only and are consumed front to back. Ties within a collapsed class
+  // prefer fewer lines.
   //
   // The class count is USUALLY a handful (typically 1–2, four fitnesses ×
   // the few line numbers the active list spans), which tempts a linear scan
@@ -384,6 +385,11 @@ function attempt(
   // active list spans hundreds of line numbers — measured up to 5278 nodes
   // and 930 live classes — and the scan turns quadratic (a 29% REGRESSION
   // against the Map on that workload). The stamped index is O(1) either way.
+  //
+  // TeX's easy_line (§850): once line widths reach their repeating final
+  // value, line number no longer affects future costs. Clamp the candidate key
+  // there so equivalent paths do not accumulate one active node per line count.
+  const easyLine = typeof widths === "number" ? 0 : Math.max(0, widths.length - 1);
   let candN = 0;
   const candFrom: Node[] = [];
   const candFit: Fitness[] = [];
@@ -555,7 +561,7 @@ function attempt(
           if (Math.abs(fit - node.fitness) > 1) d += opts.adjDemerits;
           if (forced && b === n - 1 && node.flagged) d += opts.finalHyphenDemerits;
           const total = node.totalDemerits + d;
-          const key = node.line * 4 + fit;
+          const key = Math.min(node.line, easyLine) * 4 + fit;
           const slot = slotStamp[key] === stamp ? slotOf[key]! : -1;
           if (slot < 0) {
             slotStamp[key] = stamp;
@@ -565,7 +571,12 @@ function attempt(
             candDem[candN] = total;
             candOver[candN] = false;
             candN++;
-          } else if (total < candDem[slot]!) {
+          } else if (
+            total < candDem[slot]! ||
+            // Collapsed classes tie often in emergency and rescue passes;
+            // choose a stable representative that uses fewer lines.
+            (total === candDem[slot]! && node.line < candFrom[slot]!.line)
+          ) {
             candFrom[slot] = node;
             candFit[slot] = fit;
             candDem[slot] = total;

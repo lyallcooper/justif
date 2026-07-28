@@ -132,6 +132,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "bench": "vitest bench --run bench/breaker.bench.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.core.json --noEmit",
     "compare:tex": "node tools/tex-compare.mjs",
     "check:package": "node tools/check-package.mjs --dry-run",

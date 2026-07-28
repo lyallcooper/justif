@@ -253,6 +253,19 @@ describe("breakParagraph vs brute-force oracle", () => {
     expect(oracle).not.toBeNull();
     expect(breakParagraph(para, widths, pass2Opts).demerits).toBeCloseTo(oracle!, 6);
   });
+
+  it("is invariant to redundant copies of the final line width", () => {
+    const para = build(`${frogKing} ${frogKing}`, { hyphenate: fakeHyphenator });
+    const sameShape = (compact: LineWidths, padded: LineWidths): void => {
+      expect(breakParagraph(para, padded, defaultBreakOptions)).toEqual(
+        breakParagraph(para, compact, defaultBreakOptions),
+      );
+    };
+
+    sameShape(220, [220]);
+    sameShape([180, 220], [180, 220, 220, 220]);
+    sameShape([220, 180, 220], [220, 180, 220, 220, 220]);
+  });
 });
 
 describe("three-pass behavior", () => {
