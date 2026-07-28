@@ -162,10 +162,10 @@ async function readFragmentedGeometry(page: Page, selector: string): Promise<Fra
 /**
  * Resolve once `selector`'s subtree has stopped mutating: its innerHTML is
  * unchanged across two samples ~120ms apart. The measured wrap-guarantee
- * corrections land in trailing rAF slices, promoted by IntersectionObservers
- * (deferred off the interactive path), so "settled" is a fact about the DOM,
- * not a fixed delay. Bounded: proceeds after ~2s even if the DOM never goes
- * quiet — the assertions that follow then judge whatever state it is in.
+ * corrections queued by resizes or off-screen content land in trailing rAF
+ * slices, so "settled" is a fact about the DOM, not a fixed delay. Bounded:
+ * proceeds after ~2s even if the DOM never goes quiet — the assertions that
+ * follow then judge whatever state it is in.
  */
 async function waitForQuiescence(page: Page, selector = "#host"): Promise<void> {
   await page.evaluate(async (sel) => {
@@ -3748,10 +3748,6 @@ test("destroy() restores the original DOM byte-identically", async ({ page }) =>
 
 test("justify() is idempotent and foreign controllers don't hijack state", async ({ page }) => {
   await enhance(page, { hyphenate: true });
-  // The measured wrap-guarantee corrections land a few frames after ready
-  // (deferred, viewport-promoted); wait for quiescence so both innerHTML
-  // snapshots see the settled margins.
-  await waitForQuiescence(page);
   const first = await page.locator(".justif-seg").count();
   const html = await page.evaluate(() => document.getElementById("host")!.innerHTML);
   await page.evaluate(async () => {
@@ -3790,13 +3786,14 @@ test("resize re-layouts through the ResizeObserver fast path", async ({ page }) 
   }
 });
 
-test("observeResize:false still runs the wrap-guarantee corrections", async ({ page }) => {
+test("observeResize:false applies wrap-guarantee corrections before returning", async ({
+  page,
+}) => {
   // Regression: the viewport IntersectionObservers were registered only when
   // resize observation was on, so with observeResize: false every correction
-  // parked forever — the initial enhancement flush ALWAYS parks (nearViewport
-  // is empty until the observers deliver, which happens after ready), and
-  // nothing ever promoted the parked entries.
-  const provisional = await page.evaluate(async () => {
+  // parked forever. The synchronous viewport seed now corrects visible lines
+  // before justify() returns; later observer delivery must leave them alone.
+  const atReturn = await page.evaluate(() => {
     const j = window.__justif;
     j.controller?.destroy();
     j.controller = j.justify(document.querySelectorAll("#host p"), {
@@ -3805,16 +3802,16 @@ test("observeResize:false still runs the wrap-guarantee corrections", async ({ p
       expansion: false,
       observeResize: false,
     });
-    await j.controller.ready;
-    // Snapshot synchronously with ready: corrections are promoted by
-    // IntersectionObserver tasks, which cannot precede this microtask.
     return document.getElementById("host")!.innerHTML;
   });
+  // "They ran" is a DOM fact: every body line's provisional −1.5px wrap-safety
+  // pad was replaced by a measured margin. The two that remain are the
+  // paragraph endings, ragged by design and outside the correction window.
+  expect(atReturn.match(/-1\.5px/g)?.length ?? 0).toBe(2);
+  await page.evaluate(() => window.__justif.controller!.ready);
   await waitForQuiescence(page);
-  // "They ran" is a DOM fact: the provisional −1.5px wrap-safety pads and
-  // measured spacing were normalized after ready.
   const settled = await page.evaluate(() => document.getElementById("host")!.innerHTML);
-  expect(settled).not.toBe(provisional);
+  expect(settled).toBe(atReturn);
   const paragraphs = await readGeometry(page);
   expect(paragraphs.length).toBe(2);
   for (const para of paragraphs) {
