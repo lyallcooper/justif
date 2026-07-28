@@ -1,0 +1,2 @@
+# Package contents are allowlisted by package.json's "files" field.
+# Keep this file so npm does not reuse .gitignore, which excludes dist/.
