@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.5 (2026-07-28)
+
 - Long single-paragraph passages now reflow much faster, including the
   4,400-word excerpt on the demo page.
 - On-screen paragraphs now receive their final spacing before `justify()`
