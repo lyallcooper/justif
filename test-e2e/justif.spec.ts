@@ -2896,6 +2896,131 @@ test("hangingPunctuation preset hangs stops fully past the margin", async ({ pag
   }
 });
 
+/**
+ * Issue #14: a paragraph must never show two hang depths for the same mark.
+ * In "first-line" mode the opener hangs fully and every later line start sets
+ * the full-hang characters FLUSH — the CSS `first` model. A mark hung fully on
+ * one line and by microtype's 300‰ on the next reads as a misaligned edge
+ * instead of as either style. (The DEFAULT mode hangs every line, so this one
+ * asks for "first-line" explicitly.)
+ */
+test("a quote starting a wrapped line sets flush under the first-line hang", async ({ page }) => {
+  const edges = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    const p = document.createElement("p");
+    p.id = "issue14-wrapped-quote";
+    p.style.cssText = "width: 1000px; text-align: justify; font: 17px Georgia, serif";
+    const prefix = "“Alpha beta gamma delta epsilon zeta ";
+    p.textContent = `${prefix}“Quotationthatstartsaline and the paragraph then runs on for a further line of text.`;
+    host.append(p);
+    // Size the measure to the prefix so the quoted word CANNOT fit line 0 —
+    // deterministic across engines and fonts, unlike a hand-picked width.
+    const range = document.createRange();
+    range.setStart(p.firstChild!, 0);
+    range.setEnd(p.firstChild!, prefix.length);
+    p.style.width = `${range.getBoundingClientRect().width + 8}px`;
+    const controller = window.__justif.justify(p, {
+      expansion: false,
+      tracking: false,
+      hangingPunctuation: "first-line",
+    });
+    await controller.ready;
+    const contentLeft = p.getBoundingClientRect().left;
+    const lines = window.__justifLines(p).lines.map((l) => ({
+      offset: +(l.left - contentLeft).toFixed(2),
+      head: l.texts[0] ?? "",
+    }));
+    controller.destroy();
+    p.remove();
+    return lines;
+  });
+
+  expect(edges.length).toBeGreaterThan(2);
+  // The opener hangs: its quote sits outside the measure.
+  expect(edges[0]!.head.startsWith("“")).toBe(true);
+  expect(edges[0]!.offset).toBeLessThan(-1);
+  // The wrapped quote-led line is the case in the report.
+  const wrapped = edges.slice(1);
+  expect(wrapped.filter((l) => l.head.startsWith("“")).length).toBeGreaterThan(0);
+  // Every line after the first shares ONE left edge, quote-led or not.
+  for (const line of wrapped) {
+    expect(Math.abs(line.offset), `line "${line.head}"`).toBeLessThan(0.1);
+  }
+});
+
+/**
+ * Issue #14, second half: a one-line paragraph keeps its native rendering
+ * (nothing to justify, no DOM rewrite) but still owes the margin its
+ * line-start hang — an opener sitting flush between neighbours whose openers
+ * hang reads as a ragged left edge. It is bought with an inline text-indent,
+ * so the fast path survives, and it must leave no residue behind.
+ */
+test("a native one-line paragraph hangs its opener like its multi-line neighbour", async ({
+  page,
+}) => {
+  const result = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    const wrapper = document.createElement("div");
+    wrapper.style.cssText = "width: 340px; font: 17px Georgia, serif";
+    const make = (id: string, text: string) => {
+      const p = document.createElement("p");
+      p.id = id;
+      p.style.textAlign = "justify";
+      p.textContent = text;
+      wrapper.append(p);
+      return p;
+    };
+    const short = make("issue14-one-line", "“Show me some?”");
+    const long = make(
+      "issue14-multi-line",
+      "“Show me some of them,” she replies, and the paragraph carries on long " +
+        "enough to need several lines of its own.",
+    );
+    const plain = make("issue14-one-line-plain", "Show me some?");
+    const shortBefore = short.outerHTML;
+    host.append(wrapper);
+    const controller = window.__justif.justify(wrapper.querySelectorAll("p"), {
+      expansion: false,
+      tracking: false,
+    });
+    await controller.ready;
+    const firstGlyphOffset = (p: HTMLElement) => {
+      const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+      const range = document.createRange();
+      range.setStart(walker.nextNode()!, 0);
+      range.setEnd(range.startContainer, 1);
+      return +(range.getBoundingClientRect().left - p.getBoundingClientRect().left).toFixed(2);
+    };
+    const out = {
+      shortNative: !short.hasAttribute("data-justif"),
+      shortSegments: short.querySelectorAll(".justif-seg").length,
+      shortOffset: firstGlyphOffset(short),
+      longEnhanced: long.hasAttribute("data-justif"),
+      longOffset: firstGlyphOffset(long),
+      // A one-line paragraph whose first character has no line-start
+      // protrusion is not touched at all.
+      plainStyle: plain.getAttribute("style"),
+      plainOffset: firstGlyphOffset(plain),
+      restoredExactly: "",
+    };
+    controller.destroy();
+    out.restoredExactly = short.outerHTML === shortBefore ? "yes" : short.outerHTML;
+    wrapper.remove();
+    return out;
+  });
+
+  expect(result.shortNative).toBe(true);
+  expect(result.shortSegments).toBe(0);
+  expect(result.longEnhanced).toBe(true);
+  // Both openers hang, by the same amount.
+  expect(result.shortOffset).toBeLessThan(-1);
+  expect(Math.abs(result.shortOffset - result.longOffset)).toBeLessThan(0.1);
+  expect(result.plainStyle).toBe("text-align: justify;");
+  expect(result.plainOffset).toBe(0);
+  // destroy() puts the author's markup and style attribute back byte-for-byte.
+  expect(result.restoredExactly).toBe("yes");
+});
+
 test("pseudo-hyphens sit after their word, never overlapping it", async ({ page }) => {
   // Narrow measure + no emergency stretch: pass 2 must hyphenate.
   await page.evaluate(() => {

@@ -117,14 +117,14 @@ export interface JustifyOptions {
   /** true = built-in Latin table; an object merges over it; false disables. */
   protrusion?: boolean | ProtrusionTable;
   /**
-   * Full hanging punctuation: quotes, stops, and opening brackets hang
-   * entirely outside the measure. "first-line" (the DEFAULT, = `true`)
-   * hangs left-edge marks fully only on the paragraph's FIRST line —
-   * mid-paragraph line starts keep their partial microtype protrusion —
-   * while stops and closing quotes hang fully at every line end;
-   * "all-lines" extends the full left hangs to every line (classical
-   * Gutenberg style); `false` disables full hangs, leaving microtype's
-   * partial protrusion only. Requires `protrusion` enabled.
+   * Full hanging punctuation: quotes and stops hang entirely outside the
+   * measure. "all-lines" (the DEFAULT, = `true`) hangs them at every line
+   * edge, which is what Affinity and InDesign do when their equivalent is
+   * switched on; "first-line" is the narrower CSS `hanging-punctuation:
+   * first` model, where left-edge marks hang on the paragraph's FIRST line
+   * and set flush after it, while stops and closing quotes still hang at
+   * every line end; `false` disables full hangs, leaving microtype's partial
+   * protrusion only, uniformly on every line. Requires `protrusion` enabled.
    */
   hangingPunctuation?: boolean | "first-line" | "all-lines";
   /** Glyph expansion limits via the wdth axis; false disables. */
@@ -243,6 +243,11 @@ interface ParaState {
   /** Fingerprint of the last patch, to skip no-op re-renders. */
   lastPatch: string;
   enhanced: boolean;
+  /** The `text-indent` px value written while this paragraph sets natively on
+   * one line (author indent minus its line-start hang); null when none is
+   * applied. Stored as WRITTEN, so a percentage indent re-resolving across a
+   * resize is caught even though the hang itself is unchanged. */
+  nativeIndent: number | null;
 }
 
 /** Enhancement state is shared so unjustify() works from anywhere; each
@@ -262,12 +267,61 @@ function restoreStyleAttribute(el: HTMLElement, style: string | null): void {
   }
 }
 
+/** The author's own first-line indent in px. Percentage indents resolve
+ * against the LIVE width (a scan-time resolution goes stale across
+ * resizes). */
+function firstLineIndentPx(state: ParaState): number {
+  return state.scan.textIndentPct !== null
+    ? state.scan.textIndentPct * state.width
+    : state.scan.textIndent;
+}
+
+/** Drop the inline `text-indent` hang written for a native one-line
+ * paragraph, restoring the author's style attribute byte-for-byte. Only ever
+ * applied while `enhanced` is false, so this restoration cannot clobber the
+ * enhancement's own declarations — promotion clears it first. */
+function clearNativeHang(p: HTMLElement, state: ParaState): boolean {
+  if (state.nativeIndent === null) return false;
+  state.nativeIndent = null;
+  restoreStyleAttribute(p, state.originalStyleAttr);
+  return true;
+}
+
+/**
+ * Hanging punctuation for a paragraph left in native rendering: its opening
+ * mark still owes the margin its hang — a paragraph whose opener sits flush
+ * beside neighbours whose openers hang reads as a ragged left edge (issue
+ * #14) — and a negative `text-indent` buys exactly that without the DOM
+ * rewrite the one-line fast path exists to avoid. Sound because a full hang
+ * equals the mark's own advance, so the text after it lands flush, which is
+ * what the enhanced path renders too. `text-indent` is line-START relative,
+ * hanging into the right margin in an RTL paragraph, and it must carry the
+ * author's own first-line indent because an inline declaration replaces it.
+ */
+function applyNativeHang(p: HTMLElement, state: ParaState, hangPx: number): boolean {
+  // Sub-hundredth-px hangs are below the rendering threshold and would only
+  // churn the style attribute across re-measures.
+  if (hangPx <= 0.01) return clearNativeHang(p, state);
+  const indent = Number((firstLineIndentPx(state) - hangPx).toFixed(3));
+  if (indent === state.nativeIndent) return false;
+  state.nativeIndent = indent;
+  p.style.setProperty("text-indent", `${indent}px`);
+  // Neutralized for the same reason as in beginEnhancement: a CSS
+  // hanging-punctuation hang would compound with this one.
+  p.style.setProperty("hanging-punctuation", "none");
+  return true;
+}
+
 /** Put a managed paragraph back into its exact author DOM without releasing
  * its measurements or controller ownership. A one-line paragraph uses this
  * native state while ResizeObserver keeps watching for a narrower measure
  * that makes total-fit line breaking useful again. */
 function restoreManagedOutput(p: HTMLElement, state: ParaState): boolean {
-  if (!state.enhanced) return false;
+  // The native one-line hang is the one inline declaration justif writes
+  // WITHOUT enhancing, so it has to be undone before that early return —
+  // otherwise destroy(), unjustify() and a bail would all leak it.
+  const clearedHang = clearNativeHang(p, state);
+  if (!state.enhanced) return clearedHang;
   p.replaceChildren(state.original);
   restoreStyleAttribute(p, state.originalStyleAttr);
   p.removeAttribute("data-justif");
@@ -343,7 +397,7 @@ function resolveOptions(options: JustifyOptions): ResolvedOptions {
     options.hangingPunctuation === false
       ? false
       : options.hangingPunctuation === true || options.hangingPunctuation === undefined
-        ? "first-line"
+        ? "all-lines"
         : options.hangingPunctuation;
   const composed =
     options.protrusion === false
@@ -698,8 +752,15 @@ export function justify(
   const bailed = new WeakSet<HTMLElement>();
   let destroyed = false;
 
-  const { breakOpts, buildOpts, lastLineMinWidth, expansion, spacing, protrusionCtx, hyphenate } =
-    resolveOptions(options);
+  const {
+    breakOpts,
+    buildOpts,
+    lastLineMinWidth,
+    expansion,
+    spacing,
+    protrusionCtx,
+    hyphenate,
+  } = resolveOptions(options);
 
   /** Phase 1: normalized computed-style and DOM reads; no font measurement. */
   const scanned = new Map<HTMLElement, ParagraphScan>();
@@ -827,6 +888,7 @@ export function justify(
         width: scan.contentWidth,
         lastPatch: "",
         enhanced: false,
+        nativeIndent: null,
       });
     } catch (error) {
       // Same fail-safe as the scan: this paragraph stays native.
@@ -923,12 +985,7 @@ export function justify(
    * so that paragraph stays native until a resize restores usable space.
    */
   const lineWidthsFor = (state: ParaState): LineWidths | null => {
-    // Percentage indents resolve against the LIVE width (the scan-time
-    // resolution would go stale across resizes).
-    const indentPx =
-      state.scan.textIndentPct !== null
-        ? state.scan.textIndentPct * state.width
-        : state.scan.textIndent;
+    const indentPx = firstLineIndentPx(state);
     const intrusion = state.scan.floatIntrusion;
     const varyingLines = Math.max(indentPx !== 0 ? 1 : 0, intrusion?.lines ?? 0);
     if (varyingLines === 0) return state.width;
@@ -1118,11 +1175,18 @@ export function justify(
       oneLineStaysNative(layout, paragraphMinWidth)
     ) {
       dropQueued(p);
-      return { changed: restoreManagedOutput(p, state), pending: null };
+      let changed = restoreManagedOutput(p, state);
+      // Native rendering skips the DOM rewrite, not the line-start hang.
+      if (applyNativeHang(p, state, layout.onlyLine?.leftHang ?? 0)) changed = true;
+      return { changed, pending: null };
     }
 
     if (layout.fingerprint === state.lastPatch) return { changed: false, pending: null };
     state.lastPatch = layout.fingerprint;
+    // Promotion out of the native one-line state: its inline hang must go
+    // before beginEnhancement writes the enhancement's own declarations,
+    // because clearing restores the author's whole style attribute.
+    clearNativeHang(p, state);
 
     if (!state.enhanced) beginEnhancement(p, state);
     // Exact placeholder geometry for content-visibility authors: line boxes

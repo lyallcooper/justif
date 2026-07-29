@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Opening quotes now hang in the margin on every line, the way page-layout
+  applications set justified text. Previously only a paragraph's first line
+  hung its quote, leaving a quote that began a wrapped line at an in-between
+  position that read as a misaligned edge (#14). For the narrower model, where
+  only the paragraph's opening quote hangs, set `hangingPunctuation:
+  "first-line"`; `false` still leaves the small optical hangs alone.
+- A paragraph short enough to set on one line now hangs its opening quote too,
+  so paragraphs of dialogue all begin at the same place. Previously only
+  paragraphs long enough to wrap did.
+- A line beginning with `(`, `[` or `{` no longer swings out into the margin.
+  Brackets now sit where typesetting practice puts them: a slight overhang for
+  a parenthesis, none for a square bracket.
+
 ## 0.6.5 (2026-07-28)
 
 - Long single-paragraph passages now reflow much faster, including the

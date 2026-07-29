@@ -46,19 +46,29 @@ describe("protrusionCodes (universal character inheritance)", () => {
 });
 
 describe("composeProtrusion (hanging-punctuation scoping)", () => {
-  it("first-line mode: r-hangs everywhere, full l-hangs only in the first table", () => {
+  it("first-line mode: r-hangs everywhere, full l-hangs on line 0, flush after", () => {
     const { rest, first } = composeProtrusion(latinProtrusion, null, "first-line");
     expect(first).not.toBe(rest);
     // Stops hang fully at every line end.
     expect(rest[","]).toEqual({ r: 1000 });
     expect(first[","]).toEqual({ r: 1000 });
-    // Opening quote: partial on rest lines, full on the first line.
-    expect(rest["“"]!.l).toBe(latinProtrusion["“"]!.l);
-    expect(rest["“"]!.r).toBe(1000);
+    // Opening quote: full on the first line, FLUSH on later line starts —
+    // one mark must not show two hang depths in one paragraph (issue #14).
     expect(first["“"]!.l).toBe(1000);
-    // Opening bracket: back in the set, first line only.
+    expect(rest["“"]!.l).toBe(0);
+    expect(rest["“"]!.r).toBe(1000);
+    // Brackets are not full-hang characters: they keep microtype's ordinary
+    // protrusion, the same on the first line and every line after it (‰ of
+    // advance; a live LuaLaTeX run gives "(" the same 100 and "[" nothing).
+    expect(first["("]!.l).toBe(latinProtrusion["("]!.l);
     expect(rest["("]!.l).toBe(latinProtrusion["("]!.l);
-    expect(first["("]!.l).toBe(1000);
+    expect(rest["{"]!.l).toBe(latinProtrusion["{"]!.l);
+    expect(rest["["]).toBeUndefined();
+    // Characters outside the full-hang set keep microtype's values on every
+    // line — the flush overlay is scoped to the marks that hang fully.
+    expect(rest["—"]!.l).toBe(latinProtrusion["—"]!.l);
+    expect(rest["T"]!.l).toBe(latinProtrusion["T"]!.l);
+    expect(rest["?"]!.r).toBe(latinProtrusion["?"]!.r);
   });
 
   it("all-lines mode collapses to one table; off returns the base", () => {

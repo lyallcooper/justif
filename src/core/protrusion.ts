@@ -171,15 +171,19 @@ export const latinProtrusion: ProtrusionTable = {
 
 /**
  * Full-hang character set in the style of classical book typography and
- * CSS `hanging-punctuation`: quotes and opening brackets hang entirely
- * outside the measure at line starts, stops and quotes hang entirely at
- * line ends. Used by the `hangingPunctuation` option, which scopes the
- * LEFT codes to the paragraph's first line by default ("first-line" —
- * mid-paragraph line starts keep their partial microtype protrusion) and
+ * CSS `hanging-punctuation`: quotes hang entirely outside the measure at
+ * line starts, stops and quotes hang entirely at line ends (brackets do
+ * not — see below). Used by the `hangingPunctuation` option, which scopes the
+ * LEFT codes to the paragraph's first line by default ("first-line", the
+ * CSS `first` model — later line starts set these characters FLUSH) and
  * applies the RIGHT codes on every line; "all-lines" extends the left
- * hangs to every line (Gutenberg style). May also be passed directly as
- * the `protrusion` option, which applies everything on every line,
+ * hangs to every line (Gutenberg style). May also be passed directly as the
+ * `protrusion` option, which applies everything on every line,
  * position-independently.
+ *
+ * A mark's hang depth belongs to the character, never to where its line
+ * falls in the paragraph (see #14): two depths for one mark inside a
+ * paragraph read as a misaligned edge rather than as either style.
  */
 export const hangingPunctuation: ProtrusionTable = {
   // Stops (CSS force-end).
@@ -189,12 +193,12 @@ export const hangingPunctuation: ProtrusionTable = {
   "'": { l: 1000, r: 1000 },
   '"': { l: 1000, r: 1000 },
   ...inherit({ l: 1000, r: 1000 }, "‘’“”‚„‹›«»"),
-  // Opening brackets (CSS first) — the classic "(1) …" paragraph opener.
-  // Closing brackets stay at their partial values: a fully hung paren at
-  // an arbitrary line end reads as misalignment.
-  "(": { l: 1000 },
-  "[": { l: 1000 },
-  "{": { l: 1000 },
+  // Brackets are deliberately NOT here, on either side. CSS `first` hangs
+  // the whole Ps category, but no print system hangs a bracket more than
+  // slightly: measured in Junicode, a line-start "(" hangs 100‰ of its
+  // advance in Affinity and 249‰ in InDesign, against microtype's generic
+  // 100‰. Leaving them out gives them exactly that ordinary protrusion, the
+  // same depth on every line.
   // Burasage (ぶら下げ組み): the ideographic and fullwidth stops hang fully
   // into the right margin — the classical Japanese newspaper/book setting.
   // Their glyphs sit in the left half of a fullwidth advance, so the ink
@@ -207,6 +211,14 @@ export const hangingPunctuation: ProtrusionTable = {
 };
 
 export type HangingPunctuationMode = false | "first-line" | "all-lines";
+
+/** Line-start codes that set the full-hang characters FLUSH — the treatment
+ * "first-line" gives every line after the paragraph's first. */
+const flushStarts: ProtrusionTable = Object.fromEntries(
+  Object.entries(hangingPunctuation)
+    .filter(([, codes]) => codes.l !== undefined)
+    .map(([ch]) => [ch, { l: 0 }]),
+);
 
 /** Overlay one side of `overrides` onto `base`, preserving the other side. */
 function applySide(
@@ -241,6 +253,10 @@ export function composeProtrusion(
     rest = applySide(base, hangingPunctuation, "r");
     first = applySide(rest, hangingPunctuation, "l");
     if (hang === "all-lines") rest = first;
+    // "first-line" is the CSS `first` model exactly: the opener hangs, later
+    // line starts set these marks FLUSH. Leaving them at their partial
+    // microtype depth would show one mark at two depths in a paragraph (#14).
+    else if (hang === "first-line") rest = applySide(rest, flushStarts, "l");
   }
   if (user !== null) {
     const same = first === rest;
