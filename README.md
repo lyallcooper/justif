@@ -215,7 +215,7 @@ These are the options most applications need:
 | Option | Default | What it controls |
 | --- | --- | --- |
 | `hyphenate` | none | Splits a lowercase word into hyphenatable fragments |
-| `protrusion` | `true` | Enables optical margin alignment; pass `false` or a character table |
+| `protrusion` | `true` | Optical margin alignment, measured from the font in use; `false` disables, or pass your own character table |
 | `hangingPunctuation` | `"all-lines"` | Hangs quotes and stops fully at every line edge, as page-layout applications do; `"first-line"` narrows the opening-quote hang to the paragraph's first line (the CSS `hanging-punctuation: first` model), `false` leaves only `protrusion`'s partial hangs |
 | `expansion` | `{ max: 0.02, shrink: 0.02, step: 0.005 }` | Uses a variable font's `wdth` axis to improve line fit; ignored when unavailable |
 | `tracking` | `{ max: 0.03, shrink: 0.03 }` | Uses small letter-spacing adjustments to improve line fit; `false` disables |

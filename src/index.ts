@@ -32,6 +32,7 @@ import {
   type TrackingOptions,
 } from "./core/types.js";
 import { clearCalibrationCache } from "./dom/calibrate.js";
+import { clearOpticalCache } from "./dom/optical.js";
 import {
   clearMeasureCache,
   collectDomMeasurements,
@@ -53,7 +54,13 @@ import {
   readParagraph,
   type ScanBatch,
 } from "./dom/read.js";
-import { buildRenderSegments, buildRunMetrics, measureFor, runTexts } from "./dom/segments.js";
+import {
+  buildRenderSegments,
+  buildRunMetrics,
+  clearComposedProtrusionCache,
+  measureFor,
+  runTexts,
+} from "./dom/segments.js";
 import {
   applyCorrections,
   disableTextAutosizing,
@@ -72,6 +79,7 @@ export {
   latinProtrusion,
 } from "./core/protrusion.js";
 export { fontProtrusion } from "./core/protrusion-fonts.js";
+export { opticalProtrusion } from "./dom/optical.js";
 
 export interface JustifyOptions {
   /** Word splitter, e.g. `hyphenateEnUS` from "justif/hyphenate/en-us".
@@ -114,7 +122,22 @@ export interface JustifyOptions {
    * disable.
    */
   lastLineMinWidth?: number;
-  /** true = built-in Latin table; an object merges over it; false disables. */
+  /**
+   * Optical margin alignment. `true` (the default) MEASURES each font's own
+   * values by rasterizing its glyphs (see dom/optical.ts), which suits faces
+   * nobody has hand-tuned — on the web, nearly all of them. `false` disables
+   * protrusion entirely. An object supplies per-character overrides, in
+   * thousandths of the character's own advance, merged over the measured
+   * values.
+   *
+   * Built-in tables (the generic Latin list plus microtype's per-font configs)
+   * remain as the FALLBACK, used per font wherever the measurement cannot run
+   * — a canvas that will not rasterize or read back, or one the browser will
+   * not shape a run's font-variant in — and for the characters the raster pass
+   * has no candidate for, such as the Arabic and Hebrew stops. They are not
+   * separately selectable: they exist to cover what measurement cannot reach,
+   * not as a second model to choose between.
+   */
   protrusion?: boolean | ProtrusionTable;
   /**
    * Full hanging punctuation: quotes and stops hang entirely outside the
@@ -299,9 +322,16 @@ function clearNativeHang(p: HTMLElement, state: ParaState): boolean {
  * author's own first-line indent because an inline declaration replaces it.
  */
 function applyNativeHang(p: HTMLElement, state: ParaState, hangPx: number): boolean {
-  // Sub-hundredth-px hangs are below the rendering threshold and would only
-  // churn the style attribute across re-measures.
-  if (hangPx <= 0.01) return clearNativeHang(p, state);
+  // This hang costs an inline style on the author's own element, so it has to
+  // earn it: measured protrusion gives most letters a fraction of a pixel, which
+  // no reader can see at a line start but which would rewrite the style
+  // attribute of every short paragraph on the page. It applies to fallback
+  // values too, where it drops the 50‰ letters (an 'A' at 16px is ~0.55px):
+  // the threshold is about what a reader can see, not where the number came
+  // from.
+  if (hangPx < state.scan.specs[state.scan.baseSpec]!.sizePx * 0.04) {
+    return clearNativeHang(p, state);
+  }
   const indent = Number((firstLineIndentPx(state) - hangPx).toFixed(3));
   if (indent === state.nativeIndent) return false;
   state.nativeIndent = indent;
@@ -1388,6 +1418,11 @@ export function justify(
     if (!floatGeometryFresh) refreshFloatIntrusions();
     clearMeasureCache();
     clearCalibrationCache();
+    // Measured protrusion is derived from rasterized glyphs, so it goes stale
+    // for exactly the same reason widths do — a table measured before the
+    // webfont arrived describes the fallback's letterforms.
+    clearOpticalCache();
+    clearComposedProtrusionCache();
     reprobeBaselines();
     const mine = paragraphs.filter((p) => ownedState(p) !== undefined);
     // All width reads first, then all patches, then one correction flush —
@@ -1812,6 +1847,8 @@ export function justify(
       if (!fontsConverged) {
         clearMeasureCache();
         clearCalibrationCache();
+        clearOpticalCache();
+        clearComposedProtrusionCache();
       }
       pendingWidths.clear();
       pendingCorrections.clear();

@@ -4,6 +4,7 @@
  * No lifecycle, no state — index.ts stays plumbing.
  */
 import { CJK_CHAR } from "../core/cjk.js";
+import { opticalCandidates, opticalFontKey, opticalProtrusion } from "./optical.js";
 import {
   composeProtrusion,
   type HangingPunctuationMode,
@@ -145,10 +146,36 @@ interface ProtrusionSettings {
 type ComposedTables = { rest: ProtrusionTable; first?: ProtrusionTable } | null;
 /** Weakly keyed on the settings object, so two live controllers don't evict
  * each other and a destroyed one's tables are collectable. */
-const composedBySettings = new WeakMap<ProtrusionSettings, Map<string, ComposedTables>>();
+let composedBySettings = new WeakMap<ProtrusionSettings, Map<string, ComposedTables>>();
+
+/**
+ * Drop every composed table. Needed alongside `clearOpticalCache` on a font
+ * change: these are built FROM measured tables, and a controller's settings
+ * object outlives the fonts, so clearing only the measurement would leave the
+ * stale composition in front of it.
+ */
+export function clearComposedProtrusionCache(): void {
+  composedBySettings = new WeakMap();
+}
+
+/**
+ * The generic table minus every character the raster pass forms an opinion
+ * about — i.e. exactly the entries a measured table can never contain, such
+ * as the Arabic and Hebrew stops. Computed once; the two tables are module
+ * constants.
+ */
+let unmeasured: ProtrusionTable | undefined;
+function unmeasuredProtrusion(): ProtrusionTable {
+  if (unmeasured !== undefined) return unmeasured;
+  const considered = new Set(opticalCandidates);
+  unmeasured = Object.fromEntries(
+    Object.entries(latinProtrusion).filter(([ch]) => !considered.has(ch)),
+  );
+  return unmeasured;
+}
 
 function composedForFamily(
-  family: string,
+  spec: FontSpec,
   settings: ProtrusionSettings | undefined,
 ): ComposedTables {
   if (settings === undefined || !settings.enabled) return null;
@@ -157,22 +184,39 @@ function composedForFamily(
     composedCache = new Map();
     composedBySettings.set(settings, composedCache);
   }
-  const hit = composedCache.get(family);
+  const family = spec.family;
+  // Measured tables describe a GLYPH SET, not a family: small caps, italics and
+  // weights are different shapes and measure differently, so this cache must
+  // key on everything the measurement keys on or it serves one variant's table
+  // for another.
+  const key = opticalFontKey(spec);
+  const hit = composedCache.get(key);
   if (hit !== undefined) return hit;
-  const matched = fontProtrusion(family);
+  // Measured values describe THIS font, so within the range the measurement
+  // CONSIDERED they replace the generic table and the per-font configs both —
+  // a zero there means "this glyph needs no hang", not "no opinion", and must
+  // not be back-filled from a table tuned for other faces. Characters the
+  // measurement never looked at are a different matter: the generic table
+  // carries entries the raster pass has no candidate for, notably the Arabic
+  // and Hebrew stops that make pure-RTL paragraphs work, and dropping those
+  // would silently un-hang scripts the tables handled. So the generic table
+  // fills only the gaps outside the measured range. A face the measurement
+  // cannot read at all falls back to the tables entirely.
+  const measured = opticalProtrusion(spec);
+  const matched = measured ?? fontProtrusion(family);
   let tables: ComposedTables = null;
   if (matched !== undefined) {
-    const composed = composeProtrusion(
-      { ...latinProtrusion, ...matched },
-      settings.user,
-      settings.hang,
-    );
+    const base =
+      measured !== undefined
+        ? { ...unmeasuredProtrusion(), ...measured }
+        : { ...latinProtrusion, ...matched };
+    const composed = composeProtrusion(base, settings.user, settings.hang);
     tables = {
       rest: composed.rest,
       first: composed.first !== composed.rest ? composed.first : undefined,
     };
   }
-  composedCache.set(family, tables);
+  composedCache.set(key, tables);
   return tables;
 }
 
@@ -212,7 +256,7 @@ export function buildRunMetrics(
     // it spreads the generic table and builds two overlays, and it was
     // repeated for every run of every paragraph even though the user table
     // and hang mode are fixed for the controller.
-    const perFontTables = composedForFamily(spec.family, protrusion);
+    const perFontTables = composedForFamily(spec, protrusion);
     const perFont = perFontTables?.rest;
     const perFontFirst = perFontTables?.first;
     const naturalSpace = spaceWidthIn(spec, () => run.text);

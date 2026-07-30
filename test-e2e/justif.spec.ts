@@ -12,6 +12,13 @@ declare global {
       hyphenateEnUS: (w: string) => string[];
       /** The hanging-punctuation protrusion table object. */
       hangingPunctuation: Readonly<Record<string, unknown>>;
+      /** Measured protrusion for a font, or undefined when unmeasurable. */
+      opticalProtrusion: (spec: {
+        family: string;
+        style?: string;
+        weight?: string;
+        variantCaps?: string;
+      }) => Record<string, { l?: number; r?: number }> | undefined;
       controller: { ready: Promise<void>; refresh(): void; destroy(): void } | null;
     };
     /**
@@ -589,7 +596,9 @@ test("floated ::first-letter drop caps use the remaining width on every intruded
     comma.setEnd(commaEnd.node, commaEnd.offset);
     const beforeCommaRect = beforeComma.getBoundingClientRect();
     const commaRect = comma.getBoundingClientRect();
-    const hangingEnd = punctuation.querySelector<HTMLElement>(".justif-hanging-end");
+    const hangingEnd = [...punctuation.querySelectorAll<HTMLElement>(".justif-hanging-end")].find(
+      (el) => el.textContent === ",",
+    ) ?? null;
     const physicalHang =
       hangingEnd === null
         ? 0
@@ -1698,11 +1707,11 @@ test("author NBSP indentation stays fixed when a hard-break segment soft-wraps",
     const segments = [
       ...document.querySelectorAll<HTMLElement>("#hard-break-author-nbsp .justif-seg"),
     ];
-    return segments.some(
-      (segment) =>
-        (segment.textContent ?? "").includes("gently smiling") &&
-        segment.style.marginInlineEnd === "0px",
-    );
+    // Wait for the soft wrap to have happened; the settling itself is what
+    // waitForQuiescence below is for. This used to require a zero end margin,
+    // which stopped being true once protrusion was measured from the font — a
+    // line ending mid-sentence now carries its own small hang.
+    return segments.some((segment) => (segment.textContent ?? "").includes("gently smiling"));
   });
   await waitForQuiescence(page, "#hard-break-author-nbsp");
 
@@ -2347,6 +2356,215 @@ test("tracking's letter-spacing does not cost ligatures", async ({ page }) => {
   expect(r!.word).toBeLessThan(r!.unligated - 0.1);
 });
 
+test("measured protrusion converges on the webfont after a late load", async ({ page }) => {
+  // Regression: measured tables are cached per font SPEC, which names only a
+  // family — so a table measured before a webfont arrived describes the
+  // FALLBACK's letterforms, and nothing in the key distinguishes the two.
+  // remeasureAll() dropped the width and calibration caches on `loadingdone`
+  // but not the optical one, so the library's headline pattern (justify from a
+  // render-blocking script, converge when fonts land) left protrusion
+  // permanently measured from Times. Both the measured cache and the composed
+  // tables built from it have to go.
+  // Re-layout is driven through refresh() rather than by waiting on
+  // `loadingdone`, so the test isolates cache invalidation from how each
+  // engine reports font loads — WebKit does not re-lay-out on its own here,
+  // which affects widths as much as protrusion and is a separate concern.
+  //
+  // The control must come from a FRESH page: the measured-table cache is
+  // module-level and survives destroy(), so a "justify with the font already
+  // present" control run in the same context would read the very same stale
+  // entry and agree with the bug.
+  const run = async (loadFontFirst: boolean): Promise<number[]> =>
+    page.evaluate(async (loadFirst) => {
+      // A real face under a name nothing else has loaded, so a measurement
+      // taken before it arrives necessarily sees the monospace fallback.
+      const FACE = "JunicodeLateProtrusion";
+      const late = new FontFace(FACE, 'url("/demo/fonts/Junicode-Roman.ttf")');
+      const host = document.createElement("div");
+      host.style.cssText =
+        `width:300px;font:16px/1.6 "${FACE}", monospace;position:absolute;left:-9999px`;
+      const p = document.createElement("p");
+      p.style.cssText = "margin:0;text-align:justify";
+      p.textContent = "them the that this then they there their theme thence thermal took";
+      host.append(p);
+      document.body.append(host);
+
+      const settle = async (): Promise<void> => {
+        document.fonts.add(late);
+        await late.load();
+        await document.fonts.ready;
+      };
+      if (loadFirst) await settle();
+
+      const controller = window.__justif.justify([p], { hyphenate: undefined });
+      await controller.ready;
+      if (!loadFirst) {
+        await settle();
+        controller.refresh();
+        await new Promise((r) => setTimeout(r, 400));
+      }
+      const left = p.getBoundingClientRect().left;
+      const outdents = [...p.querySelectorAll<HTMLElement>(".justif-seg")]
+        .slice(1)
+        .map((s) => +(left - s.getBoundingClientRect().left).toFixed(2));
+      controller.destroy();
+      host.remove();
+      return outdents;
+    }, loadFontFirst);
+
+  const converged = await run(false);
+  await page.reload(); // fresh JS context ⇒ empty measured-table cache
+  await page.waitForFunction(() => window.__ready === true);
+  const groundTruth = await run(true);
+
+  expect(converged, "protrusion did not converge on the late-loaded face").toEqual(groundTruth);
+});
+
+test("a paragraph's measured protrusion doesn't depend on its siblings' variants", async ({ page }) => {
+  // Regression: measured tables describe a GLYPH SET, but the per-controller
+  // cache of composed tables was keyed on family+weight+style only. Small caps
+  // and lowercase share all three, so whichever variant a controller measured
+  // first supplied the table for BOTH — a normal paragraph's protrusion moved
+  // from 0.25px to 0.44px merely because a small-caps sibling shared its
+  // controller. Junicode has true small caps, so the two really do measure
+  // differently wherever the canvas can shape them; where it cannot (WebKit)
+  // the caps run falls back to the tables, and either way each paragraph must
+  // be unaffected by its siblings, which is all this asserts.
+  const r = await page.evaluate(async () => {
+    await document.fonts.load('16px "Junicode"');
+    await document.fonts.load('small-caps 16px "Junicode"');
+    const TEXT = "them the that this then they there their theme thence thermal";
+    const make = (smallCaps: boolean): HTMLParagraphElement => {
+      const p = document.createElement("p");
+      p.style.cssText =
+        `margin:0;text-align:justify${smallCaps ? ";font-variant-caps:small-caps" : ""}`;
+      p.textContent = TEXT;
+      return p;
+    };
+    // Outdents of a target paragraph, rendered either alone or beside a
+    // paragraph of the other variant under the SAME controller.
+    const outdents = async (smallCaps: boolean, withSibling: boolean): Promise<number[]> => {
+      const host = document.createElement("div");
+      host.style.cssText = 'width:300px;font:16px/1.6 "Junicode";position:absolute;left:-9999px';
+      document.body.append(host);
+      const target = make(smallCaps);
+      const paras = withSibling ? [target, make(!smallCaps)] : [target];
+      paras.forEach((p) => host.append(p));
+      const controller = window.__justif.justify(paras, {
+        hyphenate: undefined,
+        hangingPunctuation: false,
+      });
+      await controller.ready;
+      const left = target.getBoundingClientRect().left;
+      const values = [...target.querySelectorAll<HTMLElement>(".justif-seg")]
+        .slice(1) // the first line carries the paragraph indent, not a hang
+        .map((s) => +(left - s.getBoundingClientRect().left).toFixed(2));
+      controller.destroy();
+      host.remove();
+      return [...new Set(values)].sort((a, b) => a - b);
+    };
+    return {
+      scAlone: await outdents(true, false),
+      scWith: await outdents(true, true),
+      normalAlone: await outdents(false, false),
+      normalWith: await outdents(false, true),
+    };
+  });
+  expect(r.scWith, "small-caps protrusion changed when a normal sibling shared the controller")
+    .toEqual(r.scAlone);
+  expect(r.normalWith, "normal protrusion changed when a small-caps sibling shared the controller")
+    .toEqual(r.normalAlone);
+});
+
+test("measured protrusion keeps the table's non-Latin punctuation", async ({ page }) => {
+  // Regression: a measured table REPLACED the generic one outright, but the
+  // raster pass only forms opinions about the Latin characters it rasterizes.
+  // The Arabic and Hebrew stops the generic table carries for pure-RTL
+  // paragraphs have no candidate, and `protrusionCodes` has no inheritance
+  // path to them either, so switching to measured values silently un-hung
+  // them: an Arabic comma went from 2.3px to 0.02px. Characters the
+  // measurement never examined must still fall back to the table.
+  const r = await page.evaluate(async () => {
+    const host = document.createElement("div");
+    host.style.cssText =
+      "width:300px;font:16px/1.8 serif;position:absolute;left:-9999px;direction:rtl";
+    const p = document.createElement("p");
+    p.style.cssText = "margin:0;text-align:justify";
+    p.setAttribute("dir", "rtl");
+    p.lang = "ar";
+    p.textContent =
+      "الطقس لطيف اليوم، والسماء صافية تماما، ونحن سعداء؟ الاطفال يلعبون في الحديقة، ثم يعودون الى البيت مساء، وينامون باكرا؟";
+    host.append(p);
+    document.body.append(host);
+    const controller = window.__justif.justify([p], {
+      hyphenate: undefined,
+      hangingPunctuation: false,
+    });
+    await controller.ready;
+    const box = p.getBoundingClientRect();
+    // Justified lines only, selected by geometry rather than by position:
+    // this is RTL, so a line STARTS at the right edge and ENDS at the left,
+    // and any line that stops short of the full measure is ragged and has no
+    // meaningful end edge to read.
+    const out = [...p.querySelectorAll<HTMLElement>(".justif-seg")]
+      .map((s) => ({ text: (s.textContent ?? "").trim(), rect: s.getBoundingClientRect() }))
+      .filter((s) => s.rect.width >= box.width - 2)
+      .map((s): [string, number] => [s.text.slice(-1), +(box.left - s.rect.left).toFixed(2)]);
+    controller.destroy();
+    host.remove();
+    return out;
+  });
+  // Whether a line actually ENDS on one of these marks depends on the engine's
+  // Arabic shaping — Firefox fits this paragraph onto a single line, leaving
+  // nothing to measure. Skip there rather than assert vacuously.
+  const punctuated = r.filter(([end]) => "،؛؟۔".includes(end));
+  test.skip(punctuated.length === 0, "engine's Arabic layout left no punctuated line end");
+  // Every such line must hang its mark. Without the fall-through these read
+  // ~0.02px, i.e. flush.
+  for (const [end, hang] of punctuated) {
+    expect(hang, `line ending '${end}' did not hang into the margin`).toBeGreaterThan(0.3);
+  }
+});
+
+test("a canvas that cannot shape a font-variant is not trusted to measure it", async ({ page }) => {
+  // WebKit's canvas has no `fontVariantCaps`, but assigning it still succeeds —
+  // the value becomes an ordinary JS property and reads back exactly what was
+  // written, so both the assignment and a readback lie. Only the rendered
+  // advance tells the truth. Left unchecked, WebKit measured LOWERCASE glyphs
+  // and served them as a small-caps table, silently and permanently, against
+  // DOM text that really is rendered in small caps.
+  const r = await page.evaluate(async () => {
+    await document.fonts.load('16px "Junicode"');
+    await document.fonts.load('small-caps 16px "Junicode"');
+    const ctx = document.createElement("canvas").getContext("2d")!;
+    ctx.font = '32px "Junicode"';
+    const plain = ctx.measureText("handgloves").width;
+    (ctx as CanvasRenderingContext2D & { fontVariantCaps: string }).fontVariantCaps = "small-caps";
+    const canvasShapesCaps = Math.abs(ctx.measureText("handgloves").width - plain) > 0.01;
+
+    const span = document.createElement("span");
+    span.style.cssText = 'font:32px "Junicode";position:absolute;left:-9999px';
+    span.textContent = "handgloves";
+    document.body.append(span);
+    const domPlain = span.getBoundingClientRect().width;
+    span.style.fontVariantCaps = "small-caps";
+    const domShapesCaps = Math.abs(span.getBoundingClientRect().width - domPlain) > 0.01;
+    span.remove();
+
+    const table = window.__justif.opticalProtrusion({
+      family: "Junicode",
+      variantCaps: "small-caps",
+    });
+    return { canvasShapesCaps, domShapesCaps, measured: table !== undefined };
+  });
+  // Every engine renders true small caps for Junicode in the DOM.
+  expect(r.domShapesCaps).toBe(true);
+  // The rule: measure the variant only where the canvas actually applies it.
+  // Elsewhere `opticalProtrusion` must decline so callers keep their tables.
+  expect(r.measured, "measured a font-variant the canvas does not shape")
+    .toBe(r.canvasShapesCaps);
+});
+
 test("small-caps runs don't poison later measurements", async ({ page }) => {
   // Regression: Firefox's OffscreenCanvas 2D context kept SHAPING in
   // small-caps after fontVariantCaps was reset to "normal", inflating every
@@ -2987,10 +3205,19 @@ test("a quote starting a wrapped line sets flush under the first-line hang", asy
   // The wrapped quote-led line is the case in the report.
   const wrapped = edges.slice(1);
   expect(wrapped.filter((l) => l.head.startsWith("“")).length).toBeGreaterThan(0);
-  // Every line after the first shares ONE left edge, quote-led or not.
+  // Every line after the first shares ONE left edge, quote-led or not. Two
+  // things widen the tolerance from an exact match: measured protrusion nudges
+  // letter-led lines out by a fraction of a pixel, and WebKit's range rects
+  // quantize such a nudge to a whole pixel (its element rects report the true
+  // 0.14px). What must not happen is a line stepping out like the opener does,
+  // which is the staircase in the report.
   for (const line of wrapped) {
-    expect(Math.abs(line.offset), `line "${line.head}"`).toBeLessThan(0.1);
+    expect(Math.abs(line.offset), `line "${line.head}"`).toBeLessThan(1.2);
   }
+  const quoteLed = wrapped.filter((l) => l.head.startsWith("“")).map((l) => l.offset);
+  const letterLed = wrapped.filter((l) => !l.head.startsWith("“")).map((l) => l.offset);
+  const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+  expect(mean(quoteLed)).toBeGreaterThanOrEqual(mean(letterLed) - 0.1);
 });
 
 /**

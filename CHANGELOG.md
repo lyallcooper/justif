@@ -5,6 +5,9 @@
 - Fixed Safari keeping the fallback font's line breaks and spacing when a font
   arrives after the text is justified, such as one loaded by a script or by
   late-running CSS.
+- Optical margin alignment is now measured from the font on the page rather than
+  looked up in tables covering a few dozen faces, so any typeface is aligned to
+  its own letterforms.
 - Opening quotes now hang in the margin on every line, the way page-layout
   applications set justified text. Previously only a paragraph's first line
   hung its quote, leaving a quote that began a wrapped line at an in-between
