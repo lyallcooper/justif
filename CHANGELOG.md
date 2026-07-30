@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fixed Safari keeping the fallback font's line breaks and spacing when a font
+  arrives after the text is justified, such as one loaded by a script or by
+  late-running CSS.
 - Opening quotes now hang in the margin on every line, the way page-layout
   applications set justified text. Previously only a paragraph's first line
   hung its quote, leaving a quote that began a wrapped line at an in-between

@@ -2250,6 +2250,51 @@ test("a padded element breaking across lines keeps slice semantics and flush lin
   }
 });
 
+test("re-justifies for a face that starts loading after the first layout", async ({ page }) => {
+  // WebKit fires `loading` for a FontFace-API load but never `loadingdone`
+  // (verified in all three engines), and the initial `fonts.load()` pass only
+  // covers faces already named when justify() ran. A face that arrived after
+  // that therefore reached no listener at all: the paragraph kept the
+  // FALLBACK's line breaks and widths indefinitely, with no event to correct
+  // it. `fonts.ready` after a `loading` event is the portable signal.
+  const r = await page.evaluate(async () => {
+    const FACE = "JunicodeArrivesLate";
+    const host = document.getElementById("host")!;
+    const p = document.createElement("p");
+    // The face is NOT loaded yet, so this first justifies in the fallback.
+    p.style.cssText = `font-family:"${FACE}", monospace;text-align:justify;width:300px`;
+    p.textContent =
+      "them the that this then they there their theme thence thermal took time " +
+      "these those through thought thorough threshold therefore thereafter";
+    host.append(p);
+
+    const lines = (): string[] =>
+      [...p.querySelectorAll<HTMLElement>(".justif-seg")].map((s) =>
+        (s.textContent ?? "").trim(),
+      );
+
+    const controller = window.__justif.justify(p, { hyphenate: undefined });
+    await controller.ready;
+    const beforeLoad = lines();
+
+    // The face arrives only now — after the controller has converged once.
+    const face = new FontFace(FACE, 'url("/demo/fonts/Junicode-Roman.ttf")');
+    document.fonts.add(face);
+    await face.load();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const afterLoad = lines();
+    controller.destroy();
+    p.remove();
+    return { beforeLoad, afterLoad };
+  });
+  // Junicode is far narrower than the monospace fallback, so a re-layout must
+  // change how the words fall. Unchanged lines mean the load went unnoticed.
+  expect(r.beforeLoad.length, "fixture did not produce a multi-line paragraph")
+    .toBeGreaterThan(1);
+  expect(r.afterLoad, "paragraph kept its fallback layout after the font arrived")
+    .not.toEqual(r.beforeLoad);
+});
+
 test("tracking's letter-spacing does not cost ligatures", async ({ page }) => {
   const r = await page.evaluate(async () => {
     // Georgia has no common ligatures; use Junicode (fi/ffi/ffl) so the

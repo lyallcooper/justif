@@ -1659,6 +1659,27 @@ export function justify(
    * arbiter — the same net that catches engines whose check() reports a
    * still-loading face as available (WebKit with a loaded fallback in the
    * font string; it also fires no loadingdone for CSS-initiated loads). */
+  /**
+   * A face that starts loading AFTER the initial convergence. WebKit fires
+   * `loading` for it but never `loadingdone` — verified for FontFace-API
+   * loads in all three engines — so on that path the listener above is the
+   * only notice a controller would ever get, and a font arriving late would
+   * be rendered with the fallback's widths indefinitely. `fonts.ready` is
+   * the portable signal for "this batch settled": it is replaced by a fresh
+   * pending promise each time loading restarts, and resolves in every engine
+   * once the new face is measurable. Re-entry is harmless because
+   * `probesChanged()` still arbitrates, so the engines that DO fire
+   * loadingdone simply find nothing left to do.
+   */
+  const onFontsLoading = (): void => {
+    document.fonts.ready.then(
+      () => {
+        if (!destroyed) onFontsLoaded();
+      },
+      () => {},
+    );
+  };
+
   const onFontsLoaded = (): void => {
     const metricsChanged = probesChanged();
     const floatChanged = metricsChanged
@@ -1707,6 +1728,7 @@ export function justify(
       }
     }
     document.fonts.addEventListener("loadingdone", onFontsLoaded);
+    document.fonts.addEventListener("loading", onFontsLoading);
   };
 
   // The initial enhancement commits SYNCHRONOUSLY inside this justify()
@@ -1797,6 +1819,7 @@ export function justify(
       pendingOrder = [];
       leaveClipboardCleanup?.();
       document.fonts.removeEventListener("loadingdone", onFontsLoaded);
+      document.fonts.removeEventListener("loading", onFontsLoading);
       viewObserver?.disconnect();
       revealObserver?.disconnect();
       observer?.disconnect();
