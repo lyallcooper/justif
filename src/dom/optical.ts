@@ -118,8 +118,14 @@ const HEFT_K = 0.3;
  * reading size on purpose — one pixel at 16px is a tenth of a monospace
  * advance, which quantized those values into visible steps. */
 const RASTER_PX = 32;
-/** Lay raster cells out in a compact grid. Besides reducing readback work,
- * this keeps the canvas well inside conservative mobile texture limits. */
+/** Raster cells are laid out this many columns wide, so the canvas stays a
+ * compact rectangle rather than the 67 × 11,750 px column a single file of
+ * them needs — tall enough to risk conservative mobile canvas limits.
+ *
+ * It reads slightly MORE than that column did, not less: the last row is
+ * padded out to full width, costing about 3% of the readback overall and 6%
+ * of the geometry pass, whose cell count divides least evenly. The horizontal
+ * clip below is the other half of the price. */
 const RASTER_COLUMNS = 8;
 /**
  * Alpha at which a rasterized pixel starts to count as ink, and the pedestal
