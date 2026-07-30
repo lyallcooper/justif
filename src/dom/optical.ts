@@ -317,7 +317,28 @@ function measure(spec: Required<OpticalFontSpec>): ProtrusionTable | undefined {
     draw.fontVariantCaps = spec.variantCaps as CanvasFontVariantCaps;
   };
   applyFont();
-  const advance = (text: string): number => draw.measureText(text).width;
+  /**
+   * Memoized text metrics. The candidates are measured repeatedly — once for
+   * their advance and again for their bearing, on each side — and a face with
+   * many candidates spends real time in measureText for it (a quarter of the
+   * whole measurement in WebKit).
+   *
+   * Valid for this call because the font never changes within it: every canvas
+   * resize below resets the context and is immediately followed by
+   * `applyFont()` restoring the identical string, and the caps probe measures
+   * `draw` directly rather than through here, so its temporary font never
+   * reaches the memo.
+   */
+  const metricsMemo = new Map<string, TextMetrics>();
+  const metricsOf = (text: string): TextMetrics => {
+    let box = metricsMemo.get(text);
+    if (box === undefined) {
+      box = draw.measureText(text);
+      metricsMemo.set(text, box);
+    }
+    return box;
+  };
+  const advance = (text: string): number => metricsOf(text).width;
   if (advance("n") <= 0) return undefined;
   // A canvas that cannot shape this spec's font-variant would measure the
   // WRONG GLYPHS and cache them silently. WebKit has no canvas
@@ -386,6 +407,21 @@ function measure(spec: Required<OpticalFontSpec>): ProtrusionTable | undefined {
     centre: number;
   }
   let geometry: Map<string, Geometry>;
+  /**
+   * The rows of a cell any candidate's ink can occupy, recorded while the
+   * geometry pass is already reading every glyph. A cell is a whole ascender
+   * plus descender tall, but no face fills it: roughly a third of its rows are
+   * blank in every one, and the centroid pass — far the larger scan — can skip
+   * them.
+   *
+   * Sound only because every glyph a centroid string can contain is itself a
+   * candidate: TAILS and HEADS are built from letters that CANDIDATES already
+   * covers, so this union bounds all the ink that pass can see. A stand-in
+   * drawn from outside CANDIDATES would silently clip. The band is recorded
+   * against `>=` where the centroid tests `>`, so it errs inclusive.
+   */
+  let bandTop = cellH;
+  let bandBottom = -1;
   try {
     const glyphs = [...CANDIDATES, "n"];
     const grid = gridFor(glyphs.length);
@@ -412,6 +448,8 @@ function measure(spec: Required<OpticalFontSpec>): ProtrusionTable | undefined {
           if (a >= INK_PRESENT) {
             mass += a;
             moment += a * (x + 0.5 - pad);
+            if (dy < bandTop) bandTop = dy;
+            if (dy > bandBottom) bandBottom = dy;
           }
         }
       }
@@ -460,23 +498,33 @@ function measure(spec: Required<OpticalFontSpec>): ProtrusionTable | undefined {
       fillClippedToColumn(s, x, cellY + asc, cellX, grid.height);
     });
     const img = draw.getImageData(0, 0, grid.width, grid.height);
+    // A row of the band at a time, not a column of the cell at a time: the
+    // readback is row-major, so walking it by column strides a whole canvas
+    // row per pixel and misses cache on every one. Each column still sums in
+    // increasing-dy order, so the totals are bit-identical, not merely equal.
+    // No recorded band means the geometry pass found no ink at all, which the
+    // 'n' mass check already rejects; fall back to the whole cell regardless.
+    const noBand = bandBottom < bandTop;
+    const dy0 = noBand ? 0 : Math.max(0, bandTop - 1);
+    const dy1 = noBand ? cellH - 1 : Math.min(cellH - 1, bandBottom + 1);
+    const cols = new Float64Array(strip);
     return strings.map((_, i) => {
       let sum = 0;
       let moment = 0;
       const cellX = (i % grid.columns) * strip;
       const cellY = Math.floor(i / grid.columns) * cellH;
+      cols.fill(0);
+      for (let dy = dy0; dy <= dy1; dy++) {
+        let at = ((cellY + dy) * grid.width + cellX) * 4 + 3;
+        for (let x = 0; x < strip; x++, at += 4) {
+          const a = img.data[at]! / 255;
+          if (a > INK_PRESENT) cols[x] = cols[x]! + (a - INK_PRESENT);
+        }
+      }
       for (let x = 0; x < strip; x++) {
         // Distance from the pen origin into the line, on either side.
         const d = side === "l" ? x - pad : strip - pad - 1 - x;
-        let col = 0;
-        for (let dy = 0; dy < cellH; dy++) {
-          const a =
-            img.data[
-              ((cellY + dy) * grid.width + cellX + x) * 4 + 3
-            ]! / 255;
-          if (a > INK_PRESENT) col += a - INK_PRESENT;
-        }
-        const w = col * Math.exp(-Math.max(0, d) / RASTER_PX / LAMBDA_EM);
+        const w = cols[x]! * Math.exp(-Math.max(0, d) / RASTER_PX / LAMBDA_EM);
         sum += w;
         moment += w * (d + 0.5);
       }
@@ -526,7 +574,7 @@ function measure(spec: Required<OpticalFontSpec>): ProtrusionTable | undefined {
     // The bearing a plain stem keeps, defining the ink line of a flush margin.
     applyFont();
     const bearingOf = (ch: string): number => {
-      const box = draw.measureText(ch);
+      const box = metricsOf(ch);
       // Signed: negative when ink hangs before the pen (an italic 'f').
       return side === "l" ? -box.actualBoundingBoxLeft : advance(ch) - box.actualBoundingBoxRight;
     };
