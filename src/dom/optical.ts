@@ -147,6 +147,30 @@ const RASTER_COLUMNS = 8;
  * on the outcome metric), and 0.2 is the middle of that flat region.
  */
 const INK_PRESENT = 0.2;
+/**
+ * `INK_PRESENT` restated in raw alpha bytes, so the scans below can reject a
+ * blank pixel — most of every cell — with an integer compare instead of a
+ * division. `MIN` is the inclusive threshold, `OVER` the strict one.
+ *
+ * The two differ whenever `INK_PRESENT * 255` lands on a whole byte, as 0.2
+ * does: 51/255 is exactly the double 0.2, so a pixel at 51 clears the
+ * inclusive test and fails the strict one.
+ *
+ * Each is found by evaluating the very comparison it replaces, rather than
+ * written as `INK_PRESENT * 255`, so the substitution is exact by
+ * construction for whatever value the constant later takes — not only for the
+ * ones where that product happens to round the same way.
+ */
+const INK_BYTE_MIN = ((): number => {
+  let byte = 0;
+  while (byte < 255 && byte / 255 < INK_PRESENT) byte++;
+  return byte;
+})();
+const INK_BYTE_OVER = ((): number => {
+  let byte = INK_BYTE_MIN;
+  while (byte < 255 && byte / 255 <= INK_PRESENT) byte++;
+  return byte;
+})();
 /** Lowercase letters whose advances change under any caps variant, used to
  * check that this canvas really applies the variant before trusting it. */
 const CAPS_PROBE = "handgloves";
@@ -436,16 +460,20 @@ function measure(spec: Required<OpticalFontSpec>): ProtrusionTable | undefined {
       fillClippedToColumn(g, cellX + pad, cellY + asc, cellX, grid.height);
     });
     const img = draw.getImageData(0, 0, grid.width, grid.height);
+    // Hoisted: `data` is an IDL attribute, so reading it per pixel is a getter
+    // call the engine is not obliged to fold away.
+    const data = img.data;
     const measured = glyphs.map((g, i) => {
       let mass = 0;
       let moment = 0;
       const cellX = (i % grid.columns) * strip;
       const cellY = Math.floor(i / grid.columns) * cellH;
       for (let dy = 0; dy < cellH; dy++) {
-        const row = (cellY + dy) * grid.width;
-        for (let x = 0; x < strip; x++) {
-          const a = img.data[(row + cellX + x) * 4 + 3]! / 255;
-          if (a >= INK_PRESENT) {
+        let at = ((cellY + dy) * grid.width + cellX) * 4 + 3;
+        for (let x = 0; x < strip; x++, at += 4) {
+          const raw = data[at]!;
+          if (raw >= INK_BYTE_MIN) {
+            const a = raw / 255;
             mass += a;
             moment += a * (x + 0.5 - pad);
             if (dy < bandTop) bandTop = dy;
@@ -498,6 +526,7 @@ function measure(spec: Required<OpticalFontSpec>): ProtrusionTable | undefined {
       fillClippedToColumn(s, x, cellY + asc, cellX, grid.height);
     });
     const img = draw.getImageData(0, 0, grid.width, grid.height);
+    const data = img.data;
     // A row of the band at a time, not a column of the cell at a time: the
     // readback is row-major, so walking it by column strides a whole canvas
     // row per pixel and misses cache on every one. Each column still sums in
@@ -517,8 +546,8 @@ function measure(spec: Required<OpticalFontSpec>): ProtrusionTable | undefined {
       for (let dy = dy0; dy <= dy1; dy++) {
         let at = ((cellY + dy) * grid.width + cellX) * 4 + 3;
         for (let x = 0; x < strip; x++, at += 4) {
-          const a = img.data[at]! / 255;
-          if (a > INK_PRESENT) cols[x] = cols[x]! + (a - INK_PRESENT);
+          const raw = data[at]!;
+          if (raw >= INK_BYTE_OVER) cols[x] = cols[x]! + (raw / 255 - INK_PRESENT);
         }
       }
       for (let x = 0; x < strip; x++) {
