@@ -215,8 +215,8 @@ These are the options most applications need:
 | Option | Default | What it controls |
 | --- | --- | --- |
 | `hyphenate` | none | Splits a lowercase word into hyphenatable fragments |
-| `protrusion` | `true` | Optical margin alignment, measured from the font in use; `false` disables, or pass your own character table |
-| `hangingPunctuation` | `"all-lines"` | Hangs quotes and stops fully at every line edge, as page-layout applications do; `"first-line"` narrows the opening-quote hang to the paragraph's first line (the CSS `hanging-punctuation: first` model), `false` leaves only `protrusion`'s partial hangs |
+| `protrusion` | `true` | Optically aligns glyphs at line edges; `false` disables it, or pass a character table to use built-in values plus your overrides |
+| `hangingPunctuation` | `"line-end-only"` | Controls where eligible punctuation hangs fully: line ends only, all line edges, or none |
 | `expansion` | `{ max: 0.02, shrink: 0.02, step: 0.005 }` | Uses a variable font's `wdth` axis to improve line fit; ignored when unavailable |
 | `tracking` | `{ max: 0.03, shrink: 0.03 }` | Uses small letter-spacing adjustments to improve line fit; `false` disables |
 | `spacing` | `{ stretch: 0.5, shrink: 1/3, pull: 0.7, boundaryShrink: 0 }` | Sets how far word spaces may stretch or shrink |
@@ -233,6 +233,21 @@ the full measure without poor spacing. Naturally one-line elements otherwise
 stay in native layout; they become enhanced if a narrower measure makes them
 wrap, and return to native layout when they fit again. CSS
 `text-align: justify-all` is treated like the rectangular `1` mode.
+
+### Protrusion and hanging punctuation
+
+By default, Justif will protrude characters slightly into the margin to create
+the appearance of a straighter margin. This is also known as optical margin
+alignment. Justif dynamically evaluates each character to determine the
+appropriate amount to adjust the character's alignment at the margin edge. Set
+`protrusion` to false to disable this behavior, or pass a character table to
+provide your own values and disable the dynamic font measuring. Passed values
+are merged with a built-in table of values in Justif, so passing `{}` tells
+Justif to only use its built-in table and not dynamically measure characters.
+
+Justif also fully hangs punctuation into the margin on the trailing edge of the
+paragraph by default. Set `hangingPunctuation` to `false` to disable it, or
+pass `"all-line-edges"` for fully hanging punctuation everywhere.
 
 ### Expansion, tracking, and spacing
 

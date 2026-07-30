@@ -140,6 +140,7 @@ export function runTexts(scan: ParagraphScan): RunText[] {
  */
 interface ProtrusionSettings {
   enabled: boolean;
+  measured: boolean;
   user: ProtrusionTable | null;
   hang: HangingPunctuationMode;
 }
@@ -198,24 +199,24 @@ function composedForFamily(
   // not be back-filled from a table tuned for other faces. Characters the
   // measurement never looked at are a different matter: the generic table
   // carries entries the raster pass has no candidate for, notably the Arabic
-  // and Hebrew stops that make pure-RTL paragraphs work, and dropping those
-  // would silently un-hang scripts the tables handled. So the generic table
-  // fills only the gaps outside the measured range. A face the measurement
-  // cannot read at all falls back to the tables entirely.
-  const measured = opticalProtrusion(spec);
-  const matched = measured ?? fontProtrusion(family);
-  let tables: ComposedTables = null;
-  if (matched !== undefined) {
-    const base =
-      measured !== undefined
-        ? { ...unmeasuredProtrusion(), ...measured }
-        : { ...latinProtrusion, ...matched };
-    const composed = composeProtrusion(base, settings.user, settings.hang);
-    tables = {
-      rest: composed.rest,
-      first: composed.first !== composed.rest ? composed.first : undefined,
-    };
-  }
+  // and Hebrew stops that make pure-RTL paragraphs work.
+  //
+  // A user table deliberately selects the table-backed path instead: generic
+  // values, then the matching hand-tuned font table, then the user's
+  // overrides. Besides being an escape hatch for faces where hand tuning wins,
+  // this avoids canvas pixel readback and keeps the chosen values stable across
+  // browser engines.
+  const fontTable = fontProtrusion(family);
+  const measured = settings.measured ? opticalProtrusion(spec) : undefined;
+  const base =
+    measured !== undefined
+      ? { ...unmeasuredProtrusion(), ...measured }
+      : { ...latinProtrusion, ...fontTable };
+  const composed = composeProtrusion(base, settings.user, settings.hang);
+  const tables: ComposedTables = {
+    rest: composed.rest,
+    first: composed.first !== composed.rest ? composed.first : undefined,
+  };
   composedCache.set(key, tables);
   return tables;
 }
@@ -316,7 +317,7 @@ export function buildRunMetrics(
       // mono run sits INSIDE another font's prose (inline code), where the
       // hang reads as overflow against the base font's margin rhythm. A
       // paragraph set in a mono font owns its margin: it protrudes like any
-      // other font (full cell hangs under hangingPunctuation — the
+      // other font (full cells hang under a hanging-punctuation mode — the
       // typewriter-tradition grid behavior).
       protrudeInkOnly: isMonospace(spec) && spec.key !== baseSpec.key,
       protrusion: perFont,

@@ -5,21 +5,25 @@
 - Fixed Safari keeping the fallback font's line breaks and spacing when a font
   arrives after the text is justified, such as one loaded by a script or by
   late-running CSS.
-- Optical margin alignment is now measured from the font on the page rather than
-  looked up in tables covering a few dozen faces, so any typeface is aligned to
-  its own letterforms.
-- Opening quotes now hang in the margin on every line, the way page-layout
-  applications set justified text. Previously only a paragraph's first line
-  hung its quote, leaving a quote that began a wrapped line at an in-between
-  position that read as a misaligned edge (#14). For the narrower model, where
-  only the paragraph's opening quote hangs, set `hangingPunctuation:
-  "first-line"`; `false` still leaves the small optical hangs alone.
-- A paragraph short enough to set on one line now hangs its opening quote too,
-  so paragraphs of dialogue all begin at the same place. Previously only
-  paragraphs long enough to wrap did.
-- A line beginning with `(`, `[` or `{` no longer swings out into the margin.
-  Brackets now sit where typesetting practice puts them: a slight overhang for
-  a parenthesis, none for a square bracket.
+- Optical margin alignment now measures each font's letterforms. Omit
+  `protrusion` or pass `true` to use measurement, pass `false` to disable
+  protrusion, or pass a character table to use built-in values plus your
+  overrides. An empty `{}` uses the built-in tables without canvas readback.
+- `hangingPunctuation` now defaults to `"line-end-only"`, and passing `true`
+  selects the same behavior. Punctuation hangs fully at line ends while line
+  starts retain optical alignment. In 0.6.5 the default and `true` selected
+  `"first-line"`. Use `"all-line-edges"` for full hangs at both edges or
+  `"none"` for optical alignment alone. The original `"first-line"` and
+  `"all-lines"` strings remain supported.
+- Opening brackets are no longer forced fully into the margin. Measured fonts
+  use their own bracket shapes; the built-in tables give parentheses a slight
+  overhang and leave square brackets flush.
+- One-line paragraphs now receive the same visible line-start alignment as
+  longer paragraphs, without replacing their native markup.
+- Unchanged one-line paragraphs no longer trigger `onRelayout` during a resize
+  or `refresh()`.
+- Monospace fonts no longer indent individual edge glyphs, preserving their
+  visible character grid.
 
 ## 0.6.5 (2026-07-28)
 

@@ -43,8 +43,9 @@ import type { ProtrusionTable } from "../core/types.js";
  * mark's hang actually comes from. In the other direction it lets a glyph the
  * face draws to hang (a 't' whose crossbar starts at the origin) come back IN
  * until its ink lines up with a stem's, which is the one case that yields a
- * negative value. Tradition rarely indents, but tradition assumes bearings
- * drawn for proportional advances.
+ * negative value. Tradition rarely indents, and a monospace face is a visible
+ * cell grid rather than a set of proportional bearings, so negative values are
+ * suppressed for monospace faces.
  *
  * NOISE. The letters that actually begin and end lines ought to need almost no
  * correction, so how far their readings scatter IS this measurement's error on
@@ -71,6 +72,8 @@ import type { ProtrusionTable } from "../core/types.js";
  * a claim the code substantiates: ~68‰ mean deviation from 320 hand-tuned
  * values where the nine-constant predecessor scored ~74‰, and a perceived
  * edge tighter than microtype's generic table on 148 of 228 held-out cells.
+ * Those aggregate figures predate the later suppression of negative values
+ * for monospace faces; proportional-face values are unchanged.
  * The tables remain much closer to each other than to any measurement (~34‰),
  * which is the honest shape of the result: measurement does not reproduce
  * hand-tuning, and gains concentrate in monospace and serif faces while sans
@@ -115,6 +118,9 @@ const HEFT_K = 0.3;
  * reading size on purpose — one pixel at 16px is a tenth of a monospace
  * advance, which quantized those values into visible steps. */
 const RASTER_PX = 32;
+/** Lay raster cells out in a compact grid. Besides reducing readback work,
+ * this keeps the canvas well inside conservative mobile texture limits. */
+const RASTER_COLUMNS = 8;
 /**
  * Alpha at which a rasterized pixel starts to count as ink, and the pedestal
  * subtracted from every pixel that clears it.
@@ -305,7 +311,10 @@ function measure(spec: Required<OpticalFontSpec>): ProtrusionTable | undefined {
   const applyFont = (): void => {
     draw.font = font;
     draw.textBaseline = "alphabetic";
-    if (spec.variantCaps !== "normal") draw.fontVariantCaps = spec.variantCaps as CanvasFontVariantCaps;
+    // Explicit even for `normal`: engines disagree on whether assigning the
+    // shorthand resets this canvas longhand, and this shared context must not
+    // leak one measured variant into the next.
+    draw.fontVariantCaps = spec.variantCaps as CanvasFontVariantCaps;
   };
   applyFont();
   const advance = (text: string): number => draw.measureText(text).width;
@@ -318,11 +327,15 @@ function measure(spec: Required<OpticalFontSpec>): ProtrusionTable | undefined {
   // truth. measure.ts records the same rule for widths: caps support is
   // port-dependent and must never be assumed.
   if (spec.variantCaps !== "normal") {
-    const plain = draw.measureText(CAPS_PROBE).width;
+    const variantWidth = draw.measureText(CAPS_PROBE).width;
     draw.font = `${spec.style} ${spec.weight} ${RASTER_PX}px ${spec.family}`;
-    if (draw.measureText(CAPS_PROBE).width === plain) return undefined;
+    draw.fontVariantCaps = "normal";
+    if (draw.measureText(CAPS_PROBE).width === variantWidth) return undefined;
     applyFont();
   }
+  const monoAdvances = ["i", "W", ".", "m"].map(advance);
+  const monospace =
+    Math.max(...monoAdvances) - Math.min(...monoAdvances) <= 0.01;
 
   // Only the leading window is rasterized and read back.
   const pad = Math.round(RASTER_PX * 0.5); // ink hanging before the pen still counts
@@ -330,6 +343,37 @@ function measure(spec: Required<OpticalFontSpec>): ProtrusionTable | undefined {
   const strip = pad + win;
   const asc = Math.round(RASTER_PX * 1.05);
   const cellH = asc + Math.round(RASTER_PX * 0.4);
+  const gridFor = (
+    count: number,
+  ): { columns: number; width: number; height: number } => {
+    const columns = Math.min(RASTER_COLUMNS, Math.max(1, count));
+    return {
+      columns,
+      width: strip * columns,
+      height: cellH * Math.ceil(Math.max(1, count) / columns),
+    };
+  };
+  /**
+   * Reproduce the old one-column canvas boundary for every grid column.
+   * Probe strings deliberately extend beyond the leading window; without a
+   * horizontal clip their tail ink lands in the adjacent cell and receives
+   * that cell's maximum centroid weight. Keep the full canvas height so
+   * vertical raster behavior remains identical to the validated strip.
+   */
+  const fillClippedToColumn = (
+    text: string,
+    x: number,
+    y: number,
+    cellX: number,
+    canvasHeight: number,
+  ): void => {
+    draw.save();
+    draw.beginPath();
+    draw.rect(cellX, 0, strip, canvasHeight);
+    draw.clip();
+    draw.fillText(text, x, y);
+    draw.restore();
+  };
 
   /**
    * Per-glyph geometry from single-glyph rasters: ink mass relative to a
@@ -344,20 +388,27 @@ function measure(spec: Required<OpticalFontSpec>): ProtrusionTable | undefined {
   let geometry: Map<string, Geometry>;
   try {
     const glyphs = [...CANDIDATES, "n"];
-    draw.canvas.width = strip;
-    draw.canvas.height = cellH * glyphs.length;
+    const grid = gridFor(glyphs.length);
+    draw.canvas.width = grid.width;
+    draw.canvas.height = grid.height;
     applyFont();
-    draw.clearRect(0, 0, strip, draw.canvas.height);
+    draw.clearRect(0, 0, grid.width, grid.height);
     draw.fillStyle = "#000";
-    glyphs.forEach((g, i) => draw.fillText(g, pad, i * cellH + asc));
-    const img = draw.getImageData(0, 0, strip, draw.canvas.height);
+    glyphs.forEach((g, i) => {
+      const cellX = (i % grid.columns) * strip;
+      const cellY = Math.floor(i / grid.columns) * cellH;
+      fillClippedToColumn(g, cellX + pad, cellY + asc, cellX, grid.height);
+    });
+    const img = draw.getImageData(0, 0, grid.width, grid.height);
     const measured = glyphs.map((g, i) => {
       let mass = 0;
       let moment = 0;
+      const cellX = (i % grid.columns) * strip;
+      const cellY = Math.floor(i / grid.columns) * cellH;
       for (let dy = 0; dy < cellH; dy++) {
-        const row = (i * cellH + dy) * strip;
+        const row = (cellY + dy) * grid.width;
         for (let x = 0; x < strip; x++) {
-          const a = img.data[(row + x) * 4 + 3]! / 255;
+          const a = img.data[(row + cellX + x) * 4 + 3]! / 255;
           if (a >= INK_PRESENT) {
             mass += a;
             moment += a * (x + 0.5 - pad);
@@ -393,25 +444,36 @@ function measure(spec: Required<OpticalFontSpec>): ProtrusionTable | undefined {
    * blurring would only bleed neighbouring ink across the window edge.
    */
   const centroids = (strings: string[], side: "l" | "r"): Array<number | null> => {
-    draw.canvas.width = strip;
-    draw.canvas.height = cellH * Math.max(1, strings.length);
+    const grid = gridFor(strings.length);
+    draw.canvas.width = grid.width;
+    draw.canvas.height = grid.height;
     applyFont();
-    draw.clearRect(0, 0, draw.canvas.width, draw.canvas.height);
+    draw.clearRect(0, 0, grid.width, grid.height);
     draw.fillStyle = "#000";
     strings.forEach((s, i) => {
-      const y = i * cellH + asc;
-      draw.fillText(s, side === "l" ? pad : strip - pad - advance(s), y);
+      const cellX = (i % grid.columns) * strip;
+      const cellY = Math.floor(i / grid.columns) * cellH;
+      const x =
+        side === "l"
+          ? cellX + pad
+          : cellX + strip - pad - advance(s);
+      fillClippedToColumn(s, x, cellY + asc, cellX, grid.height);
     });
-    const img = draw.getImageData(0, 0, strip, draw.canvas.height);
+    const img = draw.getImageData(0, 0, grid.width, grid.height);
     return strings.map((_, i) => {
       let sum = 0;
       let moment = 0;
+      const cellX = (i % grid.columns) * strip;
+      const cellY = Math.floor(i / grid.columns) * cellH;
       for (let x = 0; x < strip; x++) {
         // Distance from the pen origin into the line, on either side.
         const d = side === "l" ? x - pad : strip - pad - 1 - x;
         let col = 0;
         for (let dy = 0; dy < cellH; dy++) {
-          const a = img.data[((i * cellH + dy) * strip + x) * 4 + 3]! / 255;
+          const a =
+            img.data[
+              ((cellY + dy) * grid.width + cellX + x) * 4 + 3
+            ]! / 255;
           if (a > INK_PRESENT) col += a - INK_PRESENT;
         }
         const w = col * Math.exp(-Math.max(0, d) / RASTER_PX / LAMBDA_EM);
@@ -511,6 +573,10 @@ function measure(spec: Required<OpticalFontSpec>): ProtrusionTable | undefined {
       const ceiling = Math.max(0, (1 - light) * inkLine + light * centre + RASTER_PX * ALLOW_EM);
       const floor = Math.min(inkLine, ceiling);
       const permille = Math.round((Math.min(Math.max(read, floor), ceiling) / adv) * 1000);
+      // A monospace face exposes its equal advances as a visible grid.
+      // Indenting one glyph while its neighbours remain flush breaks that grid;
+      // outward optical correction remains useful, inward correction does not.
+      if (monospace && permille < 0) continue;
       if (Math.abs(permille) < 15) continue; // below the rendering threshold
       (table[ch] ??= {})[side] = permille;
     }

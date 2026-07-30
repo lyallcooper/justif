@@ -46,7 +46,15 @@ describe("protrusionCodes (universal character inheritance)", () => {
 });
 
 describe("composeProtrusion (hanging-punctuation scoping)", () => {
-  it("first-line mode: r-hangs everywhere, full l-hangs on line 0, flush after", () => {
+  it("line-end-only mode fully hangs endings and preserves optical starts", () => {
+    const { rest, first } = composeProtrusion(latinProtrusion, null, "line-end-only");
+    expect(first).toBe(rest);
+    expect(rest[","]).toEqual({ r: 1000 });
+    expect(rest["“"]!.l).toBe(latinProtrusion["“"]!.l);
+    expect(rest["“"]!.r).toBe(1000);
+  });
+
+  it("legacy first-line mode: r-hangs everywhere, full l-hangs on line 0, flush after", () => {
     const { rest, first } = composeProtrusion(latinProtrusion, null, "first-line");
     expect(first).not.toBe(rest);
     // Stops hang fully at every line end.
@@ -71,8 +79,8 @@ describe("composeProtrusion (hanging-punctuation scoping)", () => {
     expect(rest["?"]!.r).toBe(latinProtrusion["?"]!.r);
   });
 
-  it("all-lines mode collapses to one table; off returns the base", () => {
-    const all = composeProtrusion(latinProtrusion, null, "all-lines");
+  it("all-line-edges mode collapses to one table; off returns the base", () => {
+    const all = composeProtrusion(latinProtrusion, null, "all-line-edges");
     expect(all.first).toBe(all.rest);
     expect(all.rest["“"]!.l).toBe(1000);
     const off = composeProtrusion(latinProtrusion, null, false);
@@ -80,8 +88,21 @@ describe("composeProtrusion (hanging-punctuation scoping)", () => {
     expect(off.first).toBe(latinProtrusion);
   });
 
+  it("retains all-lines as an exact alias and accepts none", () => {
+    expect(composeProtrusion(latinProtrusion, null, "all-lines")).toEqual(
+      composeProtrusion(latinProtrusion, null, "all-line-edges"),
+    );
+    expect(composeProtrusion(latinProtrusion, null, "none")).toEqual(
+      composeProtrusion(latinProtrusion, null, false),
+    );
+  });
+
   it("user overrides beat the hang overlays in both tables", () => {
-    const { rest, first } = composeProtrusion(latinProtrusion, { "“": { l: 123 } }, "first-line");
+    const { rest, first } = composeProtrusion(
+      latinProtrusion,
+      { "“": { l: 123 } },
+      "first-line",
+    );
     expect(rest["“"]).toEqual({ l: 123 });
     expect(first["“"]).toEqual({ l: 123 });
   });

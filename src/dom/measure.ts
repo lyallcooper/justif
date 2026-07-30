@@ -199,11 +199,11 @@ function setFont(ctx: MeasureCtx, spec: FontSpec): void {
   ctx.font = ctxFontOf(spec);
   if ("letterSpacing" in ctx) ctx.letterSpacing = spec.letterSpacingPx + "px";
   if ("wordSpacing" in ctx) ctx.wordSpacing = spec.wordSpacingPx + "px";
-  // Always reset caps state: it is independent canvas state, not part of
-  // the font shorthand, and a stale small-caps value would poison every
-  // later measurement (surviving even clearMeasureCache). Canvas never
-  // MEASURES caps variants — those runs take the DOM path (see
-  // requiresDomMeasurement) — so the reset is constant.
+  // Always reset caps state. Engines differ on whether assigning the font
+  // shorthand also resets this longhand, so relying on either retained or
+  // reset state would make the next measurement engine-dependent. Canvas
+  // never MEASURES caps variants — those runs take the DOM path (see
+  // requiresDomMeasurement) — so the explicit value is always `normal`.
   if ("fontVariantCaps" in ctx) {
     (ctx as { fontVariantCaps: string }).fontVariantCaps = "normal";
   }

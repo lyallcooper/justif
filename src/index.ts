@@ -123,33 +123,35 @@ export interface JustifyOptions {
    */
   lastLineMinWidth?: number;
   /**
-   * Optical margin alignment. `true` (the default) MEASURES each font's own
-   * values by rasterizing its glyphs (see dom/optical.ts), which suits faces
-   * nobody has hand-tuned — on the web, nearly all of them. `false` disables
-   * protrusion entirely. An object supplies per-character overrides, in
-   * thousandths of the character's own advance, merged over the measured
-   * values.
+   * Character protrusion model. `true` (the default) measures each font's
+   * glyph-specific optical alignment by rasterizing its glyphs. `false`
+   * disables character protrusion.
+   *
+   * An object selects the fixed table-backed model and supplies
+   * per-character overrides, in thousandths of the character's own advance.
+   * Overrides are merged over the generic Latin table and any matching
+   * hand-tuned per-font table.
    *
    * Built-in tables (the generic Latin list plus microtype's per-font configs)
    * remain as the FALLBACK, used per font wherever the measurement cannot run
    * — a canvas that will not rasterize or read back, or one the browser will
    * not shape a run's font-variant in — and for the characters the raster pass
    * has no candidate for, such as the Arabic and Hebrew stops. They are not
-   * separately selectable: they exist to cover what measurement cannot reach,
-   * not as a second model to choose between.
+   * separately selected when `true`; passing an object (including `{}`)
+   * bypasses measurement and uses them directly.
    */
   protrusion?: boolean | ProtrusionTable;
   /**
-   * Full hanging punctuation: quotes and stops hang entirely outside the
-   * measure. "all-lines" (the DEFAULT, = `true`) hangs them at every line
-   * edge, which is what Affinity and InDesign do when their equivalent is
-   * switched on; "first-line" is the narrower CSS `hanging-punctuation:
-   * first` model, where left-edge marks hang on the paragraph's FIRST line
-   * and set flush after it, while stops and closing quotes still hang at
-   * every line end; `false` disables full hangs, leaving microtype's partial
-   * protrusion only, uniformly on every line. Requires `protrusion` enabled.
+   * Full-hanging policy layered over `protrusion`. `"line-end-only"` (the
+   * default) fully hangs eligible punctuation at line ends while line starts
+   * retain optical alignment. `"all-line-edges"` fully hangs it at every line
+   * edge; `"none"` applies only the selected protrusion model.
+   *
+   * Compatibility: `true` selects the new default; `false` selects `"none"`;
+   * `"all-lines"` aliases `"all-line-edges"`; and `"first-line"` retains the
+   * original paragraph-opener-plus-line-ends behavior.
    */
-  hangingPunctuation?: boolean | "first-line" | "all-lines";
+  hangingPunctuation?: true | HangingPunctuationMode;
   /** Glyph expansion limits via the wdth axis; false disables. */
   expansion?: ExpansionOptions | false;
   /**
@@ -315,13 +317,12 @@ function clearNativeHang(p: HTMLElement, state: ParaState): boolean {
  * mark still owes the margin its hang — a paragraph whose opener sits flush
  * beside neighbours whose openers hang reads as a ragged left edge (issue
  * #14) — and a negative `text-indent` buys exactly that without the DOM
- * rewrite the one-line fast path exists to avoid. Sound because a full hang
- * equals the mark's own advance, so the text after it lands flush, which is
- * what the enhanced path renders too. `text-indent` is line-START relative,
- * hanging into the right margin in an RTL paragraph, and it must carry the
- * author's own first-line indent because an inline declaration replaces it.
+ * rewrite the one-line fast path exists to avoid. `text-indent` is line-START
+ * relative, hanging into the right margin in an RTL paragraph, and it must
+ * carry the author's own first-line indent because an inline declaration
+ * replaces it. The same computed hang is used by the enhanced path.
  */
-function applyNativeHang(p: HTMLElement, state: ParaState, hangPx: number): boolean {
+function nativeHangIndent(state: ParaState, hangPx: number): number | null {
   // This hang costs an inline style on the author's own element, so it has to
   // earn it: measured protrusion gives most letters a fraction of a pixel, which
   // no reader can see at a line start but which would rewrite the style
@@ -330,9 +331,17 @@ function applyNativeHang(p: HTMLElement, state: ParaState, hangPx: number): bool
   // the threshold is about what a reader can see, not where the number came
   // from.
   if (hangPx < state.scan.specs[state.scan.baseSpec]!.sizePx * 0.04) {
-    return clearNativeHang(p, state);
+    return null;
   }
-  const indent = Number((firstLineIndentPx(state) - hangPx).toFixed(3));
+  return Number((firstLineIndentPx(state) - hangPx).toFixed(3));
+}
+
+function applyNativeHang(
+  p: HTMLElement,
+  state: ParaState,
+  indent: number | null,
+): boolean {
+  if (indent === null) return clearNativeHang(p, state);
   if (indent === state.nativeIndent) return false;
   state.nativeIndent = indent;
   p.style.setProperty("text-indent", `${indent}px`);
@@ -403,6 +412,7 @@ interface ResolvedOptions {
   /** Per-run protrusion resolution context for `buildRunMetrics`. */
   protrusionCtx: {
     enabled: boolean;
+    measured: boolean;
     user: ProtrusionTable | null;
     hang: HangingPunctuationMode;
   };
@@ -422,15 +432,28 @@ function resolveOptions(options: JustifyOptions): ResolvedOptions {
   // and the per-family composition is now memoized, so a caller mutating its
   // own table afterwards would otherwise see a partial, inconsistent effect.
   const protrusionUser: ProtrusionTable | null =
-    typeof options.protrusion === "object" ? { ...options.protrusion } : null;
+    typeof options.protrusion === "object"
+      ? Object.fromEntries(
+          Object.entries(options.protrusion).map(([character, codes]) => [
+            character,
+            { ...codes },
+          ]),
+        )
+      : null;
+  const requestedHang = options.hangingPunctuation;
   const hangMode: HangingPunctuationMode =
-    options.hangingPunctuation === false
-      ? false
-      : options.hangingPunctuation === true || options.hangingPunctuation === undefined
-        ? "all-lines"
-        : options.hangingPunctuation;
+    requestedHang === undefined || requestedHang === true
+      ? "line-end-only"
+      : requestedHang === false
+        ? "none"
+        : requestedHang === "all-lines"
+          ? "all-line-edges"
+          : requestedHang;
+  const protrusionEnabled = options.protrusion !== false;
+  const measuredProtrusion =
+    options.protrusion === undefined || options.protrusion === true;
   const composed =
-    options.protrusion === false
+    !protrusionEnabled
       ? null
       : composeProtrusion(latinProtrusion, protrusionUser, hangMode);
   const protrusion: ProtrusionTable | false = composed === null ? false : composed.rest;
@@ -484,7 +507,12 @@ function resolveOptions(options: JustifyOptions): ResolvedOptions {
     lastLineMinWidth,
     expansion,
     spacing,
-    protrusionCtx: { enabled: composed !== null, user: protrusionUser, hang: hangMode },
+    protrusionCtx: {
+      enabled: composed !== null,
+      measured: measuredProtrusion,
+      user: protrusionUser,
+      hang: hangMode,
+    },
     hyphenate,
   };
 }
@@ -516,8 +544,8 @@ function beginEnhancement(p: HTMLElement, state: ParaState): void {
   // Neutralize CSS hanging-punctuation (Safari): it would hang quotes
   // and stops on top of our protrusion — a double hang — and shift
   // rendered widths our wrap model doesn't know about. A no-op in
-  // engines that don't support the property. Use `hangingPunctuation`
-  // (the protrusion preset) for the full-hang style instead.
+  // engines that don't support the property. Use a `hangingPunctuation`
+  // mode for the full-hang style instead.
   p.style.setProperty("hanging-punctuation", "none");
   // Reset the properties that decide where the engine MAY break. The
   // model chose every break and each glyph run is `nowrap`, so neither
@@ -1205,9 +1233,17 @@ export function justify(
       oneLineStaysNative(layout, paragraphMinWidth)
     ) {
       dropQueued(p);
+      const nativeIndent = nativeHangIndent(state, layout.onlyLine?.leftHang ?? 0);
+      // Avoid dismantling and rebuilding byte-identical native output. In
+      // particular, restoreManagedOutput clears state.nativeIndent, so calling
+      // it before this comparison made every resize tick look like a relayout
+      // and emitted four needless style mutations.
+      if (!state.enhanced && nativeIndent === state.nativeIndent) {
+        return { changed: false, pending: null };
+      }
       let changed = restoreManagedOutput(p, state);
       // Native rendering skips the DOM rewrite, not the line-start hang.
-      if (applyNativeHang(p, state, layout.onlyLine?.leftHang ?? 0)) changed = true;
+      if (applyNativeHang(p, state, nativeIndent)) changed = true;
       return { changed, pending: null };
     }
 

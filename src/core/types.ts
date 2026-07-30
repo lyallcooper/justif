@@ -137,7 +137,7 @@ export interface Box {
   /** Protrusion credit (px) if this box starts a line after the first. */
   lp: number;
   /** Protrusion credit (px) if this box starts the paragraph's FIRST line
-   * (differs from lp only under hangingPunctuation "first-line"). */
+   * (differs from lp only under the legacy first-line hanging mode). */
   lpFirst: number;
   /** Protrusion credit (px) if this box ends a line. */
   rp: number;
@@ -238,8 +238,7 @@ export interface BuildOptions {
   exHyphenPenalty: number;
   protrusion: ProtrusionTable | false;
   /** Table for boxes starting the paragraph's FIRST line (full hanging
-   * punctuation on opening quotes/brackets). undefined → same as
-   * `protrusion`. */
+   * punctuation on opening quotes). undefined → same as `protrusion`. */
   protrusionFirst?: ProtrusionTable;
   expansion: ExpansionOptions | false;
   /** Letterfit tracking: inter-character space may open/close each line's

@@ -619,7 +619,11 @@ test("floated ::first-letter drop caps use the remaining width on every intruded
       control: {
         right: controlBox.right,
         lines: [...control.querySelectorAll<HTMLElement>(":scope > .justif-seg")].map(
-          (segment) => ({ right: segment.getBoundingClientRect().right, text: segment.textContent }),
+          (segment) => ({
+            right: segment.getBoundingClientRect().right,
+            text: segment.textContent,
+            allowance: Math.max(0, -(parseFloat(segment.style.marginInlineEnd) || 0)),
+          }),
         ),
       },
     };
@@ -654,11 +658,12 @@ test("floated ::first-letter drop caps use the remaining width on every intruded
   }
   expect(result.lines[original.nativeIntruded]!.left).toBeLessThan(result.left + 1);
   for (const line of result.control.lines.slice(0, -1)) {
+    const expectedRight = result.control.right + line.allowance;
     expect
-      .soft(line.right - result.control.right, `control line "${line.text}" has no false overflow`)
+      .soft(line.right - expectedRight, `control line "${line.text}" has no false overflow`)
       .toBeLessThanOrEqual(0.75);
     expect
-      .soft(result.control.right - line.right, `control line "${line.text}" remains set flush`)
+      .soft(expectedRight - line.right, `control line "${line.text}" remains set flush`)
       .toBeLessThanOrEqual(0.75);
   }
 
@@ -2526,6 +2531,92 @@ test("measured protrusion keeps the table's non-Latin punctuation", async ({ pag
   }
 });
 
+test("a custom protrusion table bypasses canvas pixel readback", async ({ page }) => {
+  const readbacks = await page.evaluate(async () => {
+    const proto = CanvasRenderingContext2D.prototype;
+    const original = proto.getImageData;
+    let calls = 0;
+    proto.getImageData = function (...args) {
+      calls++;
+      return original.apply(this, args as unknown as Parameters<typeof original>);
+    };
+    try {
+      const p = document.createElement("p");
+      p.style.cssText =
+        "width:240px;text-align:justify;font:17px Georgia,serif";
+      p.textContent =
+        "A table-backed paragraph ends with punctuation, and carries enough text " +
+        "to wrap onto several measured lines.";
+      document.getElementById("host")!.replaceChildren(p);
+      const controller = window.__justif.justify(p, {
+        expansion: false,
+        tracking: false,
+        protrusion: { ".": { r: 333 } },
+        hangingPunctuation: "none",
+      });
+      await controller.ready;
+      controller.destroy();
+      return calls;
+    } finally {
+      proto.getImageData = original;
+    }
+  });
+
+  expect(readbacks).toBe(0);
+});
+
+test("measured serif protrusion retains its calibrated absolute anchors", async ({
+  page,
+  browserName,
+}) => {
+  const table = await page.evaluate(async () => {
+    const face = new FontFace(
+      "Junicode",
+      'url("/demo/fonts/Junicode-Roman.ttf")',
+    );
+    document.fonts.add(await face.load());
+    return window.__justif.opticalProtrusion({ family: '"Junicode"' });
+  });
+  expect(table).toBeDefined();
+  // These are intentionally absolute rather than self-relative. They lock the
+  // print-facing invariants documented by optical.ts and catch raster-window
+  // contamination that cache/convergence tests cannot see.
+  expect(table?.["."]?.r, "line-end period").toBeGreaterThanOrEqual(400);
+  expect(table?.["."]?.r, "line-end period").toBeLessThanOrEqual(700);
+  expect(table?.["-"]?.r, "line-end hyphen").toBeGreaterThanOrEqual(400);
+  expect(table?.["-"]?.r, "line-end hyphen").toBeLessThanOrEqual(550);
+  const r = table?.r?.r;
+  if (r === undefined) {
+    // WebKit's higher raster noise floor can suppress this small correction;
+    // Chromium and Firefox retain it. The punctuation anchors above are
+    // mandatory in every engine.
+    expect(browserName).toBe("webkit");
+  } else {
+    expect(r, "line-end r").toBeGreaterThanOrEqual(15);
+    expect(r, "line-end r").toBeLessThanOrEqual(100);
+  }
+});
+
+test("measured monospace protrusion never indents a grid cell", async ({ page }) => {
+  const table = await page.evaluate(async () => {
+    const face = new FontFace(
+      "IBM Plex Mono",
+      'url("/demo/fonts/IBMPlexMono-Regular.woff2")',
+    );
+    document.fonts.add(await face.load());
+    return window.__justif.opticalProtrusion({ family: '"IBM Plex Mono"' });
+  });
+  expect(table).toBeDefined();
+  for (const [character, codes] of Object.entries(table ?? {})) {
+    if (codes.l !== undefined) {
+      expect(codes.l, `${character} has a negative line-start value`).toBeGreaterThanOrEqual(0);
+    }
+    if (codes.r !== undefined) {
+      expect(codes.r, `${character} has a negative line-end value`).toBeGreaterThanOrEqual(0);
+    }
+  }
+});
+
 test("a canvas that cannot shape a font-variant is not trusted to measure it", async ({ page }) => {
   // WebKit's canvas has no `fontVariantCaps`, but assigning it still succeeds —
   // the value becomes an ordinary JS property and reads back exactly what was
@@ -3159,15 +3250,103 @@ test("hangingPunctuation preset hangs stops fully past the margin", async ({ pag
   }
 });
 
+test("protrusion and hanging policies resolve with their compatibility aliases", async ({
+  page,
+}) => {
+  const result = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    host.replaceChildren();
+    const text =
+      "“Alpha beta gamma delta epsilon zeta,” she said. “A second quotation " +
+      "makes the line-start policy visible while this sentence supplies enough " +
+      "punctuated text to wrap across several lines.”";
+    const make = (
+      id: string,
+      protrusion: boolean | Record<string, { l?: number; r?: number }> | undefined,
+      hangingPunctuation?:
+        | true
+        | false
+        | "none"
+        | "line-end-only"
+        | "all-line-edges"
+        | "first-line"
+        | "all-lines"
+        | undefined,
+    ) => {
+      const p = document.createElement("p");
+      p.id = id;
+      p.style.cssText = "width: 245px; text-align: justify; font: 17px Georgia, serif";
+      p.textContent = text;
+      host.append(p);
+      const controller = window.__justif.justify(p, {
+        expansion: false,
+        tracking: false,
+        protrusion,
+        hangingPunctuation,
+      });
+      return { p, controller };
+    };
+    const modes = {
+      defaultMode: make("protrusion-default", undefined),
+      trueMode: make("protrusion-true", true),
+      lineEndOnly: make("hang-line-end-only", true, "line-end-only"),
+      hangingTrue: make("hang-true", true, true),
+      noFullHang: make("hang-none", true, "none"),
+      hangingFalse: make("hang-false", true, false),
+      protrusionOff: make("protrusion-off", false),
+      protrusionOffNoHang: make("protrusion-off-no-hang", false, "none"),
+      oldFirstLine: make("hang-old-first-line", true, "first-line"),
+      allEdges: make("hang-all-edges", true, "all-line-edges"),
+      oldAllLines: make("hang-old-all-lines", true, "all-lines"),
+    };
+    await Promise.all(Object.values(modes).map(({ controller }) => controller.ready));
+    const snapshot = (p: HTMLElement) => {
+      const edge = p.getBoundingClientRect();
+      return window.__justifLines(p).lines.map((line) => ({
+        texts: line.texts,
+        left: +(line.left - edge.left).toFixed(3),
+        right: +(line.right - edge.right).toFixed(3),
+      }));
+    };
+    return Object.fromEntries(
+      Object.entries(modes).map(([name, { p }]) => [name, snapshot(p)]),
+    ) as Record<keyof typeof modes, ReturnType<typeof snapshot>>;
+  });
+
+  const expectEquivalent = (
+    actual: typeof result.defaultMode,
+    expected: typeof result.defaultMode,
+  ) => {
+    expect(actual.map((line) => line.texts)).toEqual(expected.map((line) => line.texts));
+    expect(actual).toHaveLength(expected.length);
+    for (let i = 0; i < actual.length; i++) {
+      expect(Math.abs(actual[i]!.left - expected[i]!.left)).toBeLessThan(0.1);
+      expect(Math.abs(actual[i]!.right - expected[i]!.right)).toBeLessThan(0.1);
+    }
+  };
+  expect(result.defaultMode.length).toBeGreaterThan(2);
+  expectEquivalent(result.defaultMode, result.lineEndOnly);
+  expectEquivalent(result.trueMode, result.defaultMode);
+  expectEquivalent(result.hangingTrue, result.defaultMode);
+  expectEquivalent(result.hangingFalse, result.noFullHang);
+  expectEquivalent(result.protrusionOff, result.protrusionOffNoHang);
+  expectEquivalent(result.oldAllLines, result.allEdges);
+  // The original first-line spelling remains a distinct, supported policy:
+  // full opener on line 0, line-end hangs throughout, and flush later starts.
+  expect(result.oldFirstLine).not.toEqual(result.defaultMode);
+});
+
 /**
  * Issue #14: a paragraph must never show two hang depths for the same mark.
- * In "first-line" mode the opener hangs fully and every later line start sets
- * the full-hang characters FLUSH — the CSS `first` model. A mark hung fully on
- * one line and by microtype's 300‰ on the next reads as a misaligned edge
- * instead of as either style. (The DEFAULT mode hangs every line, so this one
- * asks for "first-line" explicitly.)
+ * In the legacy paragraph-first mode the opener hangs fully and every later
+ * line start sets the full-hang characters FLUSH — the CSS `first` model. A
+ * mark hung fully on one line and by optical alignment on the next reads as a
+ * misaligned edge instead of as either style. The policy remains tested for
+ * compatibility, but is no longer a canonical protrusion mode.
  */
-test("a quote starting a wrapped line sets flush under the first-line hang", async ({ page }) => {
+test("a wrapped-line quote sets flush in the legacy paragraph-first mode", async ({
+  page,
+}) => {
   const edges = await page.evaluate(async () => {
     const host = document.getElementById("host")!;
     const p = document.createElement("p");
@@ -3223,11 +3402,10 @@ test("a quote starting a wrapped line sets flush under the first-line hang", asy
 /**
  * Issue #14, second half: a one-line paragraph keeps its native rendering
  * (nothing to justify, no DOM rewrite) but still owes the margin its
- * line-start hang — an opener sitting flush between neighbours whose openers
- * hang reads as a ragged left edge. It is bought with an inline text-indent,
- * so the fast path survives, and it must leave no residue behind.
+ * line-start alignment. It is bought with an inline text-indent, so the fast
+ * path survives, and it must leave no residue behind.
  */
-test("a native one-line paragraph hangs its opener like its multi-line neighbour", async ({
+test("a native one-line paragraph aligns its opener like its multi-line neighbour", async ({
   page,
 }) => {
   const result = await page.evaluate(async () => {
@@ -3291,6 +3469,50 @@ test("a native one-line paragraph hangs its opener like its multi-line neighbour
   expect(result.plainOffset).toBe(0);
   // destroy() puts the author's markup and style attribute back byte-for-byte.
   expect(result.restoredExactly).toBe("yes");
+});
+
+test("an unchanged native hang does not report or mutate a relayout", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const p = document.createElement("p");
+    p.style.cssText =
+      "width:340px;text-align:justify;font:17px Georgia,serif";
+    p.textContent = "“A short native line.”";
+    document.getElementById("host")!.replaceChildren(p);
+    let relayouts = 0;
+    const controller = window.__justif.justify(p, {
+      expansion: false,
+      tracking: false,
+      onRelayout: () => relayouts++,
+    });
+    await controller.ready;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const before = {
+      relayouts,
+      style: p.getAttribute("style"),
+      indent: p.style.textIndent,
+    };
+    let styleMutations = 0;
+    const observer = new MutationObserver((records) => {
+      styleMutations += records.filter(
+        (record) => record.type === "attributes" && record.attributeName === "style",
+      ).length;
+    });
+    observer.observe(p, { attributes: true, attributeFilter: ["style"] });
+    controller.refresh();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    observer.disconnect();
+    const after = {
+      relayouts,
+      style: p.getAttribute("style"),
+      indent: p.style.textIndent,
+      styleMutations,
+    };
+    controller.destroy();
+    return { before, after };
+  });
+
+  expect(result.before.indent).not.toBe("");
+  expect(result.after).toEqual({ ...result.before, styleMutations: 0 });
 });
 
 test("pseudo-hyphens sit after their word, never overlapping it", async ({ page }) => {

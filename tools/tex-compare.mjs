@@ -195,10 +195,11 @@ async function extractPdfLines(pdfBuffer) {
 async function extractBrowserLines(scenario) {
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1400, height: 950 } });
-  // ?pull= is the demo's headless hook (the UI slider was removed): pin
-  // mixed-font space semantics for the TeX comparison.
-  const query = scenario.pull !== undefined ? `?pull=${scenario.pull}` : "";
-  await page.goto(`http://localhost:5199/demo/index.html${query}`);
+  // The parity harness deliberately selects the table-backed protrusion model
+  // that microtype supplies. `pull` pins mixed-font space semantics too.
+  const params = new URLSearchParams({ protrusion: "table" });
+  if (scenario.pull !== undefined) params.set("pull", String(scenario.pull));
+  await page.goto(`http://localhost:5199/demo/index.html?${params}`);
   if (scenario.mono) {
     // Mirror the TeX document: IBM Plex Mono Light for code (TeX Live has
     // no Courier Prime). The demo only loads weight 400, so pull in 300.
@@ -214,14 +215,18 @@ async function extractBrowserLines(scenario) {
   }
   await page.waitForTimeout(5000);
   const out = await page.evaluate(async (sc) => {
-    // Pin every control that diverges from microtype semantics: the demo
-    // defaults full hanging punctuation ON, but TeX runs microtype's
-    // partial protrusion — comparing anything else is apples to oranges.
+    // Pin every control that affects microtype parity. TeX uses its configured
+    // per-character protrusion table with no full-hang overlay.
     {
-      const hang = document.getElementById("hangpunct");
-      if (hang && hang.value !== "off") {
-        hang.value = "off";
-        hang.dispatchEvent(new Event("change", { bubbles: true }));
+      const protrusion = document.getElementById("protrusion");
+      if (protrusion && !protrusion.checked) {
+        protrusion.checked = true;
+        protrusion.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      const hangpunct = document.getElementById("hangpunct");
+      if (hangpunct && hangpunct.value !== "none") {
+        hangpunct.value = "none";
+        hangpunct.dispatchEvent(new Event("change", { bubbles: true }));
       }
       const tracking = document.getElementById("tracking");
       if (tracking && tracking.checked) {

@@ -652,12 +652,11 @@
        neither engine is allowed breaks the other isn't. */
     hyphenate-limit-chars: 5 2 3;
   }
-  /* Optical margin alignment where the browser supports it (Safari) — but
-     only while justif is also hanging punctuation: with the option off (or
-     protrusion off entirely) the comparison must not show WebKit hanging
-     while justif doesn't. Synced by syncHangPunct(). */
-  body.native-hang .native p {
-    hanging-punctuation: first allow-end last;
+  /* The closest native hanging counterpart where the browser supports it
+     (Safari), synced to the selected justif mode by syncHangPunct(). */
+  body.native-hang-end .native p { hanging-punctuation: force-end; }
+  body.native-hang-all .native p {
+    hanging-punctuation: first force-end last;
   }
 
   /* No content-visibility anywhere: real-Safari skip/render transitions
@@ -1052,7 +1051,7 @@
   <b>features</b>
   <div class="control-items feature-controls">
     <label><input id="hyphenate" type="checkbox" checked /> hyphenation</label>
-    <label><input id="protrusion" type="checkbox" checked /> protrusion</label>
+    <label><input id="protrusion" type="checkbox" checked /> optical protrusion</label>
     <label><input id="expansion" type="checkbox" checked /> expansion
       <button id="expansion-info" class="info" type="button" popovertarget="expansion-note"
         aria-label="Why is expansion disabled?" hidden>i</button></label>
@@ -1070,9 +1069,9 @@
       <button id="hangpunct-info" class="info" type="button" popovertarget="hangpunct-note"
         aria-label="Why is hanging punctuation disabled?" hidden>i</button>
       <select id="hangpunct">
-        <option value="off">off</option>
-        <option value="first-line">line ends + first line start</option>
-        <option value="all-lines" selected>all</option>
+        <option value="none">none</option>
+        <option value="line-end-only" selected>line ends only</option>
+        <option value="all-line-edges">all line edges</option>
       </select></label>
     <div id="hangpunct-note" popover></div>
   </div>
@@ -1117,7 +1116,7 @@
 </div>
 
 <script type="module">
-  import { hangingPunctuation, justify, latinProtrusion } from "../dist/index.js";
+  import { justify } from "../dist/index.js";
   import { hyphenateEnUS } from "../dist/hyphenate/en-us.js";
 
   // Sample texts. "tale": smart quotes, quote-opening paragraphs (left
@@ -2887,6 +2886,25 @@ await controller.ready;</code></pre>
       // map old boolean saves onto the equivalent fraction (a non-numeric
       // value would silently snap the range input to its midpoint).
       if (typeof saved.lastline === "boolean") saved.lastline = saved.lastline ? 0.33 : 0;
+      // A short-lived development build folded these two controls into one
+      // select. Unfold its saved values so local demo settings survive.
+      if (typeof saved.protrusion === "string") {
+        const unified = saved.protrusion;
+        saved.protrusion = unified !== "none";
+        saved.hangpunct =
+          unified === "hang-punctuation-line-end-only"
+            ? "line-end-only"
+            : unified === "hang-punctuation-all"
+              ? "all-line-edges"
+              : "none";
+      }
+      // Normalize values saved by the released, pre-redesign demo.
+      if (saved.hangpunct === "off") saved.hangpunct = "none";
+      if (saved.hangpunct === "line-ends") saved.hangpunct = "line-end-only";
+      if (saved.hangpunct === "all-lines") saved.hangpunct = "all-line-edges";
+      // The demo no longer advertises the legacy first-line policy. Preserve
+      // its line-end behavior with the smallest change at line starts.
+      if (saved.hangpunct === "first-line") saved.hangpunct = "line-end-only";
       for (const id of PARAM_IDS) {
         const el = document.getElementById(id);
         if (el === null || !(id in saved)) continue;
@@ -2998,8 +3016,10 @@ await controller.ready;</code></pre>
   }
 
   let controller = null;
-  /** Headless hook: ?pull=0 pins mixed-font space semantics for tooling. */
-  const PULL_OVERRIDE = new URLSearchParams(location.search).get("pull");
+  /** Headless hooks for the TeX parity tool. */
+  const TOOL_PARAMS = new URLSearchParams(location.search);
+  const PULL_OVERRIDE = TOOL_PARAMS.get("pull");
+  const TABLE_PROTRUSION = TOOL_PARAMS.get("protrusion") === "table";
 
 
   // ------------------------------------------------------------------
@@ -3030,23 +3050,6 @@ await controller.ready;</code></pre>
       naturalCache.set(key, width);
     }
     return width;
-  }
-
-  // Advance of a single character in an element's font, for the protrusion
-  // allowance of the overfull metric. Canvas-measured and cached per font.
-  const advanceCtx = document.createElement("canvas").getContext("2d");
-  const advanceCache = new Map();
-  function charAdvanceOf(ch, el) {
-    const cs = getComputedStyle(el);
-    const font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
-    const key = `${font}|${ch}`;
-    let w = advanceCache.get(key);
-    if (w === undefined) {
-      advanceCtx.font = font;
-      w = advanceCtx.measureText(ch).width;
-      advanceCache.set(key, w);
-    }
-    return w;
   }
 
   function paragraphGeometry(p) {
@@ -3112,6 +3115,7 @@ await controller.ready;</code></pre>
     // .article p rule) that must not count as part of the measure.
     const pcs = getComputedStyle(p);
     return {
+      el: p,
       lines,
       splitWords,
       left: rect.left + (parseFloat(pcs.paddingLeft) || 0),
@@ -3170,30 +3174,30 @@ await controller.ready;</code></pre>
 
     const allGaps = paragraphs.flatMap((para) => para.lines.flatMap((line) => line.gaps));
 
-    // Lines whose content sticks out past the margin BEYOND what the active
-    // protrusion table legitimately hangs for the line's final glyph (plus
-    // 2px of rounding/wrap slack). The browser column gets no allowance —
-    // any real crossing there is overflow. Real overfulls (unbreakable
-    // tokens) exceed the allowance by far more than the slack.
+    // Lines whose content sticks out past the margin BEYOND the negative
+    // logical margin justif actually emitted (plus 2px rounding/wrap slack).
+    // Reading rendered styles keeps this detector accurate for measured,
+    // table-backed, custom, and full-hanging values alike. The browser column
+    // gets no allowance: any real crossing there is overflow.
     const enhancedColumn = article === enhanced;
-    // Right-side allowance: hang overlays apply r-codes on EVERY line in
-    // both hang modes, so the r-side table is mode-independent when on.
-    const activeTable = () =>
-      $("hangpunct").value !== "off"
-        ? { ...latinProtrusion, ...hangingPunctuation }
-        : latinProtrusion;
-    const rightAllowance = (box) => {
+    const rightAllowance = (box, paragraph) => {
       if (!enhancedColumn || !$("protrusion").checked) return 0;
-      const ch = box.text.slice(-1);
-      const code = activeTable()[ch]?.r ?? 0;
-      return code === 0 ? 0 : (code / 1000) * charAdvanceOf(ch, box.el);
+      const property =
+        getComputedStyle(paragraph).direction === "rtl"
+          ? "marginInlineStart"
+          : "marginInlineEnd";
+      let allowance = 0;
+      for (let el = box.el; el !== null && el !== paragraph; el = el.parentElement) {
+        allowance += Math.max(0, -(parseFloat(el.style[property]) || 0));
+      }
+      return allowance;
     };
     const overfullLines = paragraphs.reduce(
       (acc, para) =>
         acc +
         para.lines.filter((line) => {
           const last = line.boxes[line.boxes.length - 1];
-          return last.right > para.right + rightAllowance(last) + 2;
+          return last.right > para.right + rightAllowance(last, para.el) + 2;
         }).length,
       0,
     );
@@ -3581,8 +3585,8 @@ await controller.ready;</code></pre>
     controller?.destroy();
     controller = justify(enhanced.querySelectorAll("p"), {
       hyphenate: $("hyphenate").checked ? hyphenateEnUS : undefined,
-      protrusion: $("protrusion").checked,
-      hangingPunctuation: $("hangpunct").value === "off" ? false : $("hangpunct").value,
+      protrusion: TABLE_PROTRUSION ? {} : $("protrusion").checked,
+      hangingPunctuation: $("hangpunct").value,
       expansion: $("expansion").checked ? undefined : false,
       tracking: $("tracking").checked,
       // Slider = the ending's minimum fraction of the measure (Bringhurst's
@@ -3669,19 +3673,20 @@ await controller.ready;</code></pre>
       lastlineLiveApply();
     });
   }
-  // Full hangs are a protrusion style: without protrusion there is nothing
-  // to hang, so the toggle grays out.
   function syncHangPunct() {
     const off = !$("protrusion").checked;
     $("hangpunct").disabled = off;
     $("hangpunct-info").hidden = !off;
     $("hangpunct-note").textContent =
-      "Hanging punctuation is a protrusion style. Enable protrusion to use it.";
-    // The browser column's CSS hanging-punctuation follows the same state:
-    // a fair comparison hangs on both sides or neither.
+      "Hanging punctuation requires protrusion. Enable optical protrusion to use it.";
+    const mode = off ? "none" : $("hangpunct").value;
     document.body.classList.toggle(
-      "native-hang",
-      $("protrusion").checked && $("hangpunct").value !== "off",
+      "native-hang-end",
+      mode === "line-end-only",
+    );
+    document.body.classList.toggle(
+      "native-hang-all",
+      mode === "all-line-edges",
     );
   }
   $("protrusion").addEventListener("change", syncHangPunct);

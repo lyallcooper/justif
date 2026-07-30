@@ -85,6 +85,7 @@ test("drawer controls form compact responsive rows", async ({ page }) => {
       width: rect("#measure"),
       hyphenation: rect("#hyphenate"),
       protrusion: rect("#protrusion"),
+      hanging: rect("#hangpunct"),
       pretty: rect("#pretty"),
       blur: rect("#blur"),
     };
@@ -95,7 +96,8 @@ test("drawer controls form compact responsive rows", async ({ page }) => {
   expect(layout.width.top).toBeGreaterThan(layout.sample.bottom);
   expect(Math.abs(layout.width.left - layout.sample.left)).toBeLessThan(1);
   expect(Math.abs(layout.width.right - layout.typeface.right)).toBeLessThan(1);
-  expect(Math.abs(layout.hyphenation.top - layout.protrusion.top)).toBeLessThan(1);
+  expect(Math.abs(layout.protrusion.top - layout.hyphenation.top)).toBeLessThan(1);
+  expect(layout.hanging.top).toBeGreaterThan(layout.hyphenation.bottom);
   expect(Math.abs(layout.pretty.top - layout.blur.top)).toBeLessThan(1);
 });
 
