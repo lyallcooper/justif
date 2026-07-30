@@ -2,19 +2,17 @@
 
 ## Unreleased
 
-- Fixed Safari keeping the fallback font's line breaks and spacing when a font
-  arrives after the text is justified, such as one loaded by a script or by
-  late-running CSS.
-- Optical margin alignment now measures each font's letterforms. Omit
-  `protrusion` or pass `true` to use measurement, pass `false` to disable
-  protrusion, or pass a character table to use built-in values plus your
-  overrides. An empty `{}` uses the built-in tables without canvas readback.
-- `hangingPunctuation` now defaults to `"line-end-only"`, and passing `true`
-  selects the same behavior. Punctuation hangs fully at line ends while line
-  starts retain optical alignment. In 0.6.5 the default and `true` selected
-  `"first-line"`. Use `"all-line-edges"` for full hangs at both edges or
-  `"none"` for optical alignment alone. The original `"first-line"` and
-  `"all-lines"` strings remain supported.
+- **API change** (non-breaking): `hangingPunctuation`'s options are now
+  `"line-end-only"`, `"all-line-edges"`, or `"none"`. The new default value is
+  `"line-end-only"`. The previous default of `"first-line"` value is still
+  supported but deprecated. See the
+  [README](https://github.com/lyallcooper/justif#protrusion-and-hanging-punctuation)
+  for more details.
+- Optical margin alignment now measures each font's letterforms instead of
+  relying on a hard-coded table. This allows for great alignment for any
+  arbitrary font you use with Justif. See the
+  [README](https://github.com/lyallcooper/justif#protrusion-and-hanging-punctuation)
+  for more details.
 - Opening brackets are no longer forced fully into the margin. Measured fonts
   use their own bracket shapes; the built-in tables give parentheses a slight
   overhang and leave square brackets flush.
@@ -24,6 +22,9 @@
   or `refresh()`.
 - Monospace fonts no longer indent individual edge glyphs, preserving their
   visible character grid.
+- Fixed Safari keeping the fallback font's line breaks and spacing when a font
+  arrives after the text is justified, such as one loaded by a script or by
+  late-running CSS.
 
 ## 0.6.5 (2026-07-28)
 
