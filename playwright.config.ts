@@ -23,6 +23,9 @@ export default defineConfig({
    * while measuring 24ms alone moments later.
    */
   retries: 1,
+  // Builds the fixture's own copy of the measurement module, which the package
+  // does not export (see test-e2e/tsup.optical.config.ts).
+  globalSetup: "./test-e2e/global-setup.mjs",
   use: { baseURL: "http://localhost:5199" },
   webServer: {
     command: "python3 -m http.server 5199",

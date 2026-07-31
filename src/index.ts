@@ -80,7 +80,6 @@ export {
   latinProtrusion,
 } from "./core/protrusion.js";
 export { fontProtrusion } from "./core/protrusion-fonts.js";
-export { opticalProtrusion } from "./dom/optical.js";
 
 export interface JustifyOptions {
   /** Word splitter, e.g. `hyphenateEnUS` from "justif/hyphenate/en-us".
