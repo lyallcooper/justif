@@ -161,7 +161,12 @@ function boot(): Promise<void> {
         // consumer's teardown. (An interim that enhanced nothing because
         // every paragraph bailed lands here too; the fresh controller
         // would only bail identically.)
-        if (interim !== null && !els.some((el) => el.hasAttribute("data-justif"))) return;
+        //
+        // Ask the controller, not the DOM: a paragraph held in native
+        // one-line layout is still managed but carries no `data-justif`, so
+        // testing the attribute read a group that merely all fits on one line
+        // as fully torn down — and it never received its hyphenator.
+        if (interim !== null && interim.managed.length === 0) return;
         // Unbundled language: the interim (spacing-only) IS the final
         // rendering — replacing it would rewrite identical output.
         if (hyphenate === undefined && interim !== null) return;

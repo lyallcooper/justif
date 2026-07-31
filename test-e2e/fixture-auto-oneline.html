@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>justif auto drop-in fixture: one-line group</title>
+<style>
+  /* Wide enough that every paragraph below fits on ONE line at boot, so the
+     drop-in's interim controller leaves them in managed native layout — no
+     `data-justif` anywhere in the group, which is the state that used to read
+     as "fully torn down". The test narrows this afterwards. */
+  .col { width: 900px; }
+  .col p {
+    font-family: Georgia, serif;
+    font-size: 17px;
+    line-height: 1.45;
+    margin: 0 0 1em;
+    text-align: justify;
+  }
+</style>
+</head>
+<body>
+  <div class="col">
+    <!-- lang="de" so hyphenation needs the German pattern module, fetched
+         after the interim commits. The compound is long enough that a narrow
+         measure cannot break it without hyphenating. -->
+    <p id="de-oneline" lang="de">Silbentrennungsverantwortlichkeiten bleiben.</p>
+  </div>
+  <script type="module" src="../dist/auto.js"></script>
+</body>
+</html>

@@ -121,9 +121,10 @@ content or its computed text styles change, call `destroy()` and
 run `justify()` again so the paragraph can be rescanned.
 
 `justify()` accepts one `Element` or any iterable of elements. The returned
-controller exposes `ready`, `refresh()`, `destroy()`, and the selected
-`paragraphs`. `unjustify(elements)` can restore elements without access to
-their original controller.
+controller exposes `ready`, `refresh()`, `destroy()`, the selected
+`paragraphs`, and `managed` — the paragraphs it is still responsible for, which
+excludes any it declined and any released since. `unjustify(elements)` can
+restore elements without access to their original controller.
 
 ### Loading and first paint
 

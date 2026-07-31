@@ -8,6 +8,11 @@
   supported but deprecated. See the
   [README](https://github.com/lyallcooper/justif#protrusion-and-hanging-punctuation)
   for more details.
+- Fixed paragraphs in a language other than English never being hyphenated when
+  every paragraph in that language happened to fit on one line as the page
+  loaded. Narrowing the window later wrapped them without hyphens.
+- `justify()`'s controller now also exposes `managed`: the paragraphs it is
+  still responsible for, excluding any it declined and any released since.
 - **Behavior change**: `protrusion: false` no longer switches off hanging
   punctuation as well. The two settings are independent, so you can set ordinary
   letters exactly flush while quotes and stops still hang into the margin — a

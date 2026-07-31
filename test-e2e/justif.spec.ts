@@ -4256,6 +4256,46 @@ test("auto drop-in: booted awaits delayed pattern modules", async ({ page }) => 
   expect(await page.locator("#de-just .justif-hyphen").count()).toBeGreaterThan(0);
 });
 
+test("auto drop-in: a one-line group still receives its hyphenator", async ({ page }) => {
+  // Regression: the loader decided whether a group had been torn down while its
+  // patterns were in flight by looking for `data-justif` on the elements. A
+  // paragraph that fits on one line is managed but carries no such attribute,
+  // so a group where every paragraph fits read as torn down and the final
+  // hyphenated controller was never created. Nothing looked wrong until the
+  // measure narrowed and the text wrapped — unhyphenated, forever.
+  await page.route("**/dist/hyphenate/de.js", async (route) => {
+    // Land the patterns well after the interim controller commits, so this
+    // exercises the interim path rather than depending on paint timing.
+    await new Promise((r) => setTimeout(r, 300));
+    await route.continue();
+  });
+  await page.goto("/test-e2e/fixture-auto-oneline.html");
+  await page.waitForFunction(() => (window as Window & { justif?: unknown }).justif !== undefined);
+  await page.evaluate(async () => {
+    await (window as Window & { justif?: { booted: Promise<void> } }).justif!.booted;
+  });
+
+  // Boot state: one line, native markup, no attribute — but managed.
+  expect(await page.locator("#de-oneline .justif-seg").count()).toBe(0);
+  expect(
+    await page.evaluate(() => document.getElementById("de-oneline")!.hasAttribute("data-justif")),
+  ).toBe(false);
+  expect(
+    await page.evaluate(
+      () =>
+        (window as Window & { justif?: { controllers: Array<{ managed: readonly Element[] }> } })
+          .justif!.controllers.some((c) => c.managed.length > 0),
+    ),
+  ).toBe(true);
+
+  // Narrow the measure until the compound cannot fit: the paragraph promotes
+  // out of native layout, and the German patterns must be there to break it.
+  await page.evaluate(() => {
+    document.querySelector<HTMLElement>(".col")!.style.width = "200px";
+  });
+  await expect(page.locator("#de-oneline .justif-hyphen")).not.toHaveCount(0);
+});
+
 test("unicode-range subset fonts are awaited and converge without refresh()", async ({ page }) => {
   // A Greek-only face: font readiness must be judged with the content's own
   // characters — document.fonts.load()'s default U+0020 never matches this
@@ -4336,6 +4376,35 @@ test("unicode-range subset fonts are awaited and converge without refresh()", as
   expect(r.relayouts).toBeGreaterThan(r.relayoutsAtCommit); // …and that triggered a re-measure
   expect(r.lines).toBeGreaterThan(2);
   expect(r.maxDev).toBeLessThan(1); // converged to the real font without refresh()
+});
+
+test("auto drop-in: an outside restore before pattern arrival is respected", async ({ page }) => {
+  // The other side of `managed`: a consumer who takes the DOM back by hand
+  // leaves the controller's record saying "enhanced" while the enhancement is
+  // gone from the page. That must still read as torn down, or the arriving
+  // patterns would re-enhance over the consumer's own markup.
+  await page.route("**/dist/hyphenate/de.js", async (route) => {
+    await new Promise((r) => setTimeout(r, 400));
+    await route.continue();
+  });
+  await page.goto("/test-e2e/fixture-auto.html");
+  await page.waitForFunction(
+    () =>
+      document.getElementById("de-just")?.hasAttribute("data-justif") === true,
+  );
+  const restored = "Diese Fassung gehört dem Aufrufer.";
+  await page.evaluate((text) => {
+    const p = document.getElementById("de-just")!;
+    p.replaceChildren(document.createTextNode(text));
+    p.removeAttribute("data-justif");
+  }, restored);
+  await page.evaluate(async () => {
+    await (window as Window & { justif?: { booted: Promise<void> } }).justif!.booted;
+  });
+  expect(await page.locator("#de-just .justif-seg").count()).toBe(0);
+  expect(await page.evaluate(() => document.getElementById("de-just")!.textContent)).toBe(
+    restored,
+  );
 });
 
 test("auto drop-in: teardown before pattern arrival stays torn down", async ({ page }) => {

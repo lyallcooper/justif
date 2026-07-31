@@ -254,6 +254,17 @@ export interface JustifyController {
   /** Restore the original DOM and disconnect observers. */
   destroy(): void;
   readonly paragraphs: readonly HTMLElement[];
+  /**
+   * The subset of `paragraphs` this controller still manages. Absent are ones
+   * it declined, ones released by `destroy()` or `unjustify()`, and ones whose
+   * enhancement was removed from the DOM from outside.
+   *
+   * Paragraphs sitting in native one-line layout ARE managed: they carry no
+   * `data-justif` attribute, but the controller still holds their measurements
+   * and watches for a measure narrow enough to make line breaking useful. Test
+   * this rather than the attribute to ask "is this enhancement still live?".
+   */
+  readonly managed: readonly HTMLElement[];
 }
 
 interface ParaPart {
@@ -386,7 +397,13 @@ const DEFAULT_TRACKING: TrackingOptions = { max: 0.03, shrink: 0.03 };
 const MIN_FLOAT_LINE_WIDTH_PX = 1;
 
 function noopController(): JustifyController {
-  return { ready: Promise.resolve(), refresh() {}, destroy() {}, paragraphs: [] };
+  return {
+    ready: Promise.resolve(),
+    refresh() {},
+    destroy() {},
+    paragraphs: [],
+    managed: [],
+  };
 }
 
 /** Defaults overlaid with the defined subset of same-named option keys. */
@@ -1886,6 +1903,16 @@ export function justify(
   return {
     ready,
     paragraphs,
+    get managed() {
+      return paragraphs.filter((p) => {
+        const state = ownedState(p);
+        if (state === undefined) return false;
+        // Our record says enhanced but the DOM disagrees: something outside
+        // restored this paragraph, so the enhancement is no longer live. A
+        // native one-line paragraph legitimately has no attribute.
+        return !state.enhanced || p.hasAttribute("data-justif");
+      });
+    },
     refresh() {
       refreshNativeFloatIntrusions();
       remeasureAll(true);
