@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>justif auto drop-in fixture: CSS configuration</title>
+<style>
+  .col { width: 260px; }
+  p {
+    font-family: Georgia, serif;
+    font-size: 17px;
+    line-height: 1.45;
+    margin: 0 0 1em;
+    text-align: justify;
+  }
+  /* Set on an ancestor: custom properties inherit, so one selector configures a
+     whole section without touching its paragraphs. */
+  #section-hang { --justif-hanging-punctuation: none; }
+  /* Higher specificity than the section rule above it. */
+  #section-hang .override { --justif-hanging-punctuation: all-line-edges; }
+  /* Explicitly the library's own default: must NOT create a second controller. */
+  #as-default { --justif-hanging-punctuation: line-end-only; }
+  /* Unparseable: falls back to the default, and warns once. */
+  #bogus { --justif-tracking: 3; }
+  /* A misspelled property, for the debug channel. */
+  #typo { --justif-trakcing: none; }
+  /* On an inline run rather than a paragraph: must be ignored, since options
+     are per paragraph in the engine. */
+  #run-scoped em { --justif-hanging-punctuation: none; }
+  /* Every optical margin effect off: nothing may hang, which is unambiguous to
+     assert (no negative inline margins anywhere in the paragraph). */
+  #flush {
+    --justif-protrusion: none;
+    --justif-hanging-punctuation: none;
+  }
+</style>
+</head>
+<body>
+  <div class="col">
+    <p id="plain">Alpha, beta, gamma, delta, epsilon, zeta, eta, theta, iota, kappa,
+    lambda, mu, nu, xi, omicron, pi, rho, sigma, tau, upsilon, phi, chi, psi,
+    omega, alpha, beta, gamma, delta, epsilon, zeta, eta, theta.</p>
+    <p id="as-default">The extraordinarily complicated development of
+    unquestionably international typographical conventions demonstrates
+    considerable responsibility, naturally.</p>
+    <p id="bogus">The extraordinarily complicated development of unquestionably
+    international typographical conventions demonstrates considerable
+    responsibility, naturally.</p>
+    <p id="typo">The extraordinarily complicated development of unquestionably
+    international typographical conventions demonstrates considerable
+    responsibility, naturally.</p>
+    <p id="run-scoped">The extraordinarily complicated development of
+    unquestionably <em>international typographical conventions</em> demonstrates
+    considerable responsibility, naturally.</p>
+    <p id="flush">Alpha, beta, gamma, delta, epsilon, zeta, eta, theta, iota, kappa,
+    lambda, mu, nu, xi, omicron, pi, rho, sigma, tau, upsilon, phi, chi, psi,
+    omega, alpha, beta, gamma, delta, epsilon, zeta, eta, theta.</p>
+  </div>
+  <div class="col" id="section-hang">
+    <p id="inherited">The extraordinarily complicated development of
+    unquestionably international typographical conventions demonstrates
+    considerable responsibility, naturally.</p>
+    <p id="inline-override" style="--justif-hanging-punctuation: all-line-edges">
+    The extraordinarily complicated development of unquestionably international
+    typographical conventions demonstrates considerable responsibility,
+    naturally.</p>
+    <p id="class-override" class="override">The extraordinarily complicated
+    development of unquestionably international typographical conventions
+    demonstrates considerable responsibility, naturally.</p>
+  </div>
+  <script type="module" src="../dist/auto.js" data-justif-debug></script>
+</body>
+</html>

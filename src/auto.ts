@@ -17,7 +17,19 @@
  * justify with spacing only: wrong-language hyphenation is worse than
  * none. For full control use the API: `import { justify } from "justif"`.
  *
- * Optional overrides on the script tag:
+ * Typography is configured in CSS, on the paragraphs themselves, because that
+ * is where element-scoped settings belong — one selector configures a section,
+ * the cascade decides precedence, and an inline style handles a one-off:
+ *
+ *   :root      { --justif-tracking: none; --justif-last-line-min-width: 50%; }
+ *   blockquote { --justif-hanging-punctuation: none; }
+ *
+ * Values are ordinary CSS keywords and percentages; `auto` means the library
+ * default. Paragraphs are grouped by language AND resolved configuration, so
+ * configuring nothing still costs exactly one controller per language. See
+ * auto-options.ts for the full surface.
+ *
+ * The script tag carries only what is not element-scoped:
  *   data-justif-selector="article p"   candidate elements (default below)
  *
  * Controllers are exposed at `window.justif.controllers` (with `justify`
@@ -30,8 +42,9 @@
  * upgrade, but a group that committed no interim has nothing to tear
  * down until its pattern module lands).
  */
-import { justify, unjustify } from "./index.js";
+import { type LayoutOptions, justify, unjustify } from "./index.js";
 import { hyphenateEnUS } from "./hyphenation/en-us.js";
+import { CSS_PROPERTIES, parseCssOptions } from "./auto-options.js";
 
 const DEFAULT_SELECTOR = "p, li, dd, blockquote, figcaption";
 
@@ -100,6 +113,29 @@ async function hyphenatorFor(id: string | null): Promise<((w: string) => string[
   return tryImport("./hyphenate/" + id + ".js"); // undefined → spacing only
 }
 
+const KNOWN_PROPERTIES = new Set<string>(CSS_PROPERTIES);
+
+/**
+ * Under `data-justif-debug`, report `--justif-*` properties we do not recognize.
+ * A misspelled custom property is silently ignored by CSS and by us, which is
+ * the one failure mode of a string-valued surface that no amount of validation
+ * catches — the declaration simply never arrives.
+ *
+ * Best-effort: whether computed style enumerates custom properties at all is not
+ * guaranteed across engines, so this is a diagnostic aid rather than validation.
+ */
+function reportUnknownProperties(style: CSSStyleDeclaration, el: Element): void {
+  try {
+    for (let i = 0; i < style.length; i++) {
+      const name = style.item(i);
+      if (!name.startsWith("--justif-") || KNOWN_PROPERTIES.has(name)) continue;
+      console.info("justif: unrecognized property", name, "on", el);
+    }
+  } catch {
+    // Enumeration unsupported: nothing to report, and nothing to fix.
+  }
+}
+
 function boot(): Promise<void> {
   // document.currentScript is null inside module scripts, so configuration
   // is looked up by attribute on whichever script tag carries it.
@@ -116,28 +152,68 @@ function boot(): Promise<void> {
     ? (p: HTMLElement, reason: string): void => console.info("justif: skipped", p, "—", reason)
     : undefined;
 
-  const groups = new Map<string | null, Element[]>();
+  /**
+   * One controller per (language, configuration) pair. Paragraphs configured
+   * identically share one: an unconfigured page therefore still gets exactly one
+   * controller per language, and only genuinely different settings add more.
+   * Controller count matters — each runs its own patch scheduler with its own
+   * forced layout per slice.
+   */
+  const groups = new Map<string, { id: string | null; options: LayoutOptions; els: Element[] }>();
+  /** One warning per property-and-value pair: a bad rule hits every paragraph
+   * it matches, and a thousand identical lines help nobody. */
+  const warned = new Set<string>();
   for (const el of document.querySelectorAll(selector)) {
-    const align = getComputedStyle(el).textAlign;
+    // The same declaration answers both questions, so reading the `--justif-*`
+    // properties costs no additional style resolution.
+    const style = getComputedStyle(el);
+    const align = style.textAlign;
     if (align !== "justify" && align !== "justify-all") continue;
     const id = moduleFor(el.closest("[lang]")?.getAttribute("lang") ?? "");
-    const group = groups.get(id);
-    if (group === undefined) groups.set(id, [el]);
-    else group.push(el);
+    const { options, key, invalid } = parseCssOptions((property) =>
+      style.getPropertyValue(property),
+    );
+    for (const { property, value } of invalid) {
+      const pair = `${property}:${value}`;
+      if (warned.has(pair)) continue;
+      warned.add(pair);
+      console.warn(`justif: invalid ${property} value "${value}" — using the default`);
+    }
+    if (debug) reportUnknownProperties(style, el);
+    // U+0000 separates the two halves and U+0001 stands in for "no pattern
+    // module": neither can appear in a BCP 47 tag or a configuration key, so
+    // no language and configuration pair can collide into the wrong group.
+    const groupKey = `${id ?? "\u0001"}\u0000${key}`;
+    const group = groups.get(groupKey);
+    if (group === undefined) groups.set(groupKey, { id, options, els: [el] });
+    else group.els.push(el);
+  }
+  if (debug) {
+    for (const { id, options, els } of groups.values()) {
+      console.info("justif: group", {
+        language: id ?? "(unbundled: spacing only)",
+        options,
+        paragraphs: els.length,
+      });
+    }
   }
 
   const controllers: ReturnType<typeof justify>[] = [];
   /** One entry per group: settles once the group's FINAL controller
    * exists (pattern module loaded and applied, or not needed). */
   const settled: Promise<unknown>[] = [];
-  for (const [id, els] of groups) {
+  for (const { id, options, els } of groups.values()) {
     if (id === null || id === "en-us") {
       // Synchronous fast path — justify() commits before this call
       // returns (against whatever fonts are rendering right now), so a
       // render-blocking script tag puts justified text in the first
       // frame the page ever paints. Only languages needing a
       // pattern-module fetch go async.
-      const c = justify(els, { hyphenate: id === null ? undefined : hyphenateEnUS, onSkip });
+      const c = justify(els, {
+        ...options,
+        hyphenate: id === null ? undefined : hyphenateEnUS,
+        onSkip,
+      });
       controllers.push(c);
       settled.push(Promise.resolve());
     } else {
@@ -151,7 +227,7 @@ function boot(): Promise<void> {
       // instead of removing one, so it is skipped.
       const unpainted = performance.getEntriesByType("paint").length === 0;
       const interim: ReturnType<typeof justify> | null = unpainted
-        ? justify(els, { onSkip })
+        ? justify(els, { ...options, onSkip })
         : null;
       if (interim !== null) controllers.push(interim);
       const final = hyphenatorFor(id).then((hyphenate) => {
@@ -175,7 +251,7 @@ function boot(): Promise<void> {
           if (at >= 0) controllers.splice(at, 1);
           interim.destroy();
         }
-        controllers.push(justify(els, { hyphenate, onSkip }));
+        controllers.push(justify(els, { ...options, hyphenate, onSkip }));
       });
       settled.push(final);
     }

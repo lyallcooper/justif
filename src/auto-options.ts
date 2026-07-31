@@ -1,0 +1,184 @@
+/**
+ * The drop-in's declarative configuration surface: `--justif-*` custom
+ * properties read off each candidate paragraph's computed style.
+ *
+ * Pure by construction — the caller supplies the values, so nothing here
+ * touches the DOM. Only `auto.ts` imports this; it is bundled into the drop-in
+ * rather than shipped as its own file.
+ *
+ * Values are ordinary CSS: keywords and percentages. `auto` selects the library
+ * default, `none` switches a feature off, and anything unparseable is reported
+ * and falls back to the default — the same end state CSS itself produces for an
+ * invalid declaration.
+ */
+import { layoutDefaults, type LayoutOptions } from "./index.js";
+
+/** Every property, in the order the grouping key serializes them. */
+export const CSS_PROPERTIES = [
+  "--justif-hanging-punctuation",
+  "--justif-protrusion",
+  "--justif-expansion",
+  "--justif-tracking",
+  "--justif-last-line-min-width",
+  "--justif-last-line-fit",
+  "--justif-space-stretch",
+  "--justif-space-shrink",
+] as const;
+
+export type CssProperty = (typeof CSS_PROPERTIES)[number];
+
+export interface ParsedOptions {
+  /** Only the fields the author actually set to something non-default. */
+  options: LayoutOptions;
+  /**
+   * Canonical identity of the resulting configuration: paragraphs sharing it
+   * can share one controller. Empty when nothing was configured, so an
+   * unconfigured page keeps producing exactly one controller per language.
+   */
+  key: string;
+  /** Declarations that could not be parsed, for the warning channel. */
+  invalid: Array<{ property: CssProperty; value: string }>;
+}
+
+/** A percentage, the only numeric form CSS accepts for these properties. */
+const PERCENTAGE = /^([+-]?(?:\d+\.?\d*|\.\d+))%$/;
+
+/**
+ * Fractions serialize at fixed precision so that float noise cannot fragment
+ * groups: 1/3 and 0.33333333333333337 must not become separate controllers.
+ */
+function serialize(value: number): string {
+  return value.toFixed(6);
+}
+
+function parsePercentage(raw: string): number | undefined {
+  const match = PERCENTAGE.exec(raw);
+  if (match === null) return undefined;
+  const percent = Number(match[1]);
+  // Negative limits are syntactically valid CSS but meaningless here, and
+  // `@property` registration cannot reject them: `<percentage>` admits them.
+  if (!Number.isFinite(percent) || percent < 0) return undefined;
+  return percent / 100;
+}
+
+/**
+ * Resolve one property. Returns the option fields it contributes plus the
+ * fragment it adds to the grouping key — empty when the value is the library
+ * default, which is what collapses `auto`, absent, and "explicitly the current
+ * default" into one group.
+ */
+function parseOne(
+  property: CssProperty,
+  raw: string,
+): { options: LayoutOptions; keyPart: string } | "invalid" | "default" {
+  if (raw === "none") {
+    switch (property) {
+      case "--justif-hanging-punctuation":
+        return { options: { hangingPunctuation: "none" }, keyPart: "none" };
+      case "--justif-protrusion":
+        return { options: { protrusion: false }, keyPart: "none" };
+      case "--justif-expansion":
+        return { options: { expansion: false }, keyPart: "none" };
+      case "--justif-tracking":
+        return { options: { tracking: false }, keyPart: "none" };
+      case "--justif-last-line-min-width":
+        return { options: { lastLineMinWidth: 0 }, keyPart: "0" };
+      // `none` says nothing about a spacing limit or last-line fitting.
+      default:
+        return "invalid";
+    }
+  }
+
+  if (property === "--justif-hanging-punctuation") {
+    // The legacy "first-line" and "all-lines" spellings are deliberately absent:
+    // a new surface should not carry a deprecated policy forward.
+    if (raw === "line-end-only" || raw === "all-line-edges") {
+      return raw === layoutDefaults.hangingPunctuation
+        ? "default"
+        : { options: { hangingPunctuation: raw }, keyPart: raw };
+    }
+    return "invalid";
+  }
+  // Protrusion is a two-state switch: the table-backed model stays API-only,
+  // because passing a table silently bypasses per-font measurement.
+  if (property === "--justif-protrusion") return "invalid";
+
+  const fraction = parsePercentage(raw);
+  if (fraction === undefined) return "invalid";
+
+  switch (property) {
+    // A single percentage sets both limits symmetrically; `step` is not exposed
+    // and keeps its default. 0% and `none` are the same rendering, so they
+    // collapse to one configuration.
+    case "--justif-expansion": {
+      if (fraction === 0) return { options: { expansion: false }, keyPart: "none" };
+      const { max, shrink } = layoutDefaults.expansion;
+      if (max === fraction && shrink === fraction) return "default";
+      return {
+        options: { expansion: { max: fraction, shrink: fraction } },
+        keyPart: serialize(fraction),
+      };
+    }
+    case "--justif-tracking": {
+      if (fraction === 0) return { options: { tracking: false }, keyPart: "none" };
+      const { max, shrink } = layoutDefaults.tracking;
+      if (max === fraction && shrink === fraction) return "default";
+      return {
+        options: { tracking: { max: fraction, shrink: fraction } },
+        keyPart: serialize(fraction),
+      };
+    }
+    case "--justif-last-line-min-width":
+    case "--justif-last-line-fit": {
+      const key =
+        property === "--justif-last-line-min-width" ? "lastLineMinWidth" : "lastLineFit";
+      const clamped = Math.min(1, fraction);
+      if (clamped === layoutDefaults[key]) return "default";
+      return { options: { [key]: clamped }, keyPart: serialize(clamped) };
+    }
+    default: {
+      const key = property === "--justif-space-stretch" ? "stretch" : "shrink";
+      if (clampedEquals(fraction, layoutDefaults.spacing[key])) return "default";
+      return { options: { spacing: { [key]: fraction } }, keyPart: serialize(fraction) };
+    }
+  }
+}
+
+/**
+ * Compared at the key's own precision: an author writing `33.3333%` and the
+ * library's exact 1/3 differ, but not by anything that survives serialization,
+ * and treating them as different configurations would only split controllers.
+ */
+function clampedEquals(a: number, b: number): boolean {
+  return serialize(a) === serialize(b);
+}
+
+/**
+ * Read the whole surface. `read` returns a property's computed value, or the
+ * empty string when it is not set.
+ */
+export function parseCssOptions(read: (property: CssProperty) => string): ParsedOptions {
+  const options: LayoutOptions = {};
+  const invalid: ParsedOptions["invalid"] = [];
+  const keyParts: string[] = [];
+  for (const property of CSS_PROPERTIES) {
+    // `getPropertyValue` pads registered properties, so trim before comparing.
+    const raw = read(property).trim();
+    // Unset, or explicitly deferring to the library.
+    if (raw === "" || raw === "auto") continue;
+    const parsed = parseOne(property, raw);
+    if (parsed === "invalid") {
+      invalid.push({ property, value: raw });
+      continue;
+    }
+    if (parsed === "default") continue;
+    // `spacing` is the one field two properties contribute to.
+    if (parsed.options.spacing !== undefined) {
+      options.spacing = { ...options.spacing, ...parsed.options.spacing };
+    } else {
+      Object.assign(options, parsed.options);
+    }
+    keyParts.push(`${property.slice("--justif-".length)}:${parsed.keyPart}`);
+  }
+  return { options, key: keyParts.join(";"), invalid };
+}

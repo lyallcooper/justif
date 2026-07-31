@@ -1,19 +1,19 @@
 import { expect, type Page, test } from "@playwright/test";
 import { kinsokuNotAtLineEnd, kinsokuNotAtLineStart } from "../src/core/cjk.js";
 
+/** The controller surface these tests drive, mirroring `JustifyController`. */
+interface TestController {
+  ready: Promise<void>;
+  refresh(): void;
+  applyLayoutOptions(config: object): void;
+  destroy(): void;
+  readonly managed: readonly Element[];
+}
+
 declare global {
   interface Window {
     __justif: {
-      justify: (
-        t: Iterable<Element> | Element,
-        o?: object,
-      ) => {
-        ready: Promise<void>;
-        refresh(): void;
-        applyLayoutOptions(config: object): void;
-        destroy(): void;
-        readonly managed: readonly Element[];
-      };
+      justify: (t: Iterable<Element> | Element, o?: object) => TestController;
       unjustify: (t: Iterable<Element>) => void;
       hyphenateEnUS: (w: string) => string[];
       /** The hanging-punctuation protrusion table object. */
@@ -25,7 +25,7 @@ declare global {
         weight?: string;
         variantCaps?: string;
       }) => Record<string, { l?: number; r?: number }> | undefined;
-      controller: { ready: Promise<void>; refresh(): void; destroy(): void } | null;
+      controller: TestController | null;
     };
     /**
      * Fixture-defined line reader (see fixture.html): reconstructs visual
@@ -4357,6 +4357,73 @@ test("auto drop-in: booted awaits delayed pattern modules", async ({ page }) => 
   });
   expect(controllers).toBe(3); // en-US, de, and the unbundled-language group
   expect(await page.locator("#de-just .justif-hyphen").count()).toBeGreaterThan(0);
+});
+
+test("auto drop-in: configures typography from CSS custom properties", async ({ page }) => {
+  const messages: Array<{ type: string; text: string }> = [];
+  page.on("console", (m) => messages.push({ type: m.type(), text: m.text() }));
+  await page.goto("/test-e2e/fixture-auto-css.html");
+  await page.waitForFunction(() => (window as Window & { justif?: unknown }).justif !== undefined);
+  await page.evaluate(async () => {
+    await (window as Window & { justif?: { booted: Promise<void> } }).justif!.booted;
+  });
+
+  const state = await page.evaluate(() => {
+    const g = window as Window & {
+      justif?: { controllers: Array<{ paragraphs: readonly HTMLElement[] }> };
+    };
+    // Which paragraphs ended up sharing a controller IS the resolved
+    // configuration: the loader groups by (language, effective config).
+    const groups = g
+      .justif!.controllers.map((c) => c.paragraphs.map((p) => p.id).sort())
+      .sort((a, b) => (a[0] ?? "").localeCompare(b[0] ?? ""));
+    /** How far the furthest line's ink reaches past the content edge. */
+    const overhang = (id: string) => {
+      const p = document.getElementById(id)!;
+      const cs = getComputedStyle(p);
+      const contentRight =
+        p.getBoundingClientRect().right -
+        parseFloat(cs.paddingRight) -
+        parseFloat(cs.borderRightWidth);
+      let most = -Infinity;
+      for (const seg of p.querySelectorAll<HTMLElement>(".justif-seg")) {
+        most = Math.max(most, seg.getBoundingClientRect().right - contentRight);
+      }
+      return { most: +most.toFixed(2), enhanced: p.hasAttribute("data-justif") };
+    };
+    return { groups, plain: overhang("plain"), flush: overhang("flush") };
+  });
+
+  // Four distinct configurations, and membership shows how each was resolved:
+  // inheritance carries the section rule to #inherited; inline style and a
+  // higher-specificity class rule both reach all-line-edges; and #as-default
+  // (explicitly the library default), #bogus (unparseable), #typo (misspelled
+  // property) and #run-scoped (configured on an inline run, which is not a
+  // paragraph) all resolve to the default and share ONE controller with #plain.
+  expect(state.groups).toEqual([
+    ["as-default", "bogus", "plain", "run-scoped", "typo"],
+    ["class-override", "inline-override"],
+    ["flush"],
+    ["inherited"],
+  ]);
+
+  // The options really reach the layout, not just the grouping: #plain and
+  // #flush hold identical comma-dense text at the same measure, so the only
+  // thing that can differ is the configuration. Compared against each other
+  // rather than against an absolute edge, because the wrap guarantee gives every
+  // line a sub-pixel pad of its own.
+  expect(state.plain.enhanced).toBe(true);
+  expect(state.flush.enhanced).toBe(true);
+  expect(state.flush.most).toBeLessThan(1);
+  expect(state.plain.most).toBeGreaterThan(state.flush.most + 2);
+
+  // An unparseable value warns once and falls back, rather than failing to
+  // enhance; a misspelled property name is reported on the debug channel.
+  const warnings = messages.filter((m) => m.type === "warning");
+  expect(warnings).toHaveLength(1);
+  expect(warnings[0]!.text).toContain("--justif-tracking");
+  expect(warnings[0]!.text).toContain("3");
+  expect(messages.some((m) => m.text.includes("--justif-trakcing"))).toBe(true);
 });
 
 test("auto drop-in: a one-line group still receives its hyphenator", async ({ page }) => {

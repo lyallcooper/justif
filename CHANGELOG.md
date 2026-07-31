@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- The drop-in script is now configurable, in CSS. Set `--justif-*` custom
+  properties on `:root` to configure a whole page, or on any element to change
+  one section or a single paragraph: hanging punctuation, protrusion, expansion,
+  tracking, word-space limits, and the last-line settings. Values are ordinary
+  CSS keywords and percentages, and `auto` always means the library default.
+  Previously the drop-in applied one fixed configuration to every paragraph and
+  varying it required the JavaScript API.
+- `justify()` now accepts partial `expansion` and `spacing` objects, filling in
+  the rest from the defaults, as `tracking` already did.
+- New exported `layoutDefaults` gives the default value of every setting the CSS
+  surface covers, for building configuration UI.
+
 - **API change** (non-breaking): `hangingPunctuation`'s options are now
   `"line-end-only"`, `"all-line-edges"`, or `"none"`. The new default value is
   `"line-end-only"`. The previous default of `"first-line"` value is still

@@ -158,8 +158,9 @@ export interface JustifyOptions {
    * original paragraph-opener-plus-line-ends behavior.
    */
   hangingPunctuation?: true | HangingPunctuationMode;
-  /** Glyph expansion limits via the wdth axis; false disables. */
-  expansion?: ExpansionOptions | false;
+  /** Glyph expansion limits via the wdth axis; false disables. Fields left out
+   * take their default, like `spacing` and `tracking`. */
+  expansion?: Partial<ExpansionOptions> | false;
   /**
    * Inter-word glue flexibility as fractions of the space width. `pull`
    * (0–1, default 0.7) is the downward pressure on secondary-font spaces
@@ -172,7 +173,12 @@ export interface JustifyOptions {
    * never shrinks a space — so by default those gaps stretch but hold
    * their natural width. 1 restores TeX semantics.
    */
-  spacing?: { stretch: number; shrink: number; pull?: number; boundaryShrink?: number };
+  spacing?: Partial<{
+    stretch: number;
+    shrink: number;
+    pull: number;
+    boundaryShrink: number;
+  }>;
   /**
    * Letterfit tracking: lets inter-character space open or close each
    * line's set width, participating in break decisions like expansion.
@@ -432,6 +438,34 @@ const DEFAULT_EXPANSION: ExpansionOptions = { max: 0.02, shrink: 0.02, step: 0.0
 const DEFAULT_SPACING = { stretch: 0.5, shrink: 1 / 3, pull: 0.7, boundaryShrink: 0 };
 /** Bringhurst's tolerance: letterspacing in justified text may vary ±3%. */
 const DEFAULT_TRACKING: TrackingOptions = { max: 0.03, shrink: 0.03 };
+/** Bringhurst's "at least a third", as the decimal the public API takes. The
+ * CORE default stays 0 (classic TeX), like tracking's core-off/public-on split. */
+const DEFAULT_LAST_LINE_MIN_WIDTH = 0.33;
+const DEFAULT_LAST_LINE_FIT = 0;
+const DEFAULT_HANGING_PUNCTUATION = "line-end-only" as const;
+
+/**
+ * What each `LayoutOptions` field resolves to when omitted. Exported so callers
+ * can tell "the author asked for the default" apart from "the author asked for
+ * something that happens to equal it" — the drop-in needs exactly that to avoid
+ * splitting paragraphs into separate controllers over identical settings — and
+ * so configuration UI has one source for its initial values.
+ *
+ * Declared after the constants it reads: a `const` is not initialized until its
+ * own statement runs, so hoisting this above them would throw at module load.
+ */
+export const layoutDefaults = Object.freeze({
+  hangingPunctuation: DEFAULT_HANGING_PUNCTUATION,
+  protrusion: true,
+  expansion: DEFAULT_EXPANSION,
+  tracking: DEFAULT_TRACKING,
+  spacing: DEFAULT_SPACING,
+  lastLineMinWidth: DEFAULT_LAST_LINE_MIN_WIDTH,
+  lastLineFit: DEFAULT_LAST_LINE_FIT,
+  // `satisfies`, not an annotation: this keeps the exact shapes, so
+  // `layoutDefaults.expansion.max` reads as a number instead of forcing callers
+  // to narrow away the `false` and `true` the option types also permit.
+}) satisfies Required<LayoutOptions>;
 /** Below this residual measure, a native float must push its line box below
  * itself. The breaker has no equivalent vertical escape, so keep the whole
  * paragraph native until a resize restores usable space beside the float. */
@@ -493,7 +527,10 @@ function resolveOptions(options: JustifyOptions): ResolvedOptions {
   const breakOpts = withOverrides(defaultBreakOptions, options);
   // The public default is Bringhurst's third (the CORE default stays 0 =
   // classic TeX, like tracking's core-off/public-on split).
-  const lastLineMinWidth = Math.max(0, Math.min(1, options.lastLineMinWidth ?? 0.33));
+  const lastLineMinWidth = Math.max(
+    0,
+    Math.min(1, options.lastLineMinWidth ?? DEFAULT_LAST_LINE_MIN_WIDTH),
+  );
   breakOpts.lastLineMinWidth = lastLineMinWidth;
   /** User's explicit per-char overrides, kept separate so they also win
    * over any per-font config matched in buildRunMetrics. */
@@ -512,7 +549,7 @@ function resolveOptions(options: JustifyOptions): ResolvedOptions {
   const requestedHang = options.hangingPunctuation;
   const hangMode: HangingPunctuationMode =
     requestedHang === undefined || requestedHang === true
-      ? "line-end-only"
+      ? DEFAULT_HANGING_PUNCTUATION
       : requestedHang === false
         ? "none"
         : requestedHang === "all-lines"
@@ -536,7 +573,10 @@ function resolveOptions(options: JustifyOptions): ResolvedOptions {
   const protrusion: ProtrusionTable | false = composed === null ? false : composed.rest;
   const protrusionFirst =
     composed !== null && composed.first !== composed.rest ? composed.first : undefined;
-  const expansion = options.expansion === undefined ? DEFAULT_EXPANSION : options.expansion;
+  const expansion =
+    options.expansion === false
+      ? false
+      : withOverrides(DEFAULT_EXPANSION, options.expansion ?? {});
   // withOverrides, never a spread: object spread copies an explicitly present
   // `boundaryShrink: undefined` — the shape a wrapper building options from
   // its own optional config emits — over the default, and a family-boundary
@@ -571,7 +611,7 @@ function resolveOptions(options: JustifyOptions): ResolvedOptions {
     buildOpts: {
       ...defaultBuildOptions,
       hyphenate,
-      lastLineFit: Math.max(0, Math.min(1, options.lastLineFit ?? 0)),
+      lastLineFit: Math.max(0, Math.min(1, options.lastLineFit ?? DEFAULT_LAST_LINE_FIT)),
       lastLineMinWidth,
       hyphenPenalty: options.hyphenPenalty ?? defaultBuildOptions.hyphenPenalty,
       exHyphenPenalty: options.exHyphenPenalty ?? defaultBuildOptions.exHyphenPenalty,
