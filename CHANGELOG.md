@@ -4,10 +4,10 @@
 
 ### Notable changes
 
-- By default, **punctuation is now only hung off the trailing edges of
-  the paragraph**. The previous default also hung punctuation off
-  of the leading edge of the first line of each paragraph. Set
-  `hangingPunctuation` to `"first-line-and-line-ends"` to get the old default.
+- By default, **punctuation is now only hung off the line ends**. The previous
+  default also hung punctuation off of the start of the first line of
+  each paragraph. Set `hangingPunctuation` to `"first-line-and-line-ends"` to
+  get the old default.
 - **Behavior change**: `protrusion: false` no longer switches off hanging
   punctuation automatically. `hangingPunctuation` settings will now be respected
   (but not optically aligned) if protrusion is disabled.

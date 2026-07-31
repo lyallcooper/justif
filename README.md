@@ -286,13 +286,13 @@ By default, Justif will protrude characters slightly into the margin to create
 the appearance of a straighter margin. This is also known as optical margin
 alignment. Justif dynamically evaluates each character to determine the
 appropriate amount to adjust the character's alignment at the margin edge. Set
-`protrusion` to false to disable this behavior, or pass a character table to
+`protrusion` to `false` to disable this behavior, or pass a character table to
 provide your own values and disable the dynamic font measuring. Passed values
 are merged with a built-in table of values in Justif, so passing `{}` tells
 Justif to only use its built-in table and not dynamically measure characters.
 
-Justif also fully hangs punctuation into the margin on the trailing edge of the
-paragraph by default. Set `hangingPunctuation` to `false` to disable it, or
+Justif also fully hangs punctuation into the margin at the end of every line by
+default. Set `hangingPunctuation` to `"none"` to disable it, or
 pass `"all-line-edges"` for fully hanging punctuation everywhere. Between those,
 `"first-line-and-line-ends"` is the CSS `hanging-punctuation: first` model: an
 opening quote hangs fully where it starts the paragraph, and later line starts
