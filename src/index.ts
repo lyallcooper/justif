@@ -236,6 +236,33 @@ export interface JustifyOptions {
   onSkip?: (paragraph: HTMLElement, reason: string) => void;
 }
 
+/**
+ * The layout settings a live reconfiguration can replace. Everything else a
+ * controller was built with — the hyphenator, callbacks, breaker penalties,
+ * clipboard cleanup, resize observation — is fixed for its lifetime.
+ */
+export type LayoutOptions = Pick<
+  JustifyOptions,
+  | "hangingPunctuation"
+  | "protrusion"
+  | "expansion"
+  | "tracking"
+  | "spacing"
+  | "lastLineMinWidth"
+  | "lastLineFit"
+>;
+
+/** Runtime counterpart of `LayoutOptions`, for stripping those keys. */
+const LAYOUT_OPTION_KEYS = [
+  "hangingPunctuation",
+  "protrusion",
+  "expansion",
+  "tracking",
+  "spacing",
+  "lastLineMinWidth",
+  "lastLineFit",
+] as const satisfies ReadonlyArray<keyof LayoutOptions>;
+
 export interface JustifyController {
   /**
    * Resolves once the content's font faces have settled (loaded or
@@ -251,6 +278,20 @@ export interface JustifyController {
    * destroy() and justify() again — the original scan is reused here.
    */
   refresh(): void;
+  /**
+   * Replace this controller's layout settings and re-lay out its paragraphs,
+   * reusing the existing scan. Cheaper than `destroy()` + `justify()`, and it
+   * keeps observers, clipboard registration, and paragraph identity.
+   *
+   * `config` is COMPLETE, not a patch: a field left out takes the library
+   * default, which is how a caller restores one. Anything outside
+   * `LayoutOptions` is untouched — notably `hyphenate` (with its memoized
+   * cache), `onSkip`, and `onRelayout`. `cleanClipboard` and `observeResize`
+   * are deliberately not reconfigurable: the first registers a shared copy
+   * handler once, and the second attaches observers once, so changing either
+   * needs a fresh controller.
+   */
+  applyLayoutOptions(config: LayoutOptions): void;
   /** Restore the original DOM and disconnect observers. */
   destroy(): void;
   readonly paragraphs: readonly HTMLElement[];
@@ -400,6 +441,7 @@ function noopController(): JustifyController {
   return {
     ready: Promise.resolve(),
     refresh() {},
+    applyLayoutOptions() {},
     destroy() {},
     paragraphs: [],
     managed: [],
@@ -846,15 +888,22 @@ export function justify(
   const bailed = new WeakSet<HTMLElement>();
   let destroyed = false;
 
-  const {
-    breakOpts,
-    buildOpts,
-    lastLineMinWidth,
-    expansion,
-    spacing,
-    protrusionCtx,
-    hyphenate,
-  } = resolveOptions(options);
+  const initialResolution = resolveOptions(options);
+  /** Fixed for this controller's lifetime: `hyphenate` is outside the
+   * reconfigurable subset, and its memoized cache must survive one. */
+  const { hyphenate } = initialResolution;
+  // Reassignable: applyLayoutOptions() re-resolves these in place, and every
+  // reader takes them at use time.
+  let { breakOpts, buildOpts, lastLineMinWidth, expansion, spacing, protrusionCtx } =
+    initialResolution;
+  /**
+   * The options a reconfiguration must preserve — callbacks, the hyphenator,
+   * breaker penalties. The layout keys are stripped so that a field omitted
+   * from applyLayoutOptions() resolves to the LIBRARY default instead of to
+   * whatever this controller happened to be constructed with.
+   */
+  const fixedOptions: JustifyOptions = { ...options };
+  for (const key of LAYOUT_OPTION_KEYS) delete fixedOptions[key];
 
   /** Phase 1: normalized computed-style and DOM reads; no font measurement. */
   const scanned = new Map<HTMLElement, ParagraphScan>();
@@ -1485,17 +1534,30 @@ export function justify(
     return changed;
   };
 
-  const remeasureAll = (floatGeometryFresh = false): void => {
+  /**
+   * `fontsStale` (the default) drops the measurement caches and re-probes
+   * baselines — what a font change needs, because every cached advance may now
+   * describe the wrong letterforms.
+   *
+   * A configuration change passes `false`: glyph advances are unaffected, so
+   * re-measuring the document would be pure waste, and nothing else needs
+   * invalidating either. Calibration keys already include the expansion limits
+   * (`calibrate.ts`), and composed protrusion tables are keyed on the settings
+   * object's identity, which a re-resolution replaces.
+   */
+  const remeasureAll = (floatGeometryFresh = false, fontsStale = true): void => {
     if (destroyed) return;
     if (!floatGeometryFresh) refreshFloatIntrusions();
-    clearMeasureCache();
-    clearCalibrationCache();
-    // Measured protrusion is derived from rasterized glyphs, so it goes stale
-    // for exactly the same reason widths do — a table measured before the
-    // webfont arrived describes the fallback's letterforms.
-    clearOpticalCache();
-    clearComposedProtrusionCache();
-    reprobeBaselines();
+    if (fontsStale) {
+      clearMeasureCache();
+      clearCalibrationCache();
+      // Measured protrusion is derived from rasterized glyphs, so it goes stale
+      // for exactly the same reason widths do — a table measured before the
+      // webfont arrived describes the fallback's letterforms.
+      clearOpticalCache();
+      clearComposedProtrusionCache();
+      reprobeBaselines();
+    }
     const mine = paragraphs.filter((p) => ownedState(p) !== undefined);
     // All width reads first, then all patches, then one correction flush —
     // interleaving reads with the DOM writes would force a layout per
@@ -1916,6 +1978,21 @@ export function justify(
     refresh() {
       refreshNativeFloatIntrusions();
       remeasureAll(true);
+    },
+    applyLayoutOptions(config) {
+      if (destroyed) return;
+      const resolved = resolveOptions({ ...fixedOptions, ...config });
+      // Keep the memoized hyphenator: re-resolving wraps the same function in
+      // a fresh, empty cache, which would re-split every word in the document.
+      resolved.buildOpts.hyphenate = hyphenate;
+      breakOpts = resolved.breakOpts;
+      buildOpts = resolved.buildOpts;
+      lastLineMinWidth = resolved.lastLineMinWidth;
+      expansion = resolved.expansion;
+      spacing = resolved.spacing;
+      protrusionCtx = resolved.protrusionCtx;
+      refreshNativeFloatIntrusions();
+      remeasureAll(true, false);
     },
     destroy() {
       destroyed = true;

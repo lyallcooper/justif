@@ -7,7 +7,13 @@ declare global {
       justify: (
         t: Iterable<Element> | Element,
         o?: object,
-      ) => { ready: Promise<void>; refresh(): void; destroy(): void };
+      ) => {
+        ready: Promise<void>;
+        refresh(): void;
+        applyLayoutOptions(config: object): void;
+        destroy(): void;
+        readonly managed: readonly Element[];
+      };
       unjustify: (t: Iterable<Element>) => void;
       hyphenateEnUS: (w: string) => string[];
       /** The hanging-punctuation protrusion table object. */
@@ -3261,6 +3267,103 @@ test("hangingPunctuation preset hangs stops fully past the margin", async ({ pag
     expect(overhang, `"${line.text.slice(0, 40)}"`).toBeGreaterThan(0.85 * expected);
     expect(overhang, `"${line.text.slice(0, 40)}"`).toBeLessThan(expected + 1.5);
   }
+});
+
+test("applyLayoutOptions re-lays out in place, keeping what it does not own", async ({
+  page,
+}) => {
+  // Same configuration as the rectangular-endings test: a roomier stretch pool
+  // keeps a flush ending reachable at the fixture's own measure.
+  await page.evaluate(async () => {
+    const w = window as unknown as { __relayouts: number };
+    w.__relayouts = 0;
+    const j = window.__justif;
+    j.controller?.destroy();
+    j.controller = j.justify(document.querySelectorAll("#host p"), {
+      hyphenate: j.hyphenateEnUS,
+      protrusion: false,
+      hangingPunctuation: "none",
+      expansion: false,
+      tracking: false,
+      spacing: { stretch: 1, shrink: 1 / 3 },
+      lastLineMinWidth: 1,
+      onRelayout: () => w.__relayouts++,
+    });
+    await j.controller.ready;
+  });
+  await waitForQuiescence(page);
+
+  const readState = () =>
+    page.evaluate(() => {
+      const p = document.getElementById("p1")!;
+      const g = window.__justifLines(p);
+      const last = g.lines[g.lines.length - 1]!;
+      return {
+        endingGap: +(g.contentRight - last.right).toFixed(2),
+        enhanced: p.hasAttribute("data-justif"),
+        managed: window.__justif.controller!.managed.length,
+        relayouts: (window as unknown as { __relayouts: number }).__relayouts,
+      };
+    });
+
+  const before = await readState();
+  // Complete replacement: `spacing` and `lastLineMinWidth` are omitted, so both
+  // must fall back to the library defaults rather than persisting.
+  await page.evaluate(() => {
+    window.__justif.controller!.applyLayoutOptions({
+      protrusion: false,
+      hangingPunctuation: "none",
+      expansion: false,
+      tracking: false,
+    });
+  });
+  await waitForQuiescence(page);
+  const after = await readState();
+  const result = { before, after, relayoutsBefore: before.relayouts, relayoutsAfter: after.relayouts };
+
+  // Rectangular endings before; the default 0.33 floor lets it be ragged after.
+  expect(result.before.endingGap).toBeLessThan(1);
+  expect(result.after.endingGap).toBeGreaterThan(1);
+  // Still the same live enhancement — not torn down and rebuilt.
+  expect(result.before.enhanced).toBe(true);
+  expect(result.after.enhanced).toBe(true);
+  expect(result.after.managed).toBe(result.before.managed);
+  // `onRelayout` is outside LayoutOptions, so it survived — and it reports the
+  // reconfiguration itself, like any other re-layout.
+  expect(result.relayoutsAfter).toBeGreaterThan(result.relayoutsBefore);
+});
+
+test("applyLayoutOptions keeps the hyphenator it was constructed with", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    const p = document.createElement("p");
+    // A measure too narrow for the long word: hyphenation is not merely
+    // preferred here, it is the only way to set the paragraph.
+    p.style.cssText = "width: 120px; text-align: justify; font: 17px Georgia, serif";
+    p.textContent =
+      "Alpha beta antidisestablishmentarianism gamma delta epsilon zeta eta theta.";
+    host.append(p);
+    const skips: string[] = [];
+    const controller = window.__justif.justify(p, {
+      hyphenate: window.__justif.hyphenateEnUS,
+      expansion: false,
+      tracking: false,
+      onSkip: (_el: HTMLElement, reason: string) => skips.push(reason),
+    });
+    await controller.ready;
+    const before = p.querySelectorAll(".justif-hyphen").length;
+    controller.applyLayoutOptions({ protrusion: false, hangingPunctuation: "none" });
+    const after = p.querySelectorAll(".justif-hyphen").length;
+    controller.destroy();
+    p.remove();
+    return { before, after, skips };
+  });
+
+  expect(result.skips).toEqual([]);
+  expect(result.before).toBeGreaterThan(0);
+  // Still hyphenating after the reconfiguration: `hyphenate` is outside
+  // LayoutOptions, so replacing the layout config cannot drop it.
+  expect(result.after).toBeGreaterThan(0);
 });
 
 /**

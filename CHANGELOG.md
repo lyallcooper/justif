@@ -13,6 +13,10 @@
   loaded. Narrowing the window later wrapped them without hyphens.
 - `justify()`'s controller now also exposes `managed`: the paragraphs it is
   still responsible for, excluding any it declined and any released since.
+- New `controller.applyLayoutOptions(config)` changes typography settings on a
+  live controller and re-lays out in place, without the teardown and rescan that
+  `destroy()` plus `justify()` costs. Settings it does not cover — the
+  hyphenator, callbacks — are left alone.
 - **Behavior change**: `protrusion: false` no longer switches off hanging
   punctuation as well. The two settings are independent, so you can set ordinary
   letters exactly flush while quotes and stops still hang into the margin — a
