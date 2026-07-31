@@ -89,6 +89,62 @@ To limit the automatic scan, add a `data-justif-selector` such as `"article
 Add `data-justif-debug` to log why a paragraph kept native justification.
 With the JavaScript API, pass `onSkip` instead.
 
+### Configure it in CSS
+
+Set `--justif-*` custom properties to change what the script does. Configure a
+whole page from `:root`, a section from any ancestor, or a single paragraph
+inline — these are ordinary custom properties, so they inherit and the cascade
+decides which one wins:
+
+```css
+:root {
+  --justif-tracking: none;
+  --justif-last-line-min-width: 50%;
+}
+
+blockquote {
+  --justif-hanging-punctuation: none;
+}
+```
+
+| Property | Values | Default |
+| --- | --- | --- |
+| `--justif-hanging-punctuation` | `auto`, `line-end-only`, `all-line-edges`, `none` | `line-end-only` |
+| `--justif-protrusion` | `auto`, `none` | `auto` |
+| `--justif-expansion` | `auto`, `none`, a percentage | `2%` |
+| `--justif-tracking` | `auto`, `none`, a percentage | `3%` |
+| `--justif-last-line-min-width` | `auto`, `none`, a percentage | `33%` |
+| `--justif-last-line-fit` | `auto`, a percentage | `0%` |
+| `--justif-space-stretch` | `auto`, a percentage | `50%` |
+| `--justif-space-shrink` | `auto`, a percentage | `33⅓%` |
+
+`auto` always means "whatever Justif would do", so a section can opt back in to
+the default. A percentage sets both directions at once for `--justif-expansion`
+and `--justif-tracking` — pass an object to the JavaScript API for asymmetric
+limits. Values are ordinary CSS: an invalid one is ignored and the default
+applies, and `data-justif-debug` reports anything it had to ignore, including
+misspelled property names.
+
+Hyphenation is controlled by the native property instead, since the browser
+understands it too:
+
+```css
+.tight-copy { hyphens: none; }
+```
+
+**Changes apply automatically.** A media query, a container query, a theme
+toggle, a class change, or a script setting one of these properties all take
+effect on their own. Two limits are worth knowing:
+
+- It needs Safari 17.4, Chrome 117, or Firefox 129. In older browsers the
+  configuration is read once as the page loads.
+- On any paragraph where you have declared your own `transition`, Justif leaves
+  liveness off rather than replace your animation. Add the `--justif-*`
+  properties to that declaration to keep both.
+
+In either case `window.justif.reconfigure()` applies a change on demand, and
+returns a promise that settles once the affected paragraphs have re-laid out.
+
 ### Use the JavaScript API
 
 Install the package:
@@ -161,10 +217,17 @@ A few things make the loading experience smoother:
 ### Advanced: controlling the drop-in script
 
 The script exposes a `window.justif` object containing `justify`, `unjustify`,
-`controllers`, and a `booted` promise. Most pages can ignore `window.justif`. It
-is provided for integrations that need to inspect, control, or safely tear down
-the drop-in script. Before assuming `controllers` is complete, await
-`window.justif.booted`: controllers for on-demand languages may be added later.
+`controllers`, `reconfigure()`, and a `booted` promise. Most pages can ignore
+`window.justif`. It is provided for integrations that need to inspect, control,
+or safely tear down the drop-in script. Before assuming `controllers` is
+complete, await `window.justif.booted`: controllers for on-demand languages may
+be added later.
+
+`controllers` holds one controller per language and configuration, so changing
+`--justif-*` for part of the page can add or remove entries. The array itself is
+updated in place, and `booted` refers only to the initial load; `reconfigure()`
+returns a promise for later changes. A paragraph you tear down by hand stays torn
+down: later configuration changes will not re-adopt it.
 
 ```js
 await window.justif.booted;
@@ -249,6 +312,11 @@ Justif to only use its built-in table and not dynamically measure characters.
 Justif also fully hangs punctuation into the margin on the trailing edge of the
 paragraph by default. Set `hangingPunctuation` to `false` to disable it, or
 pass `"all-line-edges"` for fully hanging punctuation everywhere.
+
+The two settings are independent. Turning protrusion off with hanging left on
+sets ordinary letters exactly flush while quotes and stops still hang — useful
+when you want that deliberate edge without the per-glyph optical adjustment. For
+no margin effects at all, switch off both.
 
 ### Expansion, tracking, and spacing
 
