@@ -231,7 +231,7 @@ applications need:
 | --- | --- | --- | --- |
 | `hyphenate` | `hyphens: none` turns it off | none | Splits a lowercase word into hyphenatable fragments |
 | `protrusion` | `--justif-protrusion` | `true` | Optically aligns glyphs at line edges; `false` disables it, or pass a character table to use built-in values plus your overrides |
-| `hangingPunctuation` | `--justif-hanging-punctuation` | `"line-end-only"` | Controls where eligible punctuation hangs fully: `"line-end-only"`, `"all-line-edges"`, or `"none"` |
+| `hangingPunctuation` | `--justif-hanging-punctuation` | `"line-end-only"` | Controls where eligible punctuation hangs fully: `"line-end-only"`, `"first-line-and-line-ends"`, `"all-line-edges"`, or `"none"` |
 | `expansion` | `--justif-expansion` | `{ max: 0.02, shrink: 0.02, step: 0.005 }` | Uses a variable font's `wdth` axis to improve line fit; ignored when unavailable |
 | `tracking` | `--justif-tracking` | `{ max: 0.03, shrink: 0.03 }` | Uses small letter-spacing adjustments to improve line fit; `false` disables |
 | `spacing` | `--justif-space-stretch`, `--justif-space-shrink` | `{ stretch: 0.5, shrink: 1/3, pull: 0.7, boundaryShrink: 0 }` | Sets how far word spaces may stretch or shrink |
@@ -293,7 +293,10 @@ Justif to only use its built-in table and not dynamically measure characters.
 
 Justif also fully hangs punctuation into the margin on the trailing edge of the
 paragraph by default. Set `hangingPunctuation` to `false` to disable it, or
-pass `"all-line-edges"` for fully hanging punctuation everywhere.
+pass `"all-line-edges"` for fully hanging punctuation everywhere. Between those,
+`"first-line-and-line-ends"` is the CSS `hanging-punctuation: first` model: an
+opening quote hangs fully where it starts the paragraph, and later line starts
+set those marks flush.
 
 The two are independent: with protrusion off and hanging on, letters sit exactly
 flush while quotes and stops still hang. Switch off both for no margin effects at

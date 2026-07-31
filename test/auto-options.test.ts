@@ -28,6 +28,9 @@ describe("--justif-* parsing", () => {
     expect(from({ "--justif-hanging-punctuation": "all-line-edges" }).options).toEqual({
       hangingPunctuation: "all-line-edges",
     });
+    expect(
+      from({ "--justif-hanging-punctuation": "first-line-and-line-ends" }).options,
+    ).toEqual({ hangingPunctuation: "first-line-and-line-ends" });
     expect(from({ "--justif-hanging-punctuation": "none" }).options).toEqual({
       hangingPunctuation: "none",
     });
@@ -117,7 +120,8 @@ describe("--justif-* parsing", () => {
       ["--justif-protrusion", "50%"],
       ["--justif-last-line-fit", "none"],
       ["--justif-space-shrink", "none"],
-      // The deprecated policies are not part of the CSS surface.
+      // Canonical spellings only: the older JavaScript-API names for two of the
+      // policies are not part of the CSS surface.
       ["--justif-hanging-punctuation", "first-line"],
       ["--justif-hanging-punctuation", "all-lines"],
       ["--justif-expansion", "garbage"],

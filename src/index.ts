@@ -15,6 +15,7 @@ import {
   composeProtrusion,
   type HangingPunctuationMode,
   latinProtrusion,
+  normalizeHangingPunctuation,
 } from "./core/protrusion.js";
 import {
   type BreakOptions,
@@ -146,16 +147,18 @@ export interface JustifyOptions {
   /**
    * Full-hanging policy, independent of `protrusion`. `"line-end-only"` (the
    * default) fully hangs eligible punctuation at line ends while line starts
-   * retain optical alignment. `"all-line-edges"` fully hangs it at every line
-   * edge; `"none"` applies only the selected protrusion model.
+   * retain optical alignment. `"first-line-and-line-ends"` adds the CSS `first`
+   * model on top of that: the paragraph's opening quote hangs fully and later
+   * line starts set those marks flush. `"all-line-edges"` fully hangs at every
+   * line edge; `"none"` applies only the selected protrusion model.
    *
    * Hanging is composed as a protrusion overlay, but the two settings switch
    * separately: with `protrusion: false` the overlay composes over an empty
    * base, and with `"none"` the protrusion model applies alone.
    *
-   * Compatibility: `true` selects the new default; `false` selects `"none"`;
-   * `"all-lines"` aliases `"all-line-edges"`; and `"first-line"` retains the
-   * original paragraph-opener-plus-line-ends behavior.
+   * Compatibility: `true` selects the default; `false` selects `"none"`;
+   * `"first-line"` aliases `"first-line-and-line-ends"`; and `"all-lines"`
+   * aliases `"all-line-edges"`.
    */
   hangingPunctuation?: true | HangingPunctuationMode;
   /** Glyph expansion limits via the wdth axis; false disables. Fields left out
@@ -550,11 +553,7 @@ function resolveOptions(options: JustifyOptions): ResolvedOptions {
   const hangMode: HangingPunctuationMode =
     requestedHang === undefined || requestedHang === true
       ? DEFAULT_HANGING_PUNCTUATION
-      : requestedHang === false
-        ? "none"
-        : requestedHang === "all-lines"
-          ? "all-line-edges"
-          : requestedHang;
+      : normalizeHangingPunctuation(requestedHang);
   // The protrusion MODEL and full hanging are independent settings, even
   // though hanging is implemented as a protrusion overlay: `protrusion: false`
   // removes the model's base table, and the hang overlay then composes over an

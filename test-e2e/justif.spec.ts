@@ -3429,6 +3429,7 @@ test("protrusion and hanging policies resolve with their compatibility aliases",
         | "none"
         | "line-end-only"
         | "all-line-edges"
+        | "first-line-and-line-ends"
         | "first-line"
         | "all-lines"
         | undefined,
@@ -3455,6 +3456,7 @@ test("protrusion and hanging policies resolve with their compatibility aliases",
       hangingFalse: make("hang-false", true, false),
       protrusionOff: make("protrusion-off", false),
       protrusionOffNoHang: make("protrusion-off-no-hang", false, "none"),
+      firstLine: make("hang-first-line", true, "first-line-and-line-ends"),
       oldFirstLine: make("hang-old-first-line", true, "first-line"),
       allEdges: make("hang-all-edges", true, "all-line-edges"),
       oldAllLines: make("hang-old-all-lines", true, "all-lines"),
@@ -3496,20 +3498,20 @@ test("protrusion and hanging policies resolve with their compatibility aliases",
   // rather than by comparing these two snapshots here.
   expect(result.protrusionOffNoHang.length).toBeGreaterThan(2);
   expectEquivalent(result.oldAllLines, result.allEdges);
-  // The original first-line spelling remains a distinct, supported policy:
-  // full opener on line 0, line-end hangs throughout, and flush later starts.
-  expect(result.oldFirstLine).not.toEqual(result.defaultMode);
+  expectEquivalent(result.oldFirstLine, result.firstLine);
+  // "first-line-and-line-ends" is a distinct policy: full opener on line 0,
+  // line-end hangs throughout, and flush later starts.
+  expect(result.firstLine).not.toEqual(result.defaultMode);
 });
 
 /**
  * Issue #14: a paragraph must never show two hang depths for the same mark.
- * In the legacy paragraph-first mode the opener hangs fully and every later
- * line start sets the full-hang characters FLUSH — the CSS `first` model. A
- * mark hung fully on one line and by optical alignment on the next reads as a
- * misaligned edge instead of as either style. The policy remains tested for
- * compatibility, but is no longer a canonical protrusion mode.
+ * In "first-line-and-line-ends" the opener hangs fully and every later line
+ * start sets the full-hang characters FLUSH — the CSS `first` model. A mark
+ * hung fully on one line and by optical alignment on the next reads as a
+ * misaligned edge instead of as either style.
  */
-test("a wrapped-line quote sets flush in the legacy paragraph-first mode", async ({
+test('a wrapped-line quote sets flush in "first-line-and-line-ends"', async ({
   page,
 }) => {
   const edges = await page.evaluate(async () => {
@@ -3529,7 +3531,7 @@ test("a wrapped-line quote sets flush in the legacy paragraph-first mode", async
     const controller = window.__justif.justify(p, {
       expansion: false,
       tracking: false,
-      hangingPunctuation: "first-line",
+      hangingPunctuation: "first-line-and-line-ends",
     });
     await controller.ready;
     const contentLeft = p.getBoundingClientRect().left;
@@ -3634,6 +3636,98 @@ test("a native one-line paragraph aligns its opener like its multi-line neighbou
   expect(result.plainOffset).toBe(0);
   // destroy() puts the author's markup and style attribute back byte-for-byte.
   expect(result.restoredExactly).toBe("yes");
+});
+
+/**
+ * An author's own first-line indent and a hanging opener meet on the same line,
+ * and the hang is relative to the indent, not to the margin: the mark sits just
+ * before where the indented text starts. Both paths have to agree — the enhanced
+ * one buys the hang with a negative margin on the line's first segment, the
+ * native one-line path with an inline `text-indent` that must carry the author's
+ * own indent along with it.
+ */
+test("a first-line hang composes with the author's own text-indent", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    const text =
+      "“Alpha beta gamma delta epsilon zeta,” she said, and the paragraph then " +
+      "runs on for several further lines of ordinary text so that the wrap is " +
+      "never in doubt at this measure whatever the engine decides to do.";
+    const base = "width: 300px; text-align: justify; font: 17px Georgia, serif; margin: 0 0 1em";
+    const make = (id: string, indent: string, content: string) => {
+      const p = document.createElement("p");
+      p.id = id;
+      p.setAttribute("style", indent === "" ? base : `${base}; text-indent: ${indent}`);
+      p.textContent = content;
+      host.append(p);
+      return p;
+    };
+    const paragraphs = {
+      // The reference hang: same paragraph, no indent of its own.
+      plain: make("indent-hang-none", "", text),
+      positive: make("indent-hang-positive", "32px", text),
+      // The classic hanging-indent idiom, where line 0 starts LEFT of the rest.
+      negative: make("indent-hang-negative", "-24px", text),
+      // One line, so it keeps its native rendering and pays for the hang with an
+      // inline text-indent instead of a DOM rewrite.
+      oneLine: make("indent-hang-one-line", "32px", "“Short quoted line.”"),
+    };
+    const controller = window.__justif.justify(Object.values(paragraphs), {
+      expansion: false,
+      tracking: false,
+      hangingPunctuation: "first-line-and-line-ends",
+    });
+    await controller.ready;
+    const read = (p: HTMLElement) => {
+      const geometry = window.__justifLines(p);
+      const edge = p.getBoundingClientRect().left;
+      return {
+        enhanced: p.hasAttribute("data-justif"),
+        indent: p.style.textIndent,
+        lines: geometry.lines.map((line) => ({
+          left: +(line.left - edge).toFixed(2),
+          right: +(line.right - geometry.contentRight).toFixed(2),
+          head: line.texts[0] ?? "",
+        })),
+      };
+    };
+    return Object.fromEntries(
+      Object.entries(paragraphs).map(([name, p]) => [name, read(p)]),
+    ) as Record<keyof typeof paragraphs, ReturnType<typeof read>>;
+  });
+
+  // The un-indented reference: the opener hangs into the margin, later lines are
+  // flush, and the hang is big enough for the comparisons below to mean anything.
+  const hang = -result.plain.lines[0]!.left;
+  expect(result.plain.enhanced).toBe(true);
+  expect(result.plain.lines.length).toBeGreaterThan(3);
+  expect(hang).toBeGreaterThan(2);
+
+  for (const [name, indent] of [
+    ["positive", 32],
+    ["negative", -24],
+  ] as const) {
+    const { enhanced, lines } = result[name];
+    expect(enhanced, name).toBe(true);
+    expect(lines.length, name).toBeGreaterThan(3);
+    // Line 0 starts at the author's indent, less the hang.
+    expect(Math.abs(lines[0]!.left - (indent - hang)), `${name} first line`).toBeLessThan(1);
+    expect(lines[0]!.head, name).toBe("“Alpha");
+    // The indent belongs to line 0 alone: every later line keeps the shared
+    // left edge, and every line but the last stays flush at the right.
+    for (const [i, line] of lines.entries()) {
+      if (i > 0) expect(Math.abs(line.left), `${name} line ${i} left`).toBeLessThan(1.2);
+      if (i < lines.length - 1) {
+        expect(Math.abs(line.right), `${name} line ${i} right`).toBeLessThan(1.5);
+      }
+    }
+  }
+
+  // The native one-line path: the indent it writes is the author's own minus the
+  // same hang, so the rendered line lands where the enhanced first lines do.
+  expect(result.oneLine.enhanced).toBe(false);
+  expect(parseFloat(result.oneLine.indent)).toBeCloseTo(32 - hang, 1);
+  expect(Math.abs(result.oneLine.lines[0]!.left - (32 - hang))).toBeLessThan(1);
 });
 
 test("an unchanged native hang does not report or mutate a relayout", async ({ page }) => {
@@ -4503,6 +4597,52 @@ test("auto drop-in: a CSS configuration change applies by itself", async ({ page
       () => (window as Window & { justif?: { controllers: unknown[] } }).justif!.controllers.length,
     ),
   ).toBe(4);
+});
+
+test('auto drop-in: "first-line-and-line-ends" is part of the CSS surface', async ({
+  page,
+}) => {
+  // Registration is the thing only a browser can check: a keyword missing from
+  // the `@property` syntax is substituted away before our parser ever sees it,
+  // so the declaration would silently do nothing.
+  await page.goto("/test-e2e/fixture-auto-css.html");
+  await page.waitForFunction(() => (window as Window & { justif?: unknown }).justif !== undefined);
+  await page.evaluate(async () => {
+    await (window as Window & { justif?: { booted: Promise<void> } }).justif!.booted;
+  });
+
+  // Set at the root, like the liveness test: the paragraph's own style attribute
+  // is the layout's working surface, so a declaration parked there does not
+  // survive the next patch.
+  await page.evaluate(() => {
+    document.documentElement.style.setProperty(
+      "--justif-hanging-punctuation",
+      "first-line-and-line-ends",
+    );
+  });
+  // #plain now resolves to the new policy while #as-default keeps the library
+  // default explicitly, so the group they shared must split. A keyword the
+  // `@property` syntax rejected would compute as `auto` and leave them together.
+  // Polled: the watcher's own transition lands the new computed value a frame
+  // later, so a single synchronous read still sees the old one.
+  const split = () =>
+    page.evaluate(async () => {
+      const g = window as Window & {
+        justif?: {
+          reconfigure: () => Promise<void>;
+          controllers: Array<{ paragraphs: readonly HTMLElement[] }>;
+        };
+      };
+      await g.justif!.reconfigure();
+      return g.justif!.controllers.some((c) => {
+        const ids = c.paragraphs.map((p) => p.id);
+        return ids.includes("plain") && !ids.includes("as-default");
+      });
+    });
+  await expect.poll(split, { timeout: 4000 }).toBe(true);
+  expect(
+    await page.evaluate(() => document.getElementById("plain")!.hasAttribute("data-justif")),
+  ).toBe(true);
 });
 
 test("auto drop-in: an author transition is never replaced", async ({ page }) => {

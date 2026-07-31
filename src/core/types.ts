@@ -137,7 +137,7 @@ export interface Box {
   /** Protrusion credit (px) if this box starts a line after the first. */
   lp: number;
   /** Protrusion credit (px) if this box starts the paragraph's FIRST line
-   * (differs from lp only under the legacy first-line hanging mode). */
+   * (differs from lp only under hanging "first-line-and-line-ends"). */
   lpFirst: number;
   /** Protrusion credit (px) if this box ends a line. */
   rp: number;

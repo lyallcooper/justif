@@ -2,32 +2,38 @@
 
 ## Unreleased
 
-- The drop-in script is now configurable, in CSS. Set `--justif-*` custom
+### Notable changes
+
+- By default, **punctuation is now only hung off the trailing edges of
+  the paragraph**. The previous default also hung punctuation off
+  of the leading edge of the first line of each paragraph. Set
+  `hangingPunctuation` to `"first-line-and-line-ends"` to get the old default.
+- **Behavior change**: `protrusion: false` no longer switches off hanging
+  punctuation automatically. `hangingPunctuation` settings will now be respected
+  (but not optically aligned) if protrusion is disabled.
+- **API change** (non-breaking): `hangingPunctuation`'s options are now
+  `"line-end-only"`, `"first-line-and-line-ends"`, `"all-line-edges"`, or
+  `"none"`. See the [README
+  section](https://github.com/lyallcooper/justif#protrusion-and-hanging-punctuation)
+  for more details.
+- **The drop-in script is now configurable via CSS.** Set `--justif-*` custom
   properties on `:root` to configure a whole page, or on any element to change
   one section or a single paragraph: hanging punctuation, protrusion, expansion,
-  tracking, word-space limits, and the last-line settings. Values are ordinary
-  CSS keywords, percentages, or the same fractions the JavaScript API takes, and
-  `auto` always means the library default.
-  Previously the drop-in applied one fixed configuration to every paragraph and
-  varying it required the JavaScript API.
-- Changes to that CSS configuration apply on their own, the way CSS normally
-  does — from a media query, a container query, a theme toggle, a class change,
-  or a script. This needs a recent browser (Safari 17.4, Chrome 117, Firefox
-  129); everywhere else the configuration is read once as the page loads. It also
-  stands aside on any paragraph carrying your own `transition` declaration,
-  rather than replacing it. `window.justif.reconfigure()` applies a change by
-  hand in either case.
+  tracking, word-space limits, and the last-line settings. See the [README
+  section](https://github.com/lyallcooper/justif#setting-options-in-css) for
+  details.
+- Optical margin alignment now dynamically measures each font's letterforms
+  instead of relying on a hard-coded table. This allows for great alignment for
+  any arbitrary font you use with Justif. See the
+  [README](https://github.com/lyallcooper/justif#protrusion-and-hanging-punctuation)
+  for more details.
+
+### More changes
+
 - `justify()` now accepts partial `expansion` and `spacing` objects, filling in
   the rest from the defaults, as `tracking` already did.
 - New exported `layoutDefaults` gives the default value of every setting the CSS
   surface covers, for building configuration UI.
-
-- **API change** (non-breaking): `hangingPunctuation`'s options are now
-  `"line-end-only"`, `"all-line-edges"`, or `"none"`. The new default value is
-  `"line-end-only"`. The previous default of `"first-line"` value is still
-  supported but deprecated. See the
-  [README](https://github.com/lyallcooper/justif#protrusion-and-hanging-punctuation)
-  for more details.
 - Fixed paragraphs in a language other than English never being hyphenated when
   every paragraph in that language happened to fit on one line as the page
   loaded. Narrowing the window later wrapped them without hyphens.
@@ -37,16 +43,6 @@
   live controller and re-lays out in place, without the teardown and rescan that
   `destroy()` plus `justify()` costs. Settings it does not cover — the
   hyphenator, callbacks — are left alone.
-- **Behavior change**: `protrusion: false` no longer switches off hanging
-  punctuation as well. The two settings are independent, so you can set ordinary
-  letters exactly flush while quotes and stops still hang into the margin — a
-  combination that previously had no expression. To keep the earlier rendering,
-  pass `hangingPunctuation: "none"` alongside `protrusion: false`.
-- Optical margin alignment now measures each font's letterforms instead of
-  relying on a hard-coded table. This allows for great alignment for any
-  arbitrary font you use with Justif. See the
-  [README](https://github.com/lyallcooper/justif#protrusion-and-hanging-punctuation)
-  for more details.
 - Opening brackets are no longer forced fully into the margin. Measured fonts
   use their own bracket shapes; the built-in tables give parentheses a slight
   overhang and leave square brackets flush.

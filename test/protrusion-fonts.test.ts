@@ -54,8 +54,12 @@ describe("composeProtrusion (hanging-punctuation scoping)", () => {
     expect(rest["“"]!.r).toBe(1000);
   });
 
-  it("legacy first-line mode: r-hangs everywhere, full l-hangs on line 0, flush after", () => {
-    const { rest, first } = composeProtrusion(latinProtrusion, null, "first-line");
+  it("first-line-and-line-ends: r-hangs everywhere, full l-hang on line 0, flush after", () => {
+    const { rest, first } = composeProtrusion(
+      latinProtrusion,
+      null,
+      "first-line-and-line-ends",
+    );
     expect(first).not.toBe(rest);
     // Stops hang fully at every line end.
     expect(rest[","]).toEqual({ r: 1000 });
@@ -88,9 +92,12 @@ describe("composeProtrusion (hanging-punctuation scoping)", () => {
     expect(off.first).toBe(latinProtrusion);
   });
 
-  it("retains all-lines as an exact alias and accepts none", () => {
+  it("retains the older spellings as exact aliases and accepts none", () => {
     expect(composeProtrusion(latinProtrusion, null, "all-lines")).toEqual(
       composeProtrusion(latinProtrusion, null, "all-line-edges"),
+    );
+    expect(composeProtrusion(latinProtrusion, null, "first-line")).toEqual(
+      composeProtrusion(latinProtrusion, null, "first-line-and-line-ends"),
     );
     expect(composeProtrusion(latinProtrusion, null, "none")).toEqual(
       composeProtrusion(latinProtrusion, null, false),
@@ -132,7 +139,7 @@ describe("composeProtrusion (hanging-punctuation scoping)", () => {
     const { rest, first } = composeProtrusion(
       latinProtrusion,
       { "“": { l: 123 } },
-      "first-line",
+      "first-line-and-line-ends",
     );
     expect(rest["“"]).toEqual({ l: 123 });
     expect(first["“"]).toEqual({ l: 123 });

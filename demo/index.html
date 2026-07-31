@@ -655,6 +655,7 @@
   /* The closest native hanging counterpart where the browser supports it
      (Safari), synced to the selected justif mode by syncHangPunct(). */
   body.native-hang-end .native p { hanging-punctuation: force-end; }
+  body.native-hang-first .native p { hanging-punctuation: first force-end; }
   body.native-hang-all .native p {
     hanging-punctuation: first force-end last;
   }
@@ -1069,6 +1070,7 @@
       <select id="hangpunct">
         <option value="none">none</option>
         <option value="line-end-only" selected>line ends only</option>
+        <option value="first-line-and-line-ends">line ends + first line start</option>
         <option value="all-line-edges">all line edges</option>
       </select></label>
   </div>
@@ -2898,10 +2900,8 @@ await controller.ready;</code></pre>
       // Normalize values saved by the released, pre-redesign demo.
       if (saved.hangpunct === "off") saved.hangpunct = "none";
       if (saved.hangpunct === "line-ends") saved.hangpunct = "line-end-only";
+      if (saved.hangpunct === "first-line") saved.hangpunct = "first-line-and-line-ends";
       if (saved.hangpunct === "all-lines") saved.hangpunct = "all-line-edges";
-      // The demo no longer advertises the legacy first-line policy. Preserve
-      // its line-end behavior with the smallest change at line starts.
-      if (saved.hangpunct === "first-line") saved.hangpunct = "line-end-only";
       for (const id of PARAM_IDS) {
         const el = document.getElementById(id);
         if (el === null || !(id in saved)) continue;
@@ -3680,6 +3680,10 @@ await controller.ready;</code></pre>
     document.body.classList.toggle(
       "native-hang-end",
       mode === "line-end-only",
+    );
+    document.body.classList.toggle(
+      "native-hang-first",
+      mode === "first-line-and-line-ends",
     );
     document.body.classList.toggle(
       "native-hang-all",

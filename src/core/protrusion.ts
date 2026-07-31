@@ -174,10 +174,11 @@ export const latinProtrusion: ProtrusionTable = {
  * CSS `hanging-punctuation`: quotes hang entirely outside the measure at
  * line starts, stops and quotes hang entirely at line ends (brackets do
  * not — see below). `hangingPunctuation` can apply its RIGHT codes only
- * (`"line-end-only"`) or both sides on every line (`"all-line-edges"`), and
- * retains the older `"first-line"` paragraph-opener policy for compatibility.
- * This table may also be passed directly as `protrusion`, where it acts as a
- * user override table rather than selecting a hanging policy.
+ * (`"line-end-only"`), those plus the paragraph opener's LEFT code — the CSS
+ * `first` model (`"first-line-and-line-ends"`) — or both sides on every line
+ * (`"all-line-edges"`). This table may also be passed directly as `protrusion`,
+ * where it acts as a user override table rather than selecting a hanging
+ * policy.
  *
  * A mark's hang depth belongs to the character, never to where its line
  * falls in the paragraph (see #14): two depths for one mark inside a
@@ -209,20 +210,40 @@ export const hangingPunctuation: ProtrusionTable = {
 };
 
 /**
- * Full-hanging policy layered over the selected protrusion model.
- * `"first-line"` and `"all-lines"` are the original public spellings and
- * remain supported for compatibility.
+ * Full-hanging policy layered over the selected protrusion model. Each name
+ * says which line edges hang fully, in increasing order.
+ *
+ * `"first-line"` and `"all-lines"` are the original spellings of
+ * `"first-line-and-line-ends"` and `"all-line-edges"`, and remain supported.
  */
 export type HangingPunctuationMode =
   | false
   | "none"
   | "line-end-only"
+  | "first-line-and-line-ends"
   | "all-line-edges"
   | "first-line"
   | "all-lines";
 
+/** Canonical policy for any accepted spelling, with `false` folded into
+ * `"none"` — the two have always meant the same thing. */
+export function normalizeHangingPunctuation(
+  hang: HangingPunctuationMode,
+): Exclude<HangingPunctuationMode, false | "first-line" | "all-lines"> {
+  switch (hang) {
+    case false:
+      return "none";
+    case "first-line":
+      return "first-line-and-line-ends";
+    case "all-lines":
+      return "all-line-edges";
+    default:
+      return hang;
+  }
+}
+
 /** Line-start codes that set the full-hang characters FLUSH — the treatment
- * the legacy "first-line" mode gives every line after the first. */
+ * "first-line-and-line-ends" gives every line after the paragraph's first. */
 const flushStarts: ProtrusionTable = Object.fromEntries(
   Object.entries(hangingPunctuation)
     .filter(([, codes]) => codes.l !== undefined)
@@ -256,16 +277,16 @@ export function composeProtrusion(
   user: ProtrusionTable | null,
   hang: HangingPunctuationMode,
 ): { rest: ProtrusionTable; first: ProtrusionTable } {
-  const mode = hang === "all-lines" ? "all-line-edges" : hang;
+  const mode = normalizeHangingPunctuation(hang);
   let rest = base;
   let first = base;
-  if (mode !== false && mode !== "none") {
+  if (mode !== "none") {
     rest = applySide(base, hangingPunctuation, "r");
     first = rest;
     if (mode !== "line-end-only") {
       first = applySide(rest, hangingPunctuation, "l");
       if (mode === "all-line-edges") rest = first;
-      // The legacy first-line mode hangs the opener, then sets these marks
+      // "first-line-and-line-ends" hangs the opener, then sets these marks
       // FLUSH at later line starts. Leaving them at their partial optical
       // depth would show one mark at two depths (#14).
       else rest = applySide(rest, flushStarts, "l");

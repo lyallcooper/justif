@@ -40,7 +40,8 @@ export type CssProperty = (typeof CSS_PROPERTIES)[number];
  * only ever reports values that are the right TYPE but out of range.
  */
 export const PROPERTY_SYNTAX: Readonly<Record<CssProperty, string>> = {
-  "--justif-hanging-punctuation": "auto | line-end-only | all-line-edges | none",
+  "--justif-hanging-punctuation":
+    "auto | line-end-only | first-line-and-line-ends | all-line-edges | none",
   "--justif-protrusion": "auto | none",
   "--justif-expansion": "auto | none | <percentage> | <number>",
   "--justif-tracking": "auto | none | <percentage> | <number>",
@@ -116,9 +117,14 @@ function parseOne(
   }
 
   if (property === "--justif-hanging-punctuation") {
-    // The legacy "first-line" and "all-lines" spellings are deliberately absent:
-    // a new surface should not carry a deprecated policy forward.
-    if (raw === "line-end-only" || raw === "all-line-edges") {
+    // Canonical spellings only: the older "first-line" and "all-lines" names
+    // stay a JavaScript-API compatibility matter, since one policy with two
+    // spellings here would also mean two configurations to group by.
+    if (
+      raw === "line-end-only" ||
+      raw === "first-line-and-line-ends" ||
+      raw === "all-line-edges"
+    ) {
       return raw === layoutDefaults.hangingPunctuation
         ? "default"
         : { options: { hangingPunctuation: raw }, keyPart: raw };
