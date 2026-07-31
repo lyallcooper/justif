@@ -97,6 +97,37 @@ describe("composeProtrusion (hanging-punctuation scoping)", () => {
     );
   });
 
+  it("composes over an EMPTY base: flush glyphs, hanging marks", () => {
+    // `protrusion: false` with hanging left on. The model contributes no base
+    // table, so the only entries are the hang overlay's own: ordinary glyphs
+    // sit exactly flush while the eligible marks still hang.
+    const { rest, first } = composeProtrusion({}, null, "line-end-only");
+    expect(first).toBe(rest);
+    expect(rest[","]).toEqual({ r: 1000 });
+    expect(rest["“"]).toEqual({ r: 1000 });
+    // Nothing the hang overlay does not name — no optical alignment at all.
+    expect(rest.T).toBeUndefined();
+    expect(rest["—"]).toBeUndefined();
+    expect(rest["?"]).toBeUndefined();
+    // Brackets are not full-hang characters, and with no base they get nothing.
+    expect(rest["("]).toBeUndefined();
+  });
+
+  it("empty base, all-line-edges: marks hang on both sides and nothing else does", () => {
+    const { rest, first } = composeProtrusion({}, null, "all-line-edges");
+    expect(first).toBe(rest);
+    expect(rest["“"]).toEqual({ l: 1000, r: 1000 });
+    expect(rest[","]).toEqual({ r: 1000 });
+    expect(rest.T).toBeUndefined();
+  });
+
+  it("empty base with hanging off composes nothing at all", () => {
+    // The fourth state: strictly flush. resolveOptions skips composition
+    // entirely here, but the composition itself must also be empty.
+    expect(composeProtrusion({}, null, "none").rest).toEqual({});
+    expect(composeProtrusion({}, null, false).rest).toEqual({});
+  });
+
   it("user overrides beat the hang overlays in both tables", () => {
     const { rest, first } = composeProtrusion(
       latinProtrusion,

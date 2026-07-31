@@ -42,6 +42,7 @@ test("10k-word document enhances within budget", async ({ page }) => {
     const c1 = j.justify(host.querySelectorAll("p"), {
       hyphenate: j.hyphenateEnUS,
       protrusion: false,
+      hangingPunctuation: "none",
     });
     await c1.ready;
     const cold = performance.now() - t0;

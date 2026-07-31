@@ -8,6 +8,11 @@
   supported but deprecated. See the
   [README](https://github.com/lyallcooper/justif#protrusion-and-hanging-punctuation)
   for more details.
+- **Behavior change**: `protrusion: false` no longer switches off hanging
+  punctuation as well. The two settings are independent, so you can set ordinary
+  letters exactly flush while quotes and stops still hang into the margin — a
+  combination that previously had no expression. To keep the earlier rendering,
+  pass `hangingPunctuation: "none"` alongside `protrusion: false`.
 - Optical margin alignment now measures each font's letterforms instead of
   relying on a hard-coded table. This allows for great alignment for any
   arbitrary font you use with Justif. See the

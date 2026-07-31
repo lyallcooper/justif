@@ -618,6 +618,10 @@ test("protrusion off keeps the technical sample's 13em code halo inside", async 
     el.value = "13";
     el.dispatchEvent(new Event("input", { bubbles: true }));
   });
+  // Hanging punctuation is independent of protrusion, so switching protrusion
+  // off no longer implies flush line ends: this test wants every optical margin
+  // effect off, which is now two controls.
+  await page.selectOption("#hangpunct", "none");
   await page.locator("#protrusion").uncheck();
   await page.waitForFunction(() => {
     const code = [...document.querySelectorAll<HTMLElement>("#enhanced code")].find((el) =>

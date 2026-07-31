@@ -125,7 +125,9 @@ export interface JustifyOptions {
   /**
    * Character protrusion model. `true` (the default) measures each font's
    * glyph-specific optical alignment by rasterizing its glyphs. `false`
-   * disables character protrusion.
+   * disables character protrusion — and only that: `hangingPunctuation` is an
+   * independent setting, so `false` with hanging left on sets ordinary glyphs
+   * exactly flush while the eligible marks still hang.
    *
    * An object selects the fixed table-backed model and supplies
    * per-character overrides, in thousandths of the character's own advance.
@@ -142,10 +144,14 @@ export interface JustifyOptions {
    */
   protrusion?: boolean | ProtrusionTable;
   /**
-   * Full-hanging policy layered over `protrusion`. `"line-end-only"` (the
+   * Full-hanging policy, independent of `protrusion`. `"line-end-only"` (the
    * default) fully hangs eligible punctuation at line ends while line starts
    * retain optical alignment. `"all-line-edges"` fully hangs it at every line
    * edge; `"none"` applies only the selected protrusion model.
+   *
+   * Hanging is composed as a protrusion overlay, but the two settings switch
+   * separately: with `protrusion: false` the overlay composes over an empty
+   * base, and with `"none"` the protrusion model applies alone.
    *
    * Compatibility: `true` selects the new default; `false` selects `"none"`;
    * `"all-lines"` aliases `"all-line-edges"`; and `"first-line"` retains the
@@ -411,7 +417,11 @@ interface ResolvedOptions {
   spacing: Required<NonNullable<JustifyOptions["spacing"]>>;
   /** Per-run protrusion resolution context for `buildRunMetrics`. */
   protrusionCtx: {
+    /** Anything to compose at all: the model is on, or marks hang, or both. */
     enabled: boolean;
+    /** The protrusion model contributes a base table (`protrusion !== false`).
+     * With it off, hang overlays compose over an empty base. */
+    model: boolean;
     measured: boolean;
     user: ProtrusionTable | null;
     hang: HangingPunctuationMode;
@@ -449,13 +459,21 @@ function resolveOptions(options: JustifyOptions): ResolvedOptions {
         : requestedHang === "all-lines"
           ? "all-line-edges"
           : requestedHang;
-  const protrusionEnabled = options.protrusion !== false;
+  // The protrusion MODEL and full hanging are independent settings, even
+  // though hanging is implemented as a protrusion overlay: `protrusion: false`
+  // removes the model's base table, and the hang overlay then composes over an
+  // empty one. That state — ordinary glyphs exactly flush, eligible marks
+  // hanging — is a real typographic choice, and the only way to reject a
+  // font's measured optical alignment without also losing hanging quotes.
+  const protrusionModel = options.protrusion !== false;
+  // `hangMode` is already normalized: the `false` spelling became "none" above.
+  const hanging = hangMode !== "none";
   const measuredProtrusion =
     options.protrusion === undefined || options.protrusion === true;
   const composed =
-    !protrusionEnabled
+    !protrusionModel && !hanging
       ? null
-      : composeProtrusion(latinProtrusion, protrusionUser, hangMode);
+      : composeProtrusion(protrusionModel ? latinProtrusion : {}, protrusionUser, hangMode);
   const protrusion: ProtrusionTable | false = composed === null ? false : composed.rest;
   const protrusionFirst =
     composed !== null && composed.first !== composed.rest ? composed.first : undefined;
@@ -509,6 +527,7 @@ function resolveOptions(options: JustifyOptions): ResolvedOptions {
     spacing,
     protrusionCtx: {
       enabled: composed !== null,
+      model: protrusionModel,
       measured: measuredProtrusion,
       user: protrusionUser,
       hang: hangMode,

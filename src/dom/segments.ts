@@ -140,6 +140,9 @@ export function runTexts(scan: ParagraphScan): RunText[] {
  */
 interface ProtrusionSettings {
   enabled: boolean;
+  /** The protrusion model contributes a base table. With it off, the hang
+   * overlays compose over an empty base: flush glyphs, hanging marks. */
+  model: boolean;
   measured: boolean;
   user: ProtrusionTable | null;
   hang: HangingPunctuationMode;
@@ -206,12 +209,19 @@ function composedForFamily(
   // overrides. Besides being an escape hatch for faces where hand tuning wins,
   // this avoids canvas pixel readback and keeps the chosen values stable across
   // browser engines.
-  const fontTable = fontProtrusion(family);
-  const measured = settings.measured ? opticalProtrusion(spec) : undefined;
-  const base =
-    measured !== undefined
-      ? { ...unmeasuredProtrusion(), ...measured }
-      : { ...latinProtrusion, ...fontTable };
+  //
+  // With the model off (`protrusion: false`) there is no base at all: only the
+  // hang overlays land, so ordinary glyphs sit exactly flush while the eligible
+  // marks still hang. Nothing here measures in that case — the raster pass is
+  // the model's, and skipping it is most of what `protrusion: false` buys.
+  let base: ProtrusionTable = {};
+  if (settings.model) {
+    const measured = settings.measured ? opticalProtrusion(spec) : undefined;
+    base =
+      measured !== undefined
+        ? { ...unmeasuredProtrusion(), ...measured }
+        : { ...latinProtrusion, ...fontProtrusion(family) };
+  }
   const composed = composeProtrusion(base, settings.user, settings.hang);
   const tables: ComposedTables = {
     rest: composed.rest,

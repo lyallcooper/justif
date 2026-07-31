@@ -1066,14 +1066,11 @@
       </span>
     </label>
     <label class="hang-control">hang punctuation
-      <button id="hangpunct-info" class="info" type="button" popovertarget="hangpunct-note"
-        aria-label="Why is hanging punctuation disabled?" hidden>i</button>
       <select id="hangpunct">
         <option value="none">none</option>
         <option value="line-end-only" selected>line ends only</option>
         <option value="all-line-edges">all line edges</option>
       </select></label>
-    <div id="hangpunct-note" popover></div>
   </div>
   <b>compare</b>
   <div class="control-items compare-controls">
@@ -3177,11 +3174,14 @@ await controller.ready;</code></pre>
     // Lines whose content sticks out past the margin BEYOND the negative
     // logical margin justif actually emitted (plus 2px rounding/wrap slack).
     // Reading rendered styles keeps this detector accurate for measured,
-    // table-backed, custom, and full-hanging values alike. The browser column
+    // table-backed, custom, and full-hanging values alike — which is also why
+    // it must not be gated on the protrusion checkbox: hanging punctuation is
+    // independent of it, so protrusion-off paragraphs still emit hangs, and
+    // reporting them as overfull would be a false positive. The browser column
     // gets no allowance: any real crossing there is overflow.
     const enhancedColumn = article === enhanced;
     const rightAllowance = (box, paragraph) => {
-      if (!enhancedColumn || !$("protrusion").checked) return 0;
+      if (!enhancedColumn) return 0;
       const property =
         getComputedStyle(paragraph).direction === "rtl"
           ? "marginInlineStart"
@@ -3673,13 +3673,10 @@ await controller.ready;</code></pre>
       lastlineLiveApply();
     });
   }
+  // Hanging punctuation is independent of optical protrusion: with protrusion
+  // off and hanging on, ordinary glyphs sit flush and only the marks hang.
   function syncHangPunct() {
-    const off = !$("protrusion").checked;
-    $("hangpunct").disabled = off;
-    $("hangpunct-info").hidden = !off;
-    $("hangpunct-note").textContent =
-      "Hanging punctuation requires protrusion. Enable optical protrusion to use it.";
-    const mode = off ? "none" : $("hangpunct").value;
+    const mode = $("hangpunct").value;
     document.body.classList.toggle(
       "native-hang-end",
       mode === "line-end-only",
@@ -3689,7 +3686,6 @@ await controller.ready;</code></pre>
       mode === "all-line-edges",
     );
   }
-  $("protrusion").addEventListener("change", syncHangPunct);
   let sampleGeneration = 0;
   $("sample").addEventListener("change", async () => {
     const generation = ++sampleGeneration;
@@ -3879,7 +3875,6 @@ await controller.ready;</code></pre>
   // their (i) buttons instead (clamped to the viewport).
   for (const [btnId, popId] of [
     ["expansion-info", "expansion-note"],
-    ["hangpunct-info", "hangpunct-note"],
     ["width-info", "width-note"],
   ]) {
     $(popId).addEventListener("toggle", (e) => {

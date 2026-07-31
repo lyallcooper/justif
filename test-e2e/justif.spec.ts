@@ -210,7 +210,7 @@ test("enhances paragraphs into inline nowrap segments", async ({ page }) => {
 });
 
 test("justified lines end flush within 0.5px (no protrusion/expansion)", async ({ page }) => {
-  await enhance(page, { hyphenate: true, protrusion: false, expansion: false });
+  await enhance(page, { hyphenate: true, protrusion: false, hangingPunctuation: "none", expansion: false });
   const paragraphs = await readGeometry(page);
   expect(paragraphs.length).toBe(2);
   for (const para of paragraphs) {
@@ -265,6 +265,7 @@ test("equal-width multicolumn fragments are set against their own LTR and RTL ed
       expansion: false,
       tracking: false,
       protrusion: false,
+      hangingPunctuation: "none",
       lastLineMinWidth: 0,
       observeResize: false,
     });
@@ -342,6 +343,7 @@ test("column migration needs no re-layout, while a column-width resize does", as
       expansion: false,
       tracking: false,
       protrusion: false,
+      hangingPunctuation: "none",
       lastLineMinWidth: 0,
       onRelayout: (paragraph: HTMLElement) => {
         paragraph.dataset.relayouts = String(Number(paragraph.dataset.relayouts) + 1);
@@ -1232,6 +1234,7 @@ test("lastLineMinWidth: 1 justifies paragraph endings flush (rectangular paragra
   await enhance(page, {
     hyphenate: true,
     protrusion: false,
+    hangingPunctuation: "none",
     expansion: false,
     lastLineMinWidth: 0,
   });
@@ -1249,6 +1252,7 @@ test("lastLineMinWidth: 1 justifies paragraph endings flush (rectangular paragra
   await enhance(page, {
     hyphenate: true,
     protrusion: false,
+    hangingPunctuation: "none",
     expansion: false,
     lastLineMinWidth: 1,
     spacing: { stretch: 1, shrink: 1 / 3 },
@@ -1299,6 +1303,7 @@ test("one-line elements stay native unless full-width justification is requested
     const unreachableBefore = unreachable.outerHTML;
     const opts = {
       protrusion: false,
+      hangingPunctuation: "none",
       expansion: false,
       tracking: false,
       spacing: { stretch: 1, shrink: 1 / 3 },
@@ -1359,6 +1364,7 @@ test("one-line native elements promote and demote as their measure changes", asy
     let relayouts = 0;
     const controller = window.__justif.justify(p, {
       protrusion: false,
+      hangingPunctuation: "none",
       expansion: false,
       onRelayout: () => relayouts++,
     });
@@ -1445,6 +1451,7 @@ test("lastLineMinWidth never renders a shorter ending than OFF (real-text sweep)
       const ctl = window.__justif.justify(p, {
         hyphenate: window.__justif.hyphenateEnUS,
         protrusion: false,
+        hangingPunctuation: "none",
         expansion: false,
         ...opts,
       });
@@ -1602,6 +1609,7 @@ test("hard breaks retain native structure, empty lines, and trailing-break heigh
       expansion: false,
       tracking: false,
       protrusion: false,
+      hangingPunctuation: "none",
       lastLineMinWidth: 0,
     });
     await ctl.ready;
@@ -1880,6 +1888,7 @@ test("a leading hard break consumes first-line indentation", async ({ page }) =>
       expansion: false,
       tracking: false,
       protrusion: false,
+      hangingPunctuation: "none",
       lastLineMinWidth: 0,
     });
     await ctl.ready;
@@ -1917,6 +1926,7 @@ test("hard-break paragraphs re-layout on resize without losing their breaks", as
       expansion: false,
       tracking: false,
       protrusion: false,
+      hangingPunctuation: "none",
       lastLineMinWidth: 0,
     });
     await j.controller.ready;
@@ -2028,6 +2038,7 @@ test("text-align-last justify sets every hard-terminated segment as a rectangle"
       expansion: false,
       tracking: false,
       protrusion: false,
+      hangingPunctuation: "none",
       lastLineMinWidth: 0,
     });
     await ctl.ready;
@@ -2064,7 +2075,7 @@ test("padded inline chips justify flush, and the padding actually renders", asyn
       'state files, and the <code style="font-family: \'Courier New\'; padding: 0 6px">config.toml</code> file besides holds ' +
       "every option the tool understands, written plainly for people.";
     document.getElementById("host")!.append(p);
-    const ctl = window.__justif.justify(p, { protrusion: false, expansion: false });
+    const ctl = window.__justif.justify(p, { protrusion: false, hangingPunctuation: "none", expansion: false });
     await ctl.ready;
   });
   await waitForQuiescence(page, "#chipflush");
@@ -2135,6 +2146,7 @@ test("spaces at font-family boundaries never shrink below natural width", async 
         "recorded state of the machinery, and everything else follows from it plainly.";
       const ctl = window.__justif.justify(p, {
         protrusion: false,
+        hangingPunctuation: "none",
         expansion: false,
         tracking: false,
       });
@@ -2201,7 +2213,7 @@ test("white-space: nowrap inline elements never break across lines", async ({ pa
       p.innerHTML =
         'Press <kbd style="font-family: \'Courier New\'; white-space: nowrap; padding: 0 3px">ctrl shift comma</kbd> or else ' +
         "choose from among the common options offered in the menu just below it.";
-      const ctl = window.__justif.justify(p, { protrusion: false, expansion: false });
+      const ctl = window.__justif.justify(p, { protrusion: false, hangingPunctuation: "none", expansion: false });
       await ctl.ready;
       const kbd = p.querySelector("kbd")!;
       const range = document.createRange();
@@ -2227,7 +2239,7 @@ test("a padded element breaking across lines keeps slice semantics and flush lin
       'The phrase <span style="padding: 0 5px; background: #eee">wraps across several rendered ' +
       "lines happily</span> while the paragraph itself keeps every full line flush at the margin.";
     document.getElementById("host")!.append(p);
-    const ctl = window.__justif.justify(p, { protrusion: false, expansion: false });
+    const ctl = window.__justif.justify(p, { protrusion: false, hangingPunctuation: "none", expansion: false });
     await ctl.ready;
   });
   await waitForQuiescence(page, "#slicepad");
@@ -2767,7 +2779,7 @@ test("handles arbitrary font variants and feature settings", async ({ page }) =>
         "An afflicted official fills office 1927 efficiently. Historical figures 314159 " +
         "repeat with difficult affiliations and enough varied prose to wrap over many lines.";
       document.getElementById("host")!.append(p);
-      const ctl = j.justify(p, { expansion: false, tracking: false, protrusion: false });
+      const ctl = j.justify(p, { expansion: false, tracking: false, protrusion: false, hangingPunctuation: "none" });
       await ctl.ready;
       const enhanced = p.hasAttribute("data-justif");
       let worst = Infinity;
@@ -2833,7 +2845,7 @@ test("tracking preserves an author's ligature and low-level feature choices", as
 });
 
 test("letterfit tracking applies letter-spacing yet lines stay flush", async ({ page }) => {
-  await enhance(page, { hyphenate: true, protrusion: false, expansion: false, tracking: true });
+  await enhance(page, { hyphenate: true, protrusion: false, hangingPunctuation: "none", expansion: false, tracking: true });
   const paragraphs = await readGeometry(page);
   for (const para of paragraphs) {
     for (const line of para.lines) {
@@ -3051,6 +3063,7 @@ test("protrusion: false keeps a line-start halo inside the measure", async ({ pa
     document.getElementById("host")!.append(p);
     const ctl = window.__justif.justify(p, {
       protrusion: false,
+      hangingPunctuation: "none",
       expansion: false,
       tracking: false,
     });
@@ -3250,6 +3263,50 @@ test("hangingPunctuation preset hangs stops fully past the margin", async ({ pag
   }
 });
 
+/**
+ * `protrusion: false` switches off the protrusion MODEL, not hanging: the hang
+ * overlay composes over an empty base, so the eligible marks still hang their
+ * own depth while ordinary glyphs sit exactly flush. That state is the only way
+ * to reject a font's measured optical alignment without losing hanging quotes,
+ * and it was unreachable while the two settings were entangled.
+ */
+test("protrusion off still hangs marks, with ordinary glyphs flush", async ({ page }) => {
+  await enhance(page, {
+    hyphenate: true,
+    protrusion: false,
+    hangingPunctuation: "line-end-only",
+    expansion: false,
+  });
+  const paragraphs = await readGeometry(page);
+  const advances = await page.evaluate(() => {
+    const ctx = document.createElement("canvas").getContext("2d")!;
+    ctx.font = "17px Georgia, serif";
+    return { ",": ctx.measureText(",").width, ".": ctx.measureText(".").width };
+  });
+  const lines = paragraphs.flatMap((p) =>
+    p.lines.map((l) => ({ ...l, contentRight: p.contentRight })),
+  );
+  const punctuated = lines.filter((l) => !l.last && /[.,]$/.test(l.text.trim()));
+  const lettered = lines.filter((l) => !l.last && /\p{L}$/u.test(l.text.trim()));
+  expect(punctuated.length).toBeGreaterThan(0);
+  expect(lettered.length).toBeGreaterThan(0);
+  // The marks hang by their own advance, exactly as with the model on.
+  for (const line of punctuated) {
+    const expected = advances[line.text.trim().slice(-1) as "," | "."];
+    const overhang = line.right - line.contentRight;
+    expect(overhang, `"${line.text.slice(0, 40)}"`).toBeGreaterThan(0.85 * expected);
+    expect(overhang, `"${line.text.slice(0, 40)}"`).toBeLessThan(expected + 1.5);
+  }
+  // Letters get NO optical protrusion: with the model off they are flush, which
+  // is what distinguishes this from the default configuration.
+  for (const line of lettered) {
+    expect(
+      Math.abs(line.right - line.contentRight),
+      `"${line.text.slice(0, 40)}"`,
+    ).toBeLessThan(0.5);
+  }
+});
+
 test("protrusion and hanging policies resolve with their compatibility aliases", async ({
   page,
 }) => {
@@ -3329,7 +3386,12 @@ test("protrusion and hanging policies resolve with their compatibility aliases",
   expectEquivalent(result.trueMode, result.defaultMode);
   expectEquivalent(result.hangingTrue, result.defaultMode);
   expectEquivalent(result.hangingFalse, result.noFullHang);
-  expectEquivalent(result.protrusionOff, result.protrusionOffNoHang);
+  // NOT equivalent any more: protrusion off leaves hanging on, and the two
+  // differ wherever a line ends in a hanging mark. Whether this fixture's
+  // breaks land on one is incidental, so the semantics are asserted by
+  // "protrusion off still hangs marks, with ordinary glyphs flush" above
+  // rather than by comparing these two snapshots here.
+  expect(result.protrusionOffNoHang.length).toBeGreaterThan(2);
   expectEquivalent(result.oldAllLines, result.allEdges);
   // The original first-line spelling remains a distinct, supported policy:
   // full opener on line 0, line-end hangs throughout, and flush later starts.
@@ -3685,7 +3747,7 @@ test("hyphens: none is honored on a run whose typography matches its paragraph",
 });
 
 test("find-in-page matches phrases across line breaks", async ({ page }) => {
-  await enhance(page, { hyphenate: true, protrusion: false, expansion: false });
+  await enhance(page, { hyphenate: true, protrusion: false, hangingPunctuation: "none", expansion: false });
   const result = await page.evaluate(() => {
     // Build a cross-line phrase from rendered geometry: last word of line 1
     // + first word of line 2 of p1. __justifLines orders each line's texts
@@ -3788,6 +3850,7 @@ test("coalesces JSX-style literal-space text nodes", async ({ page }) => {
     const controller = window.__justif.justify(paragraphs, {
       expansion: false,
       protrusion: false,
+      hangingPunctuation: "none",
     });
     await controller.ready;
     return paragraphs.map((p) => ({
@@ -3821,7 +3884,7 @@ test("coalesces JSX-style literal-space text nodes", async ({ page }) => {
 });
 
 test("selection across a line break copies a space, not a newline", async ({ page }) => {
-  await enhance(page, { hyphenate: true, protrusion: false });
+  await enhance(page, { hyphenate: true, protrusion: false, hangingPunctuation: "none" });
   const copied = await page.evaluate(() => {
     const p = document.getElementById("p1")!;
     const range = document.createRange();
@@ -3990,6 +4053,7 @@ test("text autosizing is disabled before scanning and author styles are restored
     try {
       controller = window.__justif.justify([p, skipped], {
         protrusion: false,
+        hangingPunctuation: "none",
         expansion: false,
         onSkip(el: HTMLElement) {
           if (el === skipped) skippedStyleSeenByCallback = el.getAttribute("style");
@@ -4105,7 +4169,7 @@ test("enhances paragraphs inside shadow DOM (rules reach the shadow root)", asyn
     // Flush is asserted, so no protrusion/expansion (hangs are legitimate
     // deviations), and the deferred wrap-guarantee corrections must settle:
     // poll until the paragraph's DOM is stable across two 120ms samples.
-    const c = window.__justif.justify(p, { protrusion: false, expansion: false });
+    const c = window.__justif.justify(p, { protrusion: false, hangingPunctuation: "none", expansion: false });
     await c.ready;
     let last = p.innerHTML;
     for (let i = 0; i < 16; i++) {
@@ -4236,6 +4300,7 @@ test("unicode-range subset fonts are awaited and converge without refresh()", as
     const t0 = performance.now();
     const ctl = window.__justif.justify(p, {
       protrusion: false,
+      hangingPunctuation: "none",
       expansion: false,
       onRelayout: () => relayouts++,
     });
@@ -4337,10 +4402,10 @@ test("destroy() before font convergence does not poison later controllers", asyn
     p.textContent =
       "Η στοίχιση του κειμένου απαιτεί ακριβείς μετρήσεις των γλυφών, και οι μετρήσεις πρέπει να γίνονται στη γραμματοσειρά που πράγματι αποδίδεται στην οθόνη, αλλιώς οι γραμμές δεν γεμίζουν το πλάτος της στήλης.";
     document.getElementById("host")!.append(p);
-    const first = window.__justif.justify(p, { protrusion: false, expansion: false });
+    const first = window.__justif.justify(p, { protrusion: false, hangingPunctuation: "none", expansion: false });
     first.destroy(); // face still in flight
     await document.fonts.load('18px "GreekLate"', "γλ");
-    const ctl = window.__justif.justify(p, { protrusion: false, expansion: false });
+    const ctl = window.__justif.justify(p, { protrusion: false, hangingPunctuation: "none", expansion: false });
     await ctl.ready;
     const g = window.__justifLines(p);
     const maxDev = Math.max(
@@ -4382,7 +4447,7 @@ test("justify() is idempotent and foreign controllers don't hijack state", async
 });
 
 test("resize re-layouts through the ResizeObserver fast path", async ({ page }) => {
-  await enhance(page, { hyphenate: true, protrusion: false, expansion: false });
+  await enhance(page, { hyphenate: true, protrusion: false, hangingPunctuation: "none", expansion: false });
   const before = await readGeometry(page);
   await page.evaluate(() => {
     document.getElementById("host")!.style.width = "340px";
@@ -4418,6 +4483,7 @@ test("observeResize:false applies wrap-guarantee corrections before returning", 
     j.controller = j.justify(document.querySelectorAll("#host p"), {
       hyphenate: j.hyphenateEnUS,
       protrusion: false,
+      hangingPunctuation: "none",
       expansion: false,
       observeResize: false,
     });
@@ -4451,7 +4517,7 @@ test("refresh() during queued corrections does not strand stale entries", async 
   // re-patch, clobber the fresh entries, and re-park forever (detached nodes
   // measure all-zero rects, classifying as "hidden") — poisoning the
   // correction queue for every later resize.
-  await enhance(page, { hyphenate: true, protrusion: false, expansion: false });
+  await enhance(page, { hyphenate: true, protrusion: false, hangingPunctuation: "none", expansion: false });
   await waitForQuiescence(page);
   await page.evaluate(async () => {
     const host = document.getElementById("host")!;
@@ -4559,7 +4625,7 @@ test("Japanese: multiple flush lines, bare zero-width joints, space-free copies"
   const r = await page.evaluate(async () => {
     const p = document.getElementById("pja")!;
     const original = p.textContent!;
-    const ctl = window.__justif.justify(p, { protrusion: false, expansion: false });
+    const ctl = window.__justif.justify(p, { protrusion: false, hangingPunctuation: "none", expansion: false });
     await ctl.ready;
     const enhanced = p.hasAttribute("data-justif");
     const g = window.__justifLines(p);
@@ -4605,7 +4671,7 @@ test("Japanese: multiple flush lines, bare zero-width joints, space-free copies"
 test("Japanese: kinsoku characters never start or end a rendered line", async ({ page }) => {
   const lines = await page.evaluate(async () => {
     const p = document.getElementById("pja")!;
-    const ctl = window.__justif.justify(p, { protrusion: false, expansion: false });
+    const ctl = window.__justif.justify(p, { protrusion: false, hangingPunctuation: "none", expansion: false });
     await ctl.ready;
     return window.__justifLines(p).lines.map((l) => l.texts.join(""));
   });
@@ -4730,6 +4796,7 @@ test("RTL hard-break paragraphs preserve direction and forced endings", async ({
       expansion: false,
       tracking: false,
       protrusion: false,
+      hangingPunctuation: "none",
       lastLineMinWidth: 0,
     });
     await j.controller.ready;
@@ -4763,7 +4830,7 @@ test("RTL paragraphs justify with lines flush at both edges", async ({ page }) =
   // hyphenate passed on purpose: it must be ignored for RTL paragraphs.
   await enhance(
     page,
-    { hyphenate: true, protrusion: false, expansion: false },
+    { hyphenate: true, protrusion: false, hangingPunctuation: "none", expansion: false },
     "#rtl-host p",
   );
   for (const id of ["rtl-he", "rtl-ar"]) {
@@ -4800,7 +4867,7 @@ test("expansion self-disables on RTL fallback glyphs (script-aware calibration)"
     await document.fonts.load("17px Junicode");
     await document.fonts.ready;
   });
-  await enhance(page, { protrusion: false }, "#rtl-vf p"); // expansion: library default (ON)
+  await enhance(page, { protrusion: false, hangingPunctuation: "none" }, "#rtl-vf p"); // expansion: library default (ON)
   const g = await readRtlGeometry(page, "rtl-vf-he");
   expect(g.enhanced).toBe(true);
   expect(g.lines.length).toBeGreaterThan(3);
@@ -4847,7 +4914,7 @@ test("RTL protrusion hangs line-end punctuation past the LEFT edge", async ({ pa
 });
 
 test("mixed-direction paragraphs bail to native rendering", async ({ page }) => {
-  await enhance(page, { protrusion: false }, "#rtl-host p");
+  await enhance(page, { protrusion: false, hangingPunctuation: "none" }, "#rtl-host p");
   // Hebrew + English in one dir="rtl" paragraph: untouched.
   const mixed = await page.evaluate(() => {
     const p = document.getElementById("rtl-mixed")!;
