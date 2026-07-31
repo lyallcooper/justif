@@ -266,21 +266,18 @@ blockquote {
 }
 ```
 
-Values are ordinary CSS rather than the JavaScript spellings: percentages
-instead of fractions, `none` to switch a feature off, and `auto` for the
-default, which lets a section opt back in. One percentage covers both directions
-of `--justif-expansion` and `--justif-tracking`; asymmetric limits, step size and
-the secondary-font spacing controls need the JavaScript API. An invalid value is
-ignored and the default applies — `data-justif-debug` reports those, along with
-misspelled property names.
+Use `none` to switch off a feature and `auto` to set it back to the default.
+Invalid values are ignored and the default applies. One value covers both
+directions for `--justif-expansion` and `--justif-tracking`—use the JavaScript
+API for more advanced configuration.
 
-Changes take effect on their own, whether they come from a media query, a
-container query, a theme toggle, or a script. Two exceptions leave the
-configuration as it was when the page loaded: browsers older than Safari 17.4,
-Chrome 117, or Firefox 129, and paragraphs where you have declared your own
-`transition`, which Justif will not replace — add the `--justif-*` properties to
-that declaration to keep both. `window.justif.reconfigure()` applies a change by
-hand in either case.
+Justif automatically watches for changes to the CSS and updates accordingly,
+with some restrictions. Older browsers (older than Chrome 117, Safari 17.4,
+Firefox 129) won't update automatically. And paragraphs that have their own
+`transition` property but don't declare the `--justif-*` property in question
+will also not be updated, since Justif uses transitions internally to track
+updates. In either case you can use `window.justif.reconfigure()` to apply
+changes manually as needed.
 
 ### Protrusion and hanging punctuation
 
