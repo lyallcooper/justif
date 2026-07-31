@@ -89,61 +89,9 @@ To limit the automatic scan, add a `data-justif-selector` such as `"article
 Add `data-justif-debug` to log why a paragraph kept native justification.
 With the JavaScript API, pass `onSkip` instead.
 
-### Configure it in CSS
-
-Set `--justif-*` custom properties to change what the script does. Configure a
-whole page from `:root`, a section from any ancestor, or a single paragraph
-inline — these are ordinary custom properties, so they inherit and the cascade
-decides which one wins:
-
-```css
-:root {
-  --justif-tracking: none;
-  --justif-last-line-min-width: 50%;
-}
-
-blockquote {
-  --justif-hanging-punctuation: none;
-}
-```
-
-| Property | Values | Default |
-| --- | --- | --- |
-| `--justif-hanging-punctuation` | `auto`, `line-end-only`, `all-line-edges`, `none` | `line-end-only` |
-| `--justif-protrusion` | `auto`, `none` | `auto` |
-| `--justif-expansion` | `auto`, `none`, a percentage | `2%` |
-| `--justif-tracking` | `auto`, `none`, a percentage | `3%` |
-| `--justif-last-line-min-width` | `auto`, `none`, a percentage | `33%` |
-| `--justif-last-line-fit` | `auto`, a percentage | `0%` |
-| `--justif-space-stretch` | `auto`, a percentage | `50%` |
-| `--justif-space-shrink` | `auto`, a percentage | `33⅓%` |
-
-`auto` always means "whatever Justif would do", so a section can opt back in to
-the default. A percentage sets both directions at once for `--justif-expansion`
-and `--justif-tracking` — pass an object to the JavaScript API for asymmetric
-limits. Values are ordinary CSS: an invalid one is ignored and the default
-applies, and `data-justif-debug` reports anything it had to ignore, including
-misspelled property names.
-
-Hyphenation is controlled by the native property instead, since the browser
-understands it too:
-
-```css
-.tight-copy { hyphens: none; }
-```
-
-**Changes apply automatically.** A media query, a container query, a theme
-toggle, a class change, or a script setting one of these properties all take
-effect on their own. Two limits are worth knowing:
-
-- It needs Safari 17.4, Chrome 117, or Firefox 129. In older browsers the
-  configuration is read once as the page loads.
-- On any paragraph where you have declared your own `transition`, Justif leaves
-  liveness off rather than replace your animation. Add the `--justif-*`
-  properties to that declaration to keep both.
-
-In either case `window.justif.reconfigure()` applies a change on demand, and
-returns a promise that settles once the affected paragraphs have re-laid out.
+To change how the text is set, use `--justif-*` custom properties in your CSS,
+on the page or on individual sections: see [Setting options in
+CSS](#setting-options-in-css).
 
 ### Use the JavaScript API
 
@@ -223,11 +171,10 @@ or safely tear down the drop-in script. Before assuming `controllers` is
 complete, await `window.justif.booted`: controllers for on-demand languages may
 be added later.
 
-`controllers` holds one controller per language and configuration, so changing
-`--justif-*` for part of the page can add or remove entries. The array itself is
-updated in place, and `booted` refers only to the initial load; `reconfigure()`
-returns a promise for later changes. A paragraph you tear down by hand stays torn
-down: later configuration changes will not re-adopt it.
+There is one controller per language and configuration, so a `--justif-*` change
+can add or remove entries; the array is updated in place. `booted` covers only
+the initial load, and `reconfigure()` returns a promise for later changes. A
+paragraph you tear down by hand stays torn down.
 
 ```js
 await window.justif.booted;
@@ -268,28 +215,32 @@ const hyphenate = (lowercaseWord) =>
 ```
 
 The returned fragments must join back to the input word. Author-provided soft
-hyphens are honored without a callback. Add `hyphens: none` to an inline
-element, such as `code`, to suppress both automatic and soft hyphenation
-inside it.
+hyphens are honored without a callback.
+
+`hyphens: none` suppresses both automatic and soft hyphenation wherever you set
+it — a paragraph, a section, or a single inline element such as `code`. It is the
+native CSS property, so the browser's own rendering matches.
 
 ## Options
 
-These are the options most applications need:
+Options are passed to `justify()`, or set in CSS when you use the drop-in script
+— see [Setting options in CSS](#setting-options-in-css). These are the ones most
+applications need:
 
-| Option | Default | What it controls |
-| --- | --- | --- |
-| `hyphenate` | none | Splits a lowercase word into hyphenatable fragments |
-| `protrusion` | `true` | Optically aligns glyphs at line edges; `false` disables it, or pass a character table to use built-in values plus your overrides |
-| `hangingPunctuation` | `"line-end-only"` | Controls where eligible punctuation hangs fully: `"line-end-only"`, `"all-line-edges"`, or `"none"` |
-| `expansion` | `{ max: 0.02, shrink: 0.02, step: 0.005 }` | Uses a variable font's `wdth` axis to improve line fit; ignored when unavailable |
-| `tracking` | `{ max: 0.03, shrink: 0.03 }` | Uses small letter-spacing adjustments to improve line fit; `false` disables |
-| `spacing` | `{ stretch: 0.5, shrink: 1/3, pull: 0.7, boundaryShrink: 0 }` | Sets how far word spaces may stretch or shrink |
-| `lastLineMinWidth` | `0.33` | Sets the target minimum ending length for multi-line paragraphs as a fraction of the measure; `0` disables, `1` also fills reachable one-line paragraphs |
-| `lastLineFit` | `0` | Carries the paragraph's average spacing adjustment into the last line; `1` applies it fully |
-| `observeResize` | `true` | Reflows managed paragraphs when their width changes |
-| `cleanClipboard` | `true` | Removes layout-only characters from copied text while preserving author nonbreaking spaces |
-| `onRelayout` | none | Callback that runs after initial layout, resize, refresh, or a font-driven re-layout |
-| `onSkip` | none | Callback that reports why a paragraph kept native layout |
+| Option | CSS property | Default | What it controls |
+| --- | --- | --- | --- |
+| `hyphenate` | `hyphens: none` turns it off | none | Splits a lowercase word into hyphenatable fragments |
+| `protrusion` | `--justif-protrusion` | `true` | Optically aligns glyphs at line edges; `false` disables it, or pass a character table to use built-in values plus your overrides |
+| `hangingPunctuation` | `--justif-hanging-punctuation` | `"line-end-only"` | Controls where eligible punctuation hangs fully: `"line-end-only"`, `"all-line-edges"`, or `"none"` |
+| `expansion` | `--justif-expansion` | `{ max: 0.02, shrink: 0.02, step: 0.005 }` | Uses a variable font's `wdth` axis to improve line fit; ignored when unavailable |
+| `tracking` | `--justif-tracking` | `{ max: 0.03, shrink: 0.03 }` | Uses small letter-spacing adjustments to improve line fit; `false` disables |
+| `spacing` | `--justif-space-stretch`, `--justif-space-shrink` | `{ stretch: 0.5, shrink: 1/3, pull: 0.7, boundaryShrink: 0 }` | Sets how far word spaces may stretch or shrink |
+| `lastLineMinWidth` | `--justif-last-line-min-width` | `0.33` | Sets the target minimum ending length for multi-line paragraphs as a fraction of the measure; `0` disables, `1` also fills reachable one-line paragraphs |
+| `lastLineFit` | `--justif-last-line-fit` | `0` | Carries the paragraph's average spacing adjustment into the last line; `1` applies it fully |
+| `observeResize` | — | `true` | Reflows managed paragraphs when their width changes |
+| `cleanClipboard` | — | `true` | Removes layout-only characters from copied text while preserving author nonbreaking spaces |
+| `onRelayout` | — | none | Callback that runs after initial layout, resize, refresh, or a font-driven re-layout |
+| `onSkip` | — | none | Callback that reports why a paragraph kept native layout |
 
 The default `lastLineMinWidth` follows the traditional “at least a third”
 guideline. Set it to `1` for rectangular paragraphs where the ending can reach
@@ -297,6 +248,39 @@ the full measure without poor spacing. Naturally one-line elements otherwise
 stay in native layout; they become enhanced if a narrower measure makes them
 wrap, and return to native layout when they fit again. CSS
 `text-align: justify-all` is treated like the rectangular `1` mode.
+
+### Setting options in CSS
+
+With the drop-in script, set the properties above on any element. They inherit,
+so `:root` configures a page, a selector configures a section, and an inline
+style covers one paragraph:
+
+```css
+:root {
+  --justif-tracking: none;
+  --justif-last-line-min-width: 50%;
+}
+
+blockquote {
+  --justif-hanging-punctuation: none;
+}
+```
+
+Values are ordinary CSS rather than the JavaScript spellings: percentages
+instead of fractions, `none` to switch a feature off, and `auto` for the
+default, which lets a section opt back in. One percentage covers both directions
+of `--justif-expansion` and `--justif-tracking`; asymmetric limits, step size and
+the secondary-font spacing controls need the JavaScript API. An invalid value is
+ignored and the default applies — `data-justif-debug` reports those, along with
+misspelled property names.
+
+Changes take effect on their own, whether they come from a media query, a
+container query, a theme toggle, or a script. Two exceptions leave the
+configuration as it was when the page loaded: browsers older than Safari 17.4,
+Chrome 117, or Firefox 129, and paragraphs where you have declared your own
+`transition`, which Justif will not replace — add the `--justif-*` properties to
+that declaration to keep both. `window.justif.reconfigure()` applies a change by
+hand in either case.
 
 ### Protrusion and hanging punctuation
 
@@ -313,10 +297,9 @@ Justif also fully hangs punctuation into the margin on the trailing edge of the
 paragraph by default. Set `hangingPunctuation` to `false` to disable it, or
 pass `"all-line-edges"` for fully hanging punctuation everywhere.
 
-The two settings are independent. Turning protrusion off with hanging left on
-sets ordinary letters exactly flush while quotes and stops still hang — useful
-when you want that deliberate edge without the per-glyph optical adjustment. For
-no margin effects at all, switch off both.
+The two are independent: with protrusion off and hanging on, letters sit exactly
+flush while quotes and stops still hang. Switch off both for no margin effects at
+all.
 
 ### Expansion, tracking, and spacing
 

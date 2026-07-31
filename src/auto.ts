@@ -17,17 +17,13 @@
  * justify with spacing only: wrong-language hyphenation is worse than
  * none. For full control use the API: `import { justify } from "justif"`.
  *
- * Typography is configured in CSS, on the paragraphs themselves, because that
- * is where element-scoped settings belong — one selector configures a section,
- * the cascade decides precedence, and an inline style handles a one-off:
- *
- *   :root      { --justif-tracking: none; --justif-last-line-min-width: 50%; }
- *   blockquote { --justif-hanging-punctuation: none; }
- *
- * Values are ordinary CSS keywords and percentages; `auto` means the library
- * default. Paragraphs are grouped by language AND resolved configuration, so
- * configuring nothing still costs exactly one controller per language. See
- * auto-options.ts for the full surface.
+ * Typography is configured with `--justif-*` custom properties on the
+ * paragraphs, because that is where element-scoped settings belong: the cascade
+ * decides precedence, so there is none to invent here. Paragraphs group by
+ * language AND resolved configuration, so configuring nothing still costs
+ * exactly one controller per language. auto-options.ts owns that surface;
+ * changes to it apply on their own where the engine allows, which
+ * `liveUpdatesSupported` gates and `armWatcher` sets up.
  *
  * The script tag carries only what is not element-scoped:
  *   data-justif-selector="article p"   candidate elements (default below)
