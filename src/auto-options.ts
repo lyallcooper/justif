@@ -27,6 +27,28 @@ export const CSS_PROPERTIES = [
 
 export type CssProperty = (typeof CSS_PROPERTIES)[number];
 
+/**
+ * `@property` syntax per property, for the registration the live-update path
+ * installs. Registration is what makes these transitionable — the change signal
+ * — and it also makes them computed values, so `calc()` and the CSS-wide
+ * keywords start working wherever it is supported.
+ *
+ * A consequence worth knowing: once registered, a value the syntax rejects never
+ * reaches the parser at all. The engine substitutes the inherited or initial
+ * value first, exactly as it does for every other property, so `invalid` below
+ * only ever reports values that are the right TYPE but out of range.
+ */
+export const PROPERTY_SYNTAX: Readonly<Record<CssProperty, string>> = {
+  "--justif-hanging-punctuation": "auto | line-end-only | all-line-edges | none",
+  "--justif-protrusion": "auto | none",
+  "--justif-expansion": "auto | none | <percentage>",
+  "--justif-tracking": "auto | none | <percentage>",
+  "--justif-last-line-min-width": "auto | none | <percentage>",
+  "--justif-last-line-fit": "auto | <percentage>",
+  "--justif-space-stretch": "auto | <percentage>",
+  "--justif-space-shrink": "auto | <percentage>",
+};
+
 export interface ParsedOptions {
   /** Only the fields the author actually set to something non-default. */
   options: LayoutOptions;

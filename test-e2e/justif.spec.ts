@@ -4401,7 +4401,7 @@ test("auto drop-in: configures typography from CSS custom properties", async ({ 
   // property) and #run-scoped (configured on an inline run, which is not a
   // paragraph) all resolve to the default and share ONE controller with #plain.
   expect(state.groups).toEqual([
-    ["as-default", "bogus", "plain", "run-scoped", "typo"],
+    ["as-default", "bogus", "plain", "run-scoped", "type-invalid", "typo"],
     ["class-override", "inline-override"],
     ["flush"],
     ["inherited"],
@@ -4417,13 +4417,153 @@ test("auto drop-in: configures typography from CSS custom properties", async ({ 
   expect(state.flush.most).toBeLessThan(1);
   expect(state.plain.most).toBeGreaterThan(state.flush.most + 2);
 
-  // An unparseable value warns once and falls back, rather than failing to
+  // An out-of-range value warns once and falls back, rather than failing to
   // enhance; a misspelled property name is reported on the debug channel.
   const warnings = messages.filter((m) => m.type === "warning");
   expect(warnings).toHaveLength(1);
   expect(warnings[0]!.text).toContain("--justif-tracking");
-  expect(warnings[0]!.text).toContain("3");
+  expect(warnings[0]!.text).toContain("-3%");
   expect(messages.some((m) => m.text.includes("--justif-trakcing"))).toBe(true);
+
+  // Where the properties are registered, a value of the wrong TYPE never reaches
+  // the parser: the engine substitutes the initial value first, so there is
+  // nothing for us to report — and #type-invalid still lands in the default
+  // group above either way.
+  const live = await page.evaluate(
+    () =>
+      typeof CSS.registerProperty === "function" &&
+      CSS.supports("transition-behavior", "allow-discrete"),
+  );
+  if (live) {
+    expect(warnings.some((m) => m.text.includes('"3"'))).toBe(false);
+    // Preflight ran and found nothing to displace, so the watcher is armed.
+    expect(
+      await page.evaluate(() =>
+        document.getElementById("plain")!.hasAttribute("data-justif-watch"),
+      ),
+    ).toBe(true);
+  }
+});
+
+test("auto drop-in: a CSS configuration change applies by itself", async ({ page }) => {
+  await page.goto("/test-e2e/fixture-auto-css.html");
+  await page.waitForFunction(() => (window as Window & { justif?: unknown }).justif !== undefined);
+  await page.evaluate(async () => {
+    await (window as Window & { justif?: { booted: Promise<void> } }).justif!.booted;
+  });
+  const live = await page.evaluate(
+    () =>
+      typeof CSS.registerProperty === "function" &&
+      CSS.supports("transition-behavior", "allow-discrete"),
+  );
+  test.skip(!live, "engine lacks @property or allow-discrete: liveness is opt-out here");
+
+  const read = () =>
+    page.evaluate(() => {
+      const p = document.getElementById("plain")!;
+      const cs = getComputedStyle(p);
+      const contentRight =
+        p.getBoundingClientRect().right -
+        parseFloat(cs.paddingRight) -
+        parseFloat(cs.borderRightWidth);
+      const segments = [...p.querySelectorAll<HTMLElement>(".justif-seg")];
+      let most = -Infinity;
+      for (const seg of segments) {
+        most = Math.max(most, seg.getBoundingClientRect().right - contentRight);
+      }
+      return { most: +most.toFixed(2), segments: segments.length };
+    });
+  const overhang = async () => (await read()).most;
+
+  const before = await read();
+  expect(before.segments).toBeGreaterThan(0);
+  expect(before.most).toBeGreaterThan(2);
+
+  // Switch hanging off through the cascade, with no library call of any kind.
+  await page.evaluate(() => {
+    document.documentElement.style.setProperty("--justif-hanging-punctuation", "none");
+  });
+  // Measured against the previous value, not against the content edge: with
+  // hanging off, optical protrusion still moves the edge, just far less.
+  await expect.poll(overhang, { timeout: 4000 }).toBeLessThan(before.most - 1);
+  const off = await read();
+  // Still enhanced. Without this, a teardown would satisfy the poll above by
+  // leaving nothing to measure.
+  expect(off.segments).toBe(before.segments);
+
+  // And back: the change is not one-way, and reverting rejoins the original
+  // configuration rather than accumulating controllers.
+  await page.evaluate(() => {
+    document.documentElement.style.removeProperty("--justif-hanging-punctuation");
+  });
+  await expect.poll(overhang, { timeout: 4000 }).toBeGreaterThan(before.most - 0.5);
+  expect((await read()).segments).toBe(before.segments);
+  expect(
+    await page.evaluate(
+      () => (window as Window & { justif?: { controllers: unknown[] } }).justif!.controllers.length,
+    ),
+  ).toBe(4);
+});
+
+test("auto drop-in: an author transition is never replaced", async ({ page }) => {
+  await page.goto("/test-e2e/fixture-auto-css.html");
+  await page.waitForFunction(() => (window as Window & { justif?: unknown }).justif !== undefined);
+  await page.evaluate(async () => {
+    await (window as Window & { justif?: { booted: Promise<void> } }).justif!.booted;
+  });
+
+  // Give one paragraph an author transition and re-preflight. Even at zero
+  // specificity the watcher would win this by source order, so the loader must
+  // stand down instead — the author's animation is the thing that matters.
+  const state = await page.evaluate(async () => {
+    const p = document.getElementById("as-default")!;
+    p.style.transition = "color 200ms";
+    const g = window as Window & { justif?: { reconfigure: () => Promise<void> } };
+    await g.justif!.reconfigure();
+    const cs = getComputedStyle(p);
+    return {
+      watched: p.hasAttribute("data-justif-watch"),
+      property: cs.transitionProperty,
+      duration: cs.transitionDuration,
+      stillEnhanced: p.hasAttribute("data-justif"),
+    };
+  });
+
+  expect(state.watched).toBe(false);
+  expect(state.property).toBe("color");
+  expect(state.duration).toBe("0.2s");
+  // Liveness is what it loses, not enhancement.
+  expect(state.stillEnhanced).toBe(true);
+});
+
+test("auto drop-in: reconfigure() does not re-adopt a torn-down paragraph", async ({ page }) => {
+  await page.goto("/test-e2e/fixture-auto-css.html");
+  await page.waitForFunction(() => (window as Window & { justif?: unknown }).justif !== undefined);
+  await page.evaluate(async () => {
+    await (window as Window & { justif?: { booted: Promise<void> } }).justif!.booted;
+  });
+
+  const after = await page.evaluate(async () => {
+    const g = window as Window & {
+      justif?: { unjustify: (t: Iterable<Element>) => void; reconfigure: () => Promise<void> };
+    };
+    const p = document.getElementById("plain")!;
+    g.justif!.unjustify([p]);
+    const textAfterTeardown = p.textContent;
+    // A configuration change now must not bring it back: the consumer's
+    // teardown is a decision, not a transient state.
+    document.documentElement.style.setProperty("--justif-tracking", "none");
+    await g.justif!.reconfigure();
+    return {
+      segments: p.querySelectorAll(".justif-seg").length,
+      enhanced: p.hasAttribute("data-justif"),
+      textUnchanged: p.textContent === textAfterTeardown,
+    };
+  });
+
+  expect(after.segments).toBe(0);
+  expect(after.enhanced).toBe(false);
+  expect(after.textUnchanged).toBe(true);
 });
 
 test("auto drop-in: a one-line group still receives its hyphenator", async ({ page }) => {

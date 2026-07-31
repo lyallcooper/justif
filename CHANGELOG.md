@@ -9,6 +9,13 @@
   CSS keywords and percentages, and `auto` always means the library default.
   Previously the drop-in applied one fixed configuration to every paragraph and
   varying it required the JavaScript API.
+- Changes to that CSS configuration apply on their own, the way CSS normally
+  does — from a media query, a container query, a theme toggle, a class change,
+  or a script. This needs a recent browser (Safari 17.4, Chrome 117, Firefox
+  129); everywhere else the configuration is read once as the page loads. It also
+  stands aside on any paragraph carrying your own `transition` declaration,
+  rather than replacing it. `window.justif.reconfigure()` applies a change by
+  hand in either case.
 - `justify()` now accepts partial `expansion` and `spacing` objects, filling in
   the rest from the defaults, as `tracking` already did.
 - New exported `layoutDefaults` gives the default value of every setting the CSS
