@@ -6,7 +6,8 @@
   properties on `:root` to configure a whole page, or on any element to change
   one section or a single paragraph: hanging punctuation, protrusion, expansion,
   tracking, word-space limits, and the last-line settings. Values are ordinary
-  CSS keywords and percentages, and `auto` always means the library default.
+  CSS keywords, percentages, or the same fractions the JavaScript API takes, and
+  `auto` always means the library default.
   Previously the drop-in applied one fixed configuration to every paragraph and
   varying it required the JavaScript API.
 - Changes to that CSS configuration apply on their own, the way CSS normally

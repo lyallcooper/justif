@@ -6,10 +6,11 @@
  * touches the DOM. Only `auto.ts` imports this; it is bundled into the drop-in
  * rather than shipped as its own file.
  *
- * Values are ordinary CSS: keywords and percentages. `auto` selects the library
- * default, `none` switches a feature off, and anything unparseable is reported
- * and falls back to the default — the same end state CSS itself produces for an
- * invalid declaration.
+ * Values are ordinary CSS: keywords, percentages, and the plain fractions the
+ * JavaScript API takes — `33%` and `0.33` are one configuration, not two.
+ * `auto` selects the library default, `none` switches a feature off, and
+ * anything unparseable is reported and falls back to the default — the same end
+ * state CSS itself produces for an invalid declaration.
  */
 import { layoutDefaults, type LayoutOptions } from "./index.js";
 
@@ -41,12 +42,12 @@ export type CssProperty = (typeof CSS_PROPERTIES)[number];
 export const PROPERTY_SYNTAX: Readonly<Record<CssProperty, string>> = {
   "--justif-hanging-punctuation": "auto | line-end-only | all-line-edges | none",
   "--justif-protrusion": "auto | none",
-  "--justif-expansion": "auto | none | <percentage>",
-  "--justif-tracking": "auto | none | <percentage>",
-  "--justif-last-line-min-width": "auto | none | <percentage>",
-  "--justif-last-line-fit": "auto | <percentage>",
-  "--justif-space-stretch": "auto | <percentage>",
-  "--justif-space-shrink": "auto | <percentage>",
+  "--justif-expansion": "auto | none | <percentage> | <number>",
+  "--justif-tracking": "auto | none | <percentage> | <number>",
+  "--justif-last-line-min-width": "auto | none | <percentage> | <number>",
+  "--justif-last-line-fit": "auto | <percentage> | <number>",
+  "--justif-space-stretch": "auto | <percentage> | <number>",
+  "--justif-space-shrink": "auto | <percentage> | <number>",
 };
 
 export interface ParsedOptions {
@@ -62,8 +63,7 @@ export interface ParsedOptions {
   invalid: Array<{ property: CssProperty; value: string }>;
 }
 
-/** A percentage, the only numeric form CSS accepts for these properties. */
-const PERCENTAGE = /^([+-]?(?:\d+\.?\d*|\.\d+))%$/;
+const NUMERIC = /^([+-]?(?:\d+\.?\d*|\.\d+))(%?)$/;
 
 /**
  * Fractions serialize at fixed precision so that float noise cannot fragment
@@ -73,14 +73,18 @@ function serialize(value: number): string {
   return value.toFixed(6);
 }
 
-function parsePercentage(raw: string): number | undefined {
-  const match = PERCENTAGE.exec(raw);
+/**
+ * A percentage, or the same thing as the plain number the JavaScript API takes:
+ * `33%` and `0.33` mean one fraction and produce one configuration.
+ */
+function parseFraction(raw: string): number | undefined {
+  const match = NUMERIC.exec(raw);
   if (match === null) return undefined;
-  const percent = Number(match[1]);
-  // Negative limits are syntactically valid CSS but meaningless here, and
-  // `@property` registration cannot reject them: `<percentage>` admits them.
-  if (!Number.isFinite(percent) || percent < 0) return undefined;
-  return percent / 100;
+  const value = Number(match[1]) / (match[2] === "%" ? 100 : 1);
+  // Negative limits are meaningless here, and registration cannot reject them:
+  // both `<percentage>` and `<number>` admit a minus sign.
+  if (!Number.isFinite(value) || value < 0) return undefined;
+  return value;
 }
 
 /**
@@ -125,13 +129,13 @@ function parseOne(
   // because passing a table silently bypasses per-font measurement.
   if (property === "--justif-protrusion") return "invalid";
 
-  const fraction = parsePercentage(raw);
+  const fraction = parseFraction(raw);
   if (fraction === undefined) return "invalid";
 
   switch (property) {
-    // A single percentage sets both limits symmetrically; `step` is not exposed
-    // and keeps its default. 0% and `none` are the same rendering, so they
-    // collapse to one configuration.
+    // One value sets both limits symmetrically; `step` is not exposed and keeps
+    // its default. Zero and `none` are the same rendering, so they collapse to
+    // one configuration.
     case "--justif-expansion": {
       if (fraction === 0) return { options: { expansion: false }, keyPart: "none" };
       const { max, shrink } = layoutDefaults.expansion;

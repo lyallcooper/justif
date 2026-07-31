@@ -4435,7 +4435,7 @@ test("auto drop-in: configures typography from CSS custom properties", async ({ 
       CSS.supports("transition-behavior", "allow-discrete"),
   );
   if (live) {
-    expect(warnings.some((m) => m.text.includes('"3"'))).toBe(false);
+    expect(warnings.some((m) => m.text.includes("3px"))).toBe(false);
     // Preflight ran and found nothing to displace, so the watcher is armed.
     expect(
       await page.evaluate(() =>

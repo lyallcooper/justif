@@ -38,7 +38,7 @@ describe("--justif-* parsing", () => {
     expect(from({ "--justif-last-line-fit": "25%" }).options).toEqual({ lastLineFit: 0.25 });
   });
 
-  it("sets both limits from one percentage for expansion and tracking", () => {
+  it("sets both limits from one value for expansion and tracking", () => {
     expect(from({ "--justif-expansion": "4%" }).options).toEqual({
       expansion: { max: 0.04, shrink: 0.04 },
     });
@@ -59,7 +59,7 @@ describe("--justif-* parsing", () => {
     });
   });
 
-  it("normalizes 0% to off for expansion and tracking", () => {
+  it("normalizes zero to off for expansion and tracking", () => {
     // {max: 0, shrink: 0} and "disabled" render identically; collapsing them
     // keeps one configuration instead of two.
     expect(from({ "--justif-expansion": "0%" }).options).toEqual({ expansion: false });
@@ -76,16 +76,42 @@ describe("--justif-* parsing", () => {
     expect(from({ "--justif-last-line-fit": "300%" }).options).toEqual({ lastLineFit: 1 });
   });
 
+  it("accepts a plain fraction as an alias for the percentage", () => {
+    // The JavaScript API takes fractions, so the two spellings of one setting
+    // must mean the same thing — and must not split controllers.
+    for (const [number, percentage] of [
+      ["0.5", "50%"],
+      ["0.33", "33%"],
+      ["0", "0%"],
+      ["1", "100%"],
+    ]) {
+      const property: CssProperty = "--justif-last-line-min-width";
+      expect(from({ [property]: number }), `${number} vs ${percentage}`).toEqual(
+        from({ [property]: percentage }),
+      );
+    }
+    expect(from({ "--justif-tracking": "0.015" }).options).toEqual({
+      tracking: { max: 0.015, shrink: 0.015 },
+    });
+    expect(from({ "--justif-space-stretch": "0.8" }).options).toEqual({
+      spacing: { stretch: 0.8 },
+    });
+    // A fraction above 1 is a fraction, not a percentage missing its sign: this
+    // is the one place the two spellings can be confused, and 3 means 300%.
+    expect(from({ "--justif-tracking": "3" }).options).toEqual({
+      tracking: { max: 3, shrink: 3 },
+    });
+  });
+
   it("rejects what CSS would not accept here, and reports it", () => {
     const cases: Array<[CssProperty, string]> = [
-      // Bare numbers are not percentages.
-      ["--justif-last-line-min-width", "0.5"],
-      ["--justif-tracking", "3"],
       // calc() cannot be evaluated without @property registration.
       ["--justif-expansion", "calc(1% * 2)"],
-      // Negative limits are syntactically valid CSS but meaningless.
+      // Negative limits are syntactically valid CSS but meaningless — in
+      // either spelling, since <number> admits a minus sign too.
       ["--justif-tracking", "-3%"],
       ["--justif-space-stretch", "-10%"],
+      ["--justif-last-line-min-width", "-0.5"],
       // Wrong keyword for the property.
       ["--justif-hanging-punctuation", "line-ends"],
       ["--justif-protrusion", "50%"],
@@ -116,6 +142,10 @@ describe("configuration identity (controller grouping)", () => {
       { "--justif-tracking": "3%" },
       { "--justif-last-line-fit": "0%" },
       { "--justif-space-stretch": "50%" },
+      // Both spellings of a default collapse, including the fraction a
+      // reader would copy straight out of the options table.
+      { "--justif-last-line-min-width": "0.33" },
+      { "--justif-expansion": "0.02" },
     ];
     for (const declared of asDefault) {
       const result = from(declared);
