@@ -25,7 +25,6 @@ test("DIAG rtl protrusion inputs", async ({ page }) => {
     const ctx = document.createElement("canvas").getContext("2d")!;
     ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} / ${cs.lineHeight} ${cs.fontFamily}`;
     const measured = window.__justif.opticalProtrusion({ family: cs.fontFamily });
-    const geometry = window.__justifLines(p);
     const out = {
       fontFamily: cs.fontFamily,
       canvasFont: ctx.font,
@@ -34,16 +33,19 @@ test("DIAG rtl protrusion inputs", async ({ page }) => {
       advLatinA: +ctx.measureText("a").width.toFixed(3),
       measuredEntries: measured === undefined ? null : Object.keys(measured).length,
       measuredPeriod: measured?.["."] ?? null,
-      lineEnds: geometry.lines.map((l) => ({
-        head: l.texts[0]?.slice(0, 6) ?? "",
-        // RTL: lines end at the LEFT edge.
-        overhang: +(geometry.contentRight - l.right).toFixed(2),
-        left: +l.left.toFixed(2),
-      })),
-      margins: [...p.querySelectorAll<HTMLElement>(".justif-seg")]
-        .map((s) => getComputedStyle(s).marginInlineEnd)
-        .filter((m) => m !== "0px")
-        .slice(0, 6),
+      // Exactly what the failing assertion reads, plus the margin justif put on
+      // that very segment.
+      segments: [...p.querySelectorAll<HTMLElement>(".justif-seg")]
+        .map((s) => ({ text: (s.textContent ?? "").trim(), rect: s.getBoundingClientRect(), s }))
+        .filter((s) => s.rect.width >= p.getBoundingClientRect().width - 2)
+        .map((s) => ({
+          end: s.text.slice(-1),
+          hang: +(p.getBoundingClientRect().left - s.rect.left).toFixed(2),
+          marginEnd: getComputedStyle(s.s).marginInlineEnd,
+          marginStart: getComputedStyle(s.s).marginInlineStart,
+          width: +s.rect.width.toFixed(2),
+        })),
+      boxWidth: +p.getBoundingClientRect().width.toFixed(2),
     };
     controller.destroy();
     host.remove();
