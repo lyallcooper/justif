@@ -378,6 +378,25 @@ function boot(): Promise<void> {
    */
   const dirty = new Set<HTMLElement>();
   let rescanFrame = 0;
+  /**
+   * Until when to disregard an event naming a property the check itself writes.
+   *
+   * To compare a paragraph's `hyphens` (or a one-line hang's `text-indent`)
+   * against the author's, `rescan()` has to take justif's own declaration off for
+   * the read — and those are properties this watcher transitions, so the check
+   * echoes back as events that would schedule the next check, for as long as the
+   * page is open. Measured before this guard: 600 transition events and 240
+   * rescans over two idle seconds, with no DOM change to show for any of it.
+   *
+   * A window rather than a flag: the echo arrives a frame or two after the write,
+   * asynchronously. Two frames is enough for it and short enough that a genuine
+   * author change is only ever missed if it lands on the same property, on the
+   * same paragraph, inside the same 34ms — and the next event, or
+   * `reconfigure()`, catches up even then.
+   */
+  const ECHO_PROPERTIES = new Set(["hyphens", "-webkit-hyphens", "text-indent"]);
+  const ECHO_WINDOW_MS = 34;
+  let echoUntil = 0;
   const scheduleRescan = (el: HTMLElement): void => {
     dirty.add(el);
     if (rescanFrame !== 0) return;
@@ -386,6 +405,7 @@ function boot(): Promise<void> {
         rescanFrame = 0;
         const targets = [...dirty];
         dirty.clear();
+        echoUntil = performance.now() + ECHO_WINDOW_MS;
         // Every controller is offered the whole set; each keeps only its own.
         for (const entry of entries) entry.controller?.rescan(targets);
       });
@@ -433,7 +453,10 @@ function boot(): Promise<void> {
     // as an ending — an interrupted transition still leaves a new value.
     for (const type of ["transitionend", "transitioncancel"]) {
       root.addEventListener(type, (event) => {
-        if (!isScanProperty((event as TransitionEvent).propertyName)) return;
+        const property = (event as TransitionEvent).propertyName;
+        if (!isScanProperty(property)) return;
+        // Our own check echoing back, not a change to answer.
+        if (ECHO_PROPERTIES.has(property) && event.timeStamp < echoUntil) return;
         // Only from a watched paragraph itself. Every property in the set
         // inherits, so a change made above one arrives as its own event on it;
         // an event from anything else is some other element's animation.

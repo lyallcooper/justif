@@ -194,19 +194,20 @@ const SHEET_TEXT =
  * emitted px spacing, and neither a more-specific host rule nor a declaration
  * on an intervening cloned element may change them after measurement.
  */
-export function disableTextAutosizing(
-  el: HTMLElement,
-  /** Where to route the declarations. The paragraph's own enhancement records
-   * what it writes over (see maskAuthorStyle), so it supplies its own writer;
-   * segments, which justif created, take the default. */
-  write: (property: string, value: string, priority: string) => void = (
-    property,
-    value,
-    priority,
-  ) => el.style.setProperty(property, value, priority),
-): void {
-  write("-webkit-text-size-adjust", "100%", "important");
-  write("text-size-adjust", "100%", "important");
+/**
+ * The pair, as data. Both spellings are the same property where each is
+ * recognized, so a caller that records what it writes over has to read the
+ * author's values for both BEFORE writing either (see maskAuthorStyles).
+ */
+export const TEXT_AUTOSIZING_DECLARATIONS = [
+  ["-webkit-text-size-adjust", "100%"],
+  ["text-size-adjust", "100%"],
+] as const;
+
+export function disableTextAutosizing(el: HTMLElement): void {
+  for (const [property, value] of TEXT_AUTOSIZING_DECLARATIONS) {
+    el.style.setProperty(property, value, "important");
+  }
 }
 
 /** Roots (documents and shadow roots) that already carry the sheet. */

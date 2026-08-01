@@ -284,10 +284,13 @@ Firefox 129) won't update automatically. And paragraphs that have their own
 `transition` property but don't declare the property in question will also not be
 updated, since Justif uses transitions internally to track updates. In either case
 you can use `window.justif.reconfigure()` to apply changes manually as needed; it
-covers both kinds of change. Two more limits are worth knowing: a rule that
-targets only an inline element inside a paragraph (`p code { font-size: … }`) is
-not noticed, and neither is a change to `text-align`, because Justif sets that
-itself on the paragraphs it manages.
+covers both kinds of change. Three limits are worth knowing, and
+`reconfigure()` covers all of them: a rule that targets only an inline element
+inside a paragraph (`p code { font-size: … }`) is not noticed; a change to
+`text-align` is not either, because Justif sets that itself on the paragraphs it
+manages; and on a paragraph that asked for `hyphens: auto`, changing `hyphens`
+*alone* is not, for the same reason. Changing it together with anything else —
+as a theme or class usually does — applies normally.
 
 ### Protrusion and hanging punctuation
 

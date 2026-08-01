@@ -5209,6 +5209,93 @@ test("auto drop-in: a standard CSS change applies by itself", async ({ page }) =
  * hears about the settled one, leaving the paragraph laid out for a width the text
  * never actually has.
  */
+/**
+ * A check must not schedule the next one.
+ *
+ * To compare a paragraph's `hyphens` against the author's, the enhancement's own
+ * declaration comes off for the read — and `hyphens` is one of the properties the
+ * watcher transitions, so the check echoes back as transition events. Acting on
+ * that echo is a loop with nothing to show for itself: measured before the guard,
+ * 240 rescan passes over two IDLE seconds on a page nobody was touching, and no
+ * DOM change from any of them.
+ */
+test("auto drop-in: re-reading does not feed itself", async ({ page }) => {
+  await page.goto("/test-e2e/fixture-auto-css.html");
+  await page.waitForFunction(() => (window as Window & { justif?: unknown }).justif !== undefined);
+  await page.evaluate(async () => {
+    await (window as Window & { justif?: { booted: Promise<void> } }).justif!.booted;
+  });
+  const live = await page.evaluate(
+    () =>
+      typeof CSS.registerProperty === "function" &&
+      CSS.supports("transition-behavior", "allow-discrete"),
+  );
+  test.skip(!live, "engine lacks @property or allow-discrete: liveness is opt-out here");
+
+  const result = await page.evaluate(async () => {
+    // `hyphens: auto` is what makes the enhancement write its own `hyphens`
+    // declaration — without one there is nothing to lift and nothing to prove.
+    const style = document.createElement("style");
+    style.id = "hyphenation";
+    style.textContent = ".col p { hyphens: auto }";
+    document.head.append(style);
+    await new Promise((resolve) => setTimeout(resolve, 900));
+
+    // Count the passes the WATCHER schedules, by counting calls the page did not
+    // make itself.
+    let passes = 0;
+    const global = window as Window & {
+      justif?: { controllers: Array<{ rescan: (t?: unknown) => readonly unknown[] }> };
+    };
+    for (const controller of global.justif!.controllers) {
+      const original = controller.rescan.bind(controller);
+      controller.rescan = (targets?: unknown) => {
+        passes++;
+        return original(targets as never);
+      };
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    const idle = passes;
+
+    // One real change: it must be answered, and then it must stop. Not `hyphens`
+    // itself — the enhancement's own declaration for it means an author change
+    // there no longer computes differently, so there is nothing to fire (see
+    // beginEnhancement, and the README's note about it).
+    passes = 0;
+    document.getElementById("hyphenation")!.textContent =
+      ".col p { hyphens: auto; letter-spacing: 0.2px }";
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    const answered = passes;
+    passes = 0;
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+
+    return {
+      idle,
+      answered,
+      afterwards: passes,
+      hyphens: document.getElementById("plain")!.style.getPropertyValue("hyphens"),
+      letterSpacing: getComputedStyle(
+        document.querySelector("#as-default .justif-seg")!,
+      ).letterSpacing,
+    };
+  });
+
+  // The premise: the enhancement really is masking an author `hyphens: auto`, so
+  // the check below does lift something.
+  expect(result.hyphens).toBe("manual");
+  // Nothing was touching the page, so nothing should have run.
+  expect(result.idle).toBe(0);
+  // The change was answered — and by a handful of passes, not a stream.
+  expect(result.answered).toBeGreaterThan(0);
+  expect(result.answered).toBeLessThan(6);
+  // And the page went quiet again afterwards.
+  expect(result.afterwards).toBe(0);
+  // The change really landed, so this is not quiet through inaction: the segments
+  // were rebuilt under the new letter-spacing.
+  expect(parseFloat(result.letterSpacing)).toBeGreaterThan(0.1);
+});
+
 test("auto drop-in: a transitioned CSS change is read at its settled value", async ({
   page,
 }) => {

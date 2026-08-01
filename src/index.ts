@@ -66,6 +66,7 @@ import {
 import {
   applyCorrections,
   disableTextAutosizing,
+  TEXT_AUTOSIZING_DECLARATIONS,
   measureCorrections,
   type PendingParagraph,
   type RenderContent,
@@ -344,6 +345,14 @@ interface ParaPart {
 /** One property justif has written over, with what the author had there. */
 interface MaskedDeclaration {
   property: string;
+  /**
+   * Does the style key read this property? Only those have to be lifted to
+   * compare against the author's value, and lifting is not free: writing
+   * `text-align` or the autosizing opt-out back and forth dirties layout, so a
+   * check that lifted everything cost a forced layout and ~10ms per 400
+   * paragraphs where the reads alone cost 0.3ms.
+   */
+  inKey: boolean;
   /** The value justif wrote, so a later author write can be recognized: if the
    * property no longer holds this, the author has taken it back and there is
    * nothing left to lift. */
@@ -402,6 +411,20 @@ function restoreStyleAttribute(el: HTMLElement, style: string | null): void {
 }
 
 /**
+ * Of the declarations the enhancement writes, the ones `paragraphStyleKey` and
+ * `styleKeyNow` read — so the ones whose author value has to be uncovered before
+ * a comparison means anything. Everything else justif writes is invisible to the
+ * key, and lifting it would be pure cost.
+ *
+ * `text-size-adjust` is deliberately NOT here even though it can move a computed
+ * `font-size` on engines that autosize text: it is written on every enhanced
+ * paragraph and read back on every check, so both sides of the comparison see it
+ * consistently, and lifting it would both dirty layout and make the two sides
+ * disagree.
+ */
+const KEY_PROPERTIES = new Set(["hyphens", "-webkit-hyphens", "text-indent"]);
+
+/**
  * Write an inline declaration that covers an author value `rescan()` reads,
  * remembering what was underneath. Re-writing a property justif already owns
  * (a one-line hang whose indent changed) updates what to recognize later,
@@ -414,20 +437,45 @@ function maskAuthorStyle(
   value: string,
   priority = "",
 ): void {
-  const existing = state.masked.find((mask) => mask.property === property);
-  if (existing === undefined) {
-    state.masked.push({
-      property,
-      ours: value,
-      oursPriority: priority,
-      author: p.style.getPropertyValue(property),
-      authorPriority: p.style.getPropertyPriority(property),
-    });
-  } else {
-    existing.ours = value;
-    existing.oursPriority = priority;
+  maskAuthorStyles(p, state, [[property, value]], priority);
+}
+
+/**
+ * The same, for declarations that have to be recorded as a GROUP: every author
+ * value is read before any of them is written.
+ *
+ * That ordering is the whole point where two of the properties are one property.
+ * `-webkit-hyphens` and `hyphens` are aliases, so masking them one after the other
+ * reads the first write back as the author's own value for the second — and the
+ * comparison then puts justif's value back as though the author had asked for it,
+ * leaving native hyphenation on and the paragraph unable to notice its own state.
+ */
+function maskAuthorStyles(
+  p: HTMLElement,
+  state: ParaState,
+  declarations: ReadonlyArray<readonly [property: string, value: string]>,
+  priority = "",
+): void {
+  const authored = declarations.map(([property]) => ({
+    author: p.style.getPropertyValue(property),
+    authorPriority: p.style.getPropertyPriority(property),
+  }));
+  for (const [index, [property, value]] of declarations.entries()) {
+    const existing = state.masked.find((mask) => mask.property === property);
+    if (existing === undefined) {
+      state.masked.push({
+        property,
+        inKey: KEY_PROPERTIES.has(property),
+        ours: value,
+        oursPriority: priority,
+        ...authored[index]!,
+      });
+    } else {
+      existing.ours = value;
+      existing.oursPriority = priority;
+    }
+    p.style.setProperty(property, value, priority);
   }
-  p.style.setProperty(property, value, priority);
 }
 
 /**
@@ -440,7 +488,28 @@ function maskAuthorStyle(
 function authorRewroteStyleAttribute(p: HTMLElement, saved: string | null): boolean {
   const probe = p.ownerDocument.createElement("span");
   if (saved !== null) probe.setAttribute("style", saved);
-  return probe.style.cssText !== p.style.cssText;
+  return declarationSet(probe.style) !== declarationSet(p.style);
+}
+
+/**
+ * A style attribute's declarations as one order-independent string.
+ *
+ * Not its serialization: re-setting a property moves it to the end of the list, so
+ * taking justif's declarations off — which puts an author value back where there
+ * was one — reorders what it touched, and comparing text would then report every
+ * such paragraph as rewritten. `transition-property` is left out because a re-read
+ * suppresses it (see `suppressTransitions`), so at this moment it is justif's.
+ */
+function declarationSet(style: CSSStyleDeclaration): string {
+  const declarations: string[] = [];
+  for (let index = 0; index < style.length; index++) {
+    const property = style.item(index);
+    if (property === "transition-property") continue;
+    declarations.push(
+      `${property}:${style.getPropertyValue(property)}:${style.getPropertyPriority(property)}`,
+    );
+  }
+  return declarations.sort().join(";");
 }
 
 /**
@@ -777,9 +846,9 @@ function beginEnhancement(p: HTMLElement, state: ParaState): void {
   state.enhanced = true;
   p.setAttribute("data-justif", "");
   if (state.scan.floatIntrusion !== null) p.setAttribute("data-justif-dropcap", "");
-  disableTextAutosizing(p, (property, value, priority) =>
-    maskAuthorStyle(p, state, property, value, priority),
-  );
+  // Recorded, since the enhancement is answerable for every declaration it leaves
+  // on the author's element — as one group, because these two are one property.
+  maskAuthorStyles(p, state, TEXT_AUTOSIZING_DECLARATIONS, "important");
   // Neutralize the author's text-align: justify (the browser must not
   // re-justify our exactly-filled lines) — toward the line-START edge,
   // which is the right edge in an RTL paragraph.
@@ -833,10 +902,18 @@ function beginEnhancement(p: HTMLElement, state: ParaState): void {
   // where measurement integrity is at stake), enhancement never
   // escalates against an explicit author override.
   if (state.scan.specs[state.scan.baseSpec]!.hyphens === "auto") {
-    // Through maskAuthorStyle: from here on this paragraph's computed `hyphens`
-    // is justif's, and rescan() has to look underneath it.
-    maskAuthorStyle(p, state, "hyphens", "manual");
-    maskAuthorStyle(p, state, "-webkit-hyphens", "manual");
+    // Recorded as one group, because these two ARE one property (see
+    // maskAuthorStyles). From here on this paragraph's computed `hyphens` is
+    // justif's, so rescan() looks underneath it — and, unavoidably, a later author
+    // change to it no longer computes differently, which is how the drop-in
+    // notices a change at all. Neutralizing on the SEGMENTS instead would leave
+    // the author's value visible, and was tried: it brings back the Chromium
+    // beside-float bug this declaration exists to prevent (#4/#5), whose fit test
+    // reads the value from the paragraph.
+    maskAuthorStyles(p, state, [
+      ["hyphens", "manual"],
+      ["-webkit-hyphens", "manual"],
+    ]);
   }
 }
 
@@ -1089,6 +1166,12 @@ export function justify(
    * re-reading existed.
    */
   const carriedStyleAttr = new WeakMap<HTMLElement, string | null>();
+  /** What each paragraph's own `transition-property` was, while a re-read has it
+   * suppressed (see `suppressTransitions`). */
+  const authorTransitionProperty = new WeakMap<
+    HTMLElement,
+    { value: string; priority: string }
+  >();
   let destroyed = false;
 
   const initialResolution = resolveOptions(options);
@@ -1175,15 +1258,59 @@ export function justify(
    * overridden. Batched into write → read → write, so any number of paragraphs
    * costs two style recalculations, with no paint between them and every
    * declaration back where it was at the end.
+   *
+   * The lift IS a style change while it lasts, so on a page that transitions these
+   * properties it produces transition events of its own. Recognizing that echo
+   * belongs to whoever listens for those events — the drop-in, which knows it
+   * asked for this — and not here.
    */
+  /**
+   * Turn CSS transitions off on `targets` for the duration of a re-read, and
+   * return the undo. Not an optimization — the re-read is wrong without it.
+   *
+   * The drop-in's watcher transitions the very properties the scan reads, and a
+   * discretely-interpolated property computes as its OLD value for as long as its
+   * transition runs. So every style justif changes and then reads back inside one
+   * frame — the lift below, and the declarations `unmaskAuthorStyle` takes off
+   * before the fresh scan — reads back as the value it just replaced. Measured:
+   * the scan saw `hyphens: manual`, the declaration it had removed a moment
+   * earlier, and re-enhanced the paragraph as though the author had asked for it.
+   *
+   * It also means a re-read raises no transitions of its own, so the watcher hears
+   * no echo of it (`ECHO_PROPERTIES` in auto.ts covers what little slips past).
+   */
+  const suppressTransitions = (targets: readonly HTMLElement[]): (() => void) => {
+    for (const p of targets) {
+      // An author's inline `transition` shorthand contributes to this longhand, so
+      // what was there is remembered and put back rather than removed.
+      authorTransitionProperty.set(p, {
+        value: p.style.getPropertyValue("transition-property"),
+        priority: p.style.getPropertyPriority("transition-property"),
+      });
+      p.style.setProperty("transition-property", "none", "important");
+    }
+    return () => {
+      for (const p of targets) {
+        const author = authorTransitionProperty.get(p);
+        authorTransitionProperty.delete(p);
+        if (author === undefined || author.value === "") {
+          p.style.removeProperty("transition-property");
+        } else p.style.setProperty("transition-property", author.value, author.priority);
+      }
+    };
+  };
+
+
   const authorStyleKeys = (targets: readonly HTMLElement[]): Map<HTMLElement, string> => {
     const undo: Array<() => void> = [];
     for (const p of targets) {
-      for (const mask of ownedState(p)?.masked ?? []) {
+      const lifting = (ownedState(p)?.masked ?? []).filter(
         // Not ours any more: the author (or a script, or the inspector) has
         // written this property since, so what computes IS their current value.
-        if (p.style.getPropertyValue(mask.property) !== mask.ours) continue;
-        const { property, ours, oursPriority, author, authorPriority } = mask;
+        (mask) => mask.inKey && p.style.getPropertyValue(mask.property) === mask.ours,
+      );
+      if (lifting.length === 0) continue;
+      for (const { property, ours, oursPriority, author, authorPriority } of lifting) {
         if (author === "") p.style.removeProperty(property);
         else p.style.setProperty(property, author, authorPriority);
         undo.push(() => p.style.setProperty(property, ours, oursPriority));
@@ -2230,6 +2357,68 @@ export function justify(
   // callers who await `ready` still observe failures.
   ready.catch(() => {});
 
+  /**
+   * The re-read itself: compare, then re-adopt whatever now reads differently.
+   * Called with transitions suppressed on `considered`.
+   */
+  const reread = (considered: readonly HTMLElement[]): readonly HTMLElement[] => {
+    const current = authorStyleKeys(considered);
+    const stale = considered.filter((p) => decidedStyleKey.get(p) !== current.get(p));
+    if (stale.length === 0) return [];
+    /** Had rendered output to lose, for the relayout report below. */
+    const wasEnhanced = new Set<HTMLElement>();
+    for (const p of stale) {
+      const state = ownedState(p);
+      if (state !== undefined) {
+        if (state.enhanced) wasEnhanced.add(p);
+        // The scan has to read author CSS, so justif's own declarations come
+        // off first — one property at a time, so that an inline edit the author
+        // made since is honoured rather than reverted.
+        const saved = state.originalStyleAttr;
+        unmaskAuthorStyle(p, state);
+        if (authorRewroteStyleAttribute(p, saved)) {
+          // Their attribute now, so let the next state save it as it stands.
+          carriedStyleAttr.delete(p);
+        } else {
+          // Untouched: put the author's own TEXT back and carry it across, so
+          // `destroy()` still restores it byte-for-byte however many times this
+          // paragraph has been re-read. Undoing our declarations individually
+          // leaves a CSSOM serialization, which drops what does not survive a
+          // round trip — a fallback declaration pair, a property this engine
+          // does not parse.
+          restoreStyleAttribute(p, saved);
+          carriedStyleAttr.set(p, saved);
+        }
+        restoreManagedOutput(p, state, "keep");
+        states.delete(p);
+        dropQueued(p);
+      }
+      bailed.delete(p);
+      scanned.delete(p);
+    }
+    adopt(stale);
+    for (const p of stale) {
+      carriedStyleAttr.delete(p);
+      // A paragraph may have changed sides. Viewport tracking matters as much
+      // as width tracking: an unobserved paragraph never enters nearViewport,
+      // so its measured correction would park and never be promoted.
+      if (ownedState(p) === undefined) {
+        observer?.unobserve(p);
+        viewObserver?.unobserve(p);
+        revealObserver?.unobserve(p);
+        // Its segments are gone, which is a layout change like any other —
+        // reported for the same consumers that track the one-line demotion.
+        if (wasEnhanced.has(p)) emitRelayout(p);
+      } else {
+        observer?.observe(p);
+        viewObserver?.observe(p);
+        revealObserver?.observe(p);
+      }
+    }
+  reprobeBaselines();
+  return stale;
+  };
+
   return {
     ready,
     paragraphs,
@@ -2261,61 +2450,14 @@ export function justify(
       const considered = candidates.filter(
         (p) => ownedState(p) !== undefined || bailed.has(p),
       );
-      const current = authorStyleKeys(considered);
-      const stale = considered.filter((p) => decidedStyleKey.get(p) !== current.get(p));
-      if (stale.length === 0) return [];
-      /** Had rendered output to lose, for the relayout report below. */
-      const wasEnhanced = new Set<HTMLElement>();
-      for (const p of stale) {
-        const state = ownedState(p);
-        if (state !== undefined) {
-          if (state.enhanced) wasEnhanced.add(p);
-          // The scan has to read author CSS, so justif's own declarations come
-          // off first — one property at a time, so that an inline edit the author
-          // made since is honoured rather than reverted.
-          const saved = state.originalStyleAttr;
-          unmaskAuthorStyle(p, state);
-          if (authorRewroteStyleAttribute(p, saved)) {
-            // Their attribute now, so let the next state save it as it stands.
-            carriedStyleAttr.delete(p);
-          } else {
-            // Untouched: put the author's own TEXT back and carry it across, so
-            // `destroy()` still restores it byte-for-byte however many times this
-            // paragraph has been re-read. Undoing our declarations individually
-            // leaves a CSSOM serialization, which drops what does not survive a
-            // round trip — a fallback declaration pair, a property this engine
-            // does not parse.
-            restoreStyleAttribute(p, saved);
-            carriedStyleAttr.set(p, saved);
-          }
-          restoreManagedOutput(p, state, "keep");
-          states.delete(p);
-          dropQueued(p);
-        }
-        bailed.delete(p);
-        scanned.delete(p);
+      // Everything from here to the end of the re-adoption reads styles justif has
+      // just written, so it runs with transitions off (see suppressTransitions).
+      const restoreTransitions = suppressTransitions(considered);
+      try {
+        return reread(considered);
+      } finally {
+        restoreTransitions();
       }
-      adopt(stale);
-      for (const p of stale) {
-        carriedStyleAttr.delete(p);
-        // A paragraph may have changed sides. Viewport tracking matters as much
-        // as width tracking: an unobserved paragraph never enters nearViewport,
-        // so its measured correction would park and never be promoted.
-        if (ownedState(p) === undefined) {
-          observer?.unobserve(p);
-          viewObserver?.unobserve(p);
-          revealObserver?.unobserve(p);
-          // Its segments are gone, which is a layout change like any other —
-          // reported for the same consumers that track the one-line demotion.
-          if (wasEnhanced.has(p)) emitRelayout(p);
-        } else {
-          observer?.observe(p);
-          viewObserver?.observe(p);
-          revealObserver?.observe(p);
-        }
-      }
-      reprobeBaselines();
-      return stale;
     },
     applyLayoutOptions(config) {
       if (destroyed) return;
