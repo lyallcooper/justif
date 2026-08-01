@@ -176,6 +176,12 @@ const SHEET_TEXT =
   // or a rule on a nested inline. The wanted break stays on the following
   // `.justif-break`, outside this element.
   '.justif-hyphen{white-space:nowrap}.justif-hyphen::after{content:"-"}' +
+  // Applied around a re-read, which has to read author values back the moment it
+  // writes them — and a transitioning property computes as its OLD value until
+  // its transition ends (see suppressTransitions). A class, not an inline
+  // declaration: this must not touch the style attribute justif saves and
+  // restores on the author's behalf.
+  ".justif-no-transition{transition-property:none!important}" +
   // Zero-width joints carry their break opportunity as a generated ZWSP
   // instead of a <wbr>: DOM-walking annotation tools treat unrecognized
   // elements as word separators, splitting the hyphenated word a quote

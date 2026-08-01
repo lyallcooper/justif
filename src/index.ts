@@ -424,6 +424,10 @@ function restoreStyleAttribute(el: HTMLElement, style: string | null): void {
  */
 const KEY_PROPERTIES = new Set(["hyphens", "-webkit-hyphens", "text-indent"]);
 
+/** Selects the rule in justif's stylesheet that turns transitions off for the
+ * duration of a re-read (see `suppressTransitions`). */
+const NO_TRANSITION_CLASS = "justif-no-transition";
+
 /**
  * Write an inline declaration that covers an author value `rescan()` reads,
  * remembering what was underneath. Re-writing a property justif already owns
@@ -497,14 +501,12 @@ function authorRewroteStyleAttribute(p: HTMLElement, saved: string | null): bool
  * Not its serialization: re-setting a property moves it to the end of the list, so
  * taking justif's declarations off — which puts an author value back where there
  * was one — reorders what it touched, and comparing text would then report every
- * such paragraph as rewritten. `transition-property` is left out because a re-read
- * suppresses it (see `suppressTransitions`), so at this moment it is justif's.
+ * such paragraph as rewritten.
  */
 function declarationSet(style: CSSStyleDeclaration): string {
   const declarations: string[] = [];
   for (let index = 0; index < style.length; index++) {
     const property = style.item(index);
-    if (property === "transition-property") continue;
     declarations.push(
       `${property}:${style.getPropertyValue(property)}:${style.getPropertyPriority(property)}`,
     );
@@ -1166,12 +1168,6 @@ export function justify(
    * re-reading existed.
    */
   const carriedStyleAttr = new WeakMap<HTMLElement, string | null>();
-  /** What each paragraph's own `transition-property` was, while a re-read has it
-   * suppressed (see `suppressTransitions`). */
-  const authorTransitionProperty = new WeakMap<
-    HTMLElement,
-    { value: string; priority: string }
-  >();
   let destroyed = false;
 
   const initialResolution = resolveOptions(options);
@@ -1280,22 +1276,18 @@ export function justify(
    * no echo of it (`ECHO_PROPERTIES` in auto.ts covers what little slips past).
    */
   const suppressTransitions = (targets: readonly HTMLElement[]): (() => void) => {
-    for (const p of targets) {
-      // An author's inline `transition` shorthand contributes to this longhand, so
-      // what was there is remembered and put back rather than removed.
-      authorTransitionProperty.set(p, {
-        value: p.style.getPropertyValue("transition-property"),
-        priority: p.style.getPropertyPriority("transition-property"),
-      });
-      p.style.setProperty("transition-property", "none", "important");
-    }
+    // A class, selecting a rule in justif's own stylesheet — NOT an inline
+    // declaration. The style attribute is the author's, saved and restored on
+    // their behalf, and anything justif leaves in it while a re-read is under way
+    // is liable to be captured as theirs.
+    for (const p of targets) p.classList.add(NO_TRANSITION_CLASS);
     return () => {
       for (const p of targets) {
-        const author = authorTransitionProperty.get(p);
-        authorTransitionProperty.delete(p);
-        if (author === undefined || author.value === "") {
-          p.style.removeProperty("transition-property");
-        } else p.style.setProperty("transition-property", author.value, author.priority);
+        p.classList.remove(NO_TRANSITION_CLASS);
+        // An empty class attribute is not what the author wrote either.
+        if (p.classList.length === 0 && p.getAttribute("class") === "") {
+          p.removeAttribute("class");
+        }
       }
     };
   };
