@@ -266,9 +266,10 @@ blockquote {
 }
 ```
 
-Use `none` to switch off a feature and `auto` to set it back to the default.
-Fractions can be written either way, so `0.33` and `33%` are the same. Invalid
-values are ignored and the default applies. One value covers both directions for
+Use `none` to switch off a feature and `auto` to set it back to the default;
+`false` and `true` work as well, wherever `none` and `auto` do. Fractions can be
+written either way, so `0.33` and `33%` are the same. Invalid values are ignored
+and the default applies. One value covers both directions for
 `--justif-expansion` and `--justif-tracking`—use the JavaScript API for more
 advanced configuration.
 

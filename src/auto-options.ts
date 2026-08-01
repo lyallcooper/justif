@@ -38,17 +38,23 @@ export type CssProperty = (typeof CSS_PROPERTIES)[number];
  * reaches the parser at all. The engine substitutes the inherited or initial
  * value first, exactly as it does for every other property, so `invalid` below
  * only ever reports values that are the right TYPE but out of range.
+ *
+ * `true` and `false` trail each list as aliases of `auto` and `none` — see
+ * `canonicalKeyword`. `false` appears only where `none` does, so a property that
+ * has no "off" state has no `false` either.
  */
 export const PROPERTY_SYNTAX: Readonly<Record<CssProperty, string>> = {
   "--justif-hanging-punctuation":
-    "auto | line-end-only | first-line-and-line-ends | all-line-edges | none",
-  "--justif-protrusion": "auto | none",
-  "--justif-expansion": "auto | none | <percentage> | <number>",
-  "--justif-tracking": "auto | none | <percentage> | <number>",
-  "--justif-last-line-min-width": "auto | none | <percentage> | <number>",
-  "--justif-last-line-fit": "auto | <percentage> | <number>",
-  "--justif-space-stretch": "auto | <percentage> | <number>",
-  "--justif-space-shrink": "auto | <percentage> | <number>",
+    "auto | line-end-only | first-line-and-line-ends | all-line-edges | none |" +
+    " true | false",
+  "--justif-protrusion": "auto | none | true | false",
+  "--justif-expansion": "auto | none | <percentage> | <number> | true | false",
+  "--justif-tracking": "auto | none | <percentage> | <number> | true | false",
+  "--justif-last-line-min-width":
+    "auto | none | <percentage> | <number> | true | false",
+  "--justif-last-line-fit": "auto | <percentage> | <number> | true",
+  "--justif-space-stretch": "auto | <percentage> | <number> | true",
+  "--justif-space-shrink": "auto | <percentage> | <number> | true",
 };
 
 export interface ParsedOptions {
@@ -65,6 +71,21 @@ export interface ParsedOptions {
 }
 
 const NUMERIC = /^([+-]?(?:\d+\.?\d*|\.\d+))(%?)$/;
+
+/**
+ * `true` and `false` are the JavaScript API's spellings of these switches, and
+ * they mean exactly what `auto` and `none` mean here — so accept them rather than
+ * make anyone arriving from the JavaScript docs learn a second vocabulary for the
+ * same two states.
+ *
+ * Aliases, not extra states: `false` is therefore rejected on a property with no
+ * `none` (a spacing limit, the last-line fit), the same way `none` itself is.
+ */
+function canonicalKeyword(raw: string): string {
+  if (raw === "true") return "auto";
+  if (raw === "false") return "none";
+  return raw;
+}
 
 /**
  * Fractions serialize at fixed precision so that float noise cannot fragment
@@ -196,10 +217,13 @@ export function parseCssOptions(read: (property: CssProperty) => string): Parsed
   for (const property of CSS_PROPERTIES) {
     // `getPropertyValue` pads registered properties, so trim before comparing.
     const raw = read(property).trim();
+    const value = canonicalKeyword(raw);
     // Unset, or explicitly deferring to the library.
-    if (raw === "" || raw === "auto") continue;
-    const parsed = parseOne(property, raw);
+    if (value === "" || value === "auto") continue;
+    const parsed = parseOne(property, value);
     if (parsed === "invalid") {
+      // The author's own spelling, not the canonical one: a warning has to name
+      // what is actually in the stylesheet.
       invalid.push({ property, value: raw });
       continue;
     }

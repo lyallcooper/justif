@@ -4653,6 +4653,75 @@ test("auto drop-in: a CSS configuration change applies by itself", async ({ page
   ).toBe(4);
 });
 
+/**
+ * `true`/`false` alias `auto`/`none` on the CSS surface, for authors arriving from
+ * the JavaScript API where these switches are booleans. Registration is the half
+ * only a browser can check: a keyword missing from the `@property` syntax is
+ * substituted away before the parser sees it.
+ *
+ * Line STARTS are the probe. The default hanging policy touches line ends only,
+ * so with protrusion on, starts sit a fraction of a pixel outside the content
+ * edge, and with it off they must be exactly flush — a difference no overhang
+ * measurement at the right edge can see, because the fully hanging stops there
+ * dominate it whatever protrusion does.
+ */
+test("auto drop-in: --justif-protrusion accepts false for none", async ({ page }) => {
+  await page.goto("/test-e2e/fixture-auto-css.html");
+  await page.waitForFunction(() => (window as Window & { justif?: unknown }).justif !== undefined);
+  await page.evaluate(async () => {
+    await (window as Window & { justif?: { booted: Promise<void> } }).justif!.booted;
+  });
+
+  const lineStarts = () =>
+    page.evaluate(async () => {
+      const g = window as Window & { justif?: { reconfigure: () => Promise<void> } };
+      await g.justif!.reconfigure();
+      const p = document.getElementById("plain")!;
+      const style = getComputedStyle(p);
+      const contentLeft =
+        p.getBoundingClientRect().left +
+        parseFloat(style.paddingLeft) +
+        parseFloat(style.borderLeftWidth);
+      // One entry per rendered line: its leftmost segment's offset from the
+      // content edge. Rows are keyed on a coarse top so sub-pixel noise within a
+      // line cannot split it in two.
+      const rows = new Map<number, number>();
+      for (const seg of p.querySelectorAll<HTMLElement>(".justif-seg")) {
+        const rect = seg.getBoundingClientRect();
+        const row = Math.round(rect.top / 4);
+        rows.set(row, Math.min(rows.get(row) ?? Infinity, +(rect.left - contentLeft).toFixed(2)));
+      }
+      return { starts: [...rows.values()], segments: p.querySelectorAll(".justif-seg").length };
+    });
+
+  const before = await lineStarts();
+  expect(before.starts.length).toBeGreaterThan(2);
+  // Something must protrude, or the assertion below proves nothing.
+  expect(Math.min(...before.starts)).toBeLessThan(-0.05);
+
+  await page.evaluate(() => {
+    document.documentElement.style.setProperty("--justif-protrusion", "false");
+  });
+  // Polled: the watcher's own transition lands the new computed value a frame
+  // later, so the first read can still see the old one.
+  await expect
+    .poll(async () => Math.min(...(await lineStarts()).starts), { timeout: 4000 })
+    .toBeGreaterThan(-0.05);
+  const off = await lineStarts();
+  // Every line, not just the minimum — and still enhanced, so the poll cannot
+  // have been satisfied by a teardown leaving nothing to measure.
+  for (const start of off.starts) expect(Math.abs(start)).toBeLessThan(0.05);
+  expect(off.segments).toBe(before.segments);
+
+  // `false` and `none` are one configuration, so switching between them must not
+  // re-lay anything out or split the group.
+  await page.evaluate(() => {
+    document.documentElement.style.setProperty("--justif-protrusion", "none");
+  });
+  const asNone = await lineStarts();
+  expect(asNone.starts).toEqual(off.starts);
+});
+
 test('auto drop-in: "first-line-and-line-ends" is part of the CSS surface', async ({
   page,
 }) => {

@@ -41,6 +41,43 @@ describe("--justif-* parsing", () => {
     expect(from({ "--justif-last-line-fit": "25%" }).options).toEqual({ lastLineFit: 0.25 });
   });
 
+  it("takes true and false as the JavaScript spellings of auto and none", () => {
+    // `true` is `auto`: the library default, so it contributes no option and no
+    // key fragment — an author writing it must not land in a second controller.
+    const allTrue = from(Object.fromEntries(CSS_PROPERTIES.map((p) => [p, "true"])));
+    expect(allTrue.options).toEqual({});
+    expect(allTrue.key).toBe("");
+    expect(allTrue.invalid).toEqual([]);
+
+    // `false` is `none`, down to the grouping key, so the two spellings of one
+    // configuration stay one configuration.
+    for (const property of [
+      "--justif-hanging-punctuation",
+      "--justif-protrusion",
+      "--justif-expansion",
+      "--justif-tracking",
+      "--justif-last-line-min-width",
+    ] as const) {
+      const asFalse = from({ [property]: "false" });
+      const asNone = from({ [property]: "none" });
+      expect(asFalse, property).toEqual(asNone);
+      expect(asFalse.invalid, property).toEqual([]);
+    }
+    expect(from({ "--justif-protrusion": "false" }).options).toEqual({ protrusion: false });
+
+    // Aliases, not extra states: where there is no `none` there is no `false`,
+    // and the warning names the author's spelling rather than the canonical one.
+    for (const property of [
+      "--justif-last-line-fit",
+      "--justif-space-stretch",
+      "--justif-space-shrink",
+    ] as const) {
+      expect(from({ [property]: "false" }).invalid, property).toEqual([
+        { property, value: "false" },
+      ]);
+    }
+  });
+
   it("sets both limits from one value for expansion and tracking", () => {
     expect(from({ "--justif-expansion": "4%" }).options).toEqual({
       expansion: { max: 0.04, shrink: 0.04 },
