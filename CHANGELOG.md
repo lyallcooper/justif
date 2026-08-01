@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0 (2026-08-01)
+
 ### Notable changes
 
 - By default, **punctuation is now only hung off the line ends**. The previous
