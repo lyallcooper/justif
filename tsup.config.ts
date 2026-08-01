@@ -16,7 +16,11 @@ export default defineConfig([
       "hyphenate/liang": "src/hyphenation/liang.ts",
     },
     sourcemap: true,
-    clean: true,
+    // NOT tsup's `clean`: with several config blocks in flight, it has been seen
+    // deleting a sibling block's finished output — twice in three CI runs, as a
+    // missing `dist/hyphenate/en-us.d.ts`. The `prebuild` script empties dist
+    // once, before any of this starts.
+    clean: false,
   },
   {
     // The drop-in script: fully self-contained (own config block, single

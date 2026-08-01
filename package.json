@@ -127,6 +127,7 @@
     }
   },
   "scripts": {
+    "prebuild": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsup && node tools/lower-dist.mjs",
     "build:demo": "npm run build && node tools/build-demo.mjs",
     "test": "vitest run",
