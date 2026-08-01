@@ -89,6 +89,43 @@ export interface ParagraphScan {
   floatIntrusion: FloatIntrusion | null;
 }
 
+/**
+ * Identity of the author styling a scan depends on, as one comparable string: a
+ * paragraph whose key still matches would read back the same, so the enhancement
+ * it already has — including a decision to leave it native — is still the right
+ * answer. Both halves of the scan are therefore represented: what it MEASURES
+ * with, and what it DECIDES on.
+ *
+ * Only what the scan reads, and only from the paragraph itself. Every inherited
+ * property here reaches it from a rule anywhere above, so a `:root` or `body`
+ * change lands in this key too; a run's own styling does not, since `p code {
+ * font-size: ... }` changes no computed value on the paragraph and catching it
+ * would mean walking every inline descendant on every check.
+ *
+ * `text-align`, `text-align-last` and `hanging-punctuation` are deliberately
+ * absent: the enhancement overwrites them with inline declarations of its own, so
+ * what they compute to afterwards is justif's answer rather than the author's
+ * question. `text-indent` is the caller's to append, for the same reason — a
+ * natively-hung one-line paragraph carries justif's.
+ */
+export function paragraphStyleKey(style: CSSStyleDeclaration): string {
+  const spec = fontSpecOf(style);
+  return [
+    // The MEASUREMENT key: fonts, spacing, variants, features. Two of its own
+    // fields sit outside it, measuring identically but scanning differently, so
+    // both are named here.
+    spec.key,
+    spec.hyphens,
+    spec.direction,
+    // Grounds for keeping a paragraph native, and so for reconsidering one.
+    style.display,
+    style.whiteSpace,
+    style.textTransform,
+    style.writingMode,
+    style.lineHeight,
+  ].join(" ");
+}
+
 /** Content the v1 walker cannot lay out; the paragraph keeps native rendering. */
 const REJECT_TAGS = new Set([
   "WBR",

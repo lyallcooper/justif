@@ -120,12 +120,15 @@ observers.
 
 Container width changes and newly loaded web fonts are handled automatically.
 `refresh()` forces a re-measure for changes Justif cannot observe, for
-example a container width change with `observeResize: false`. If paragraph
-content or its computed text styles change, call `destroy()` and
-run `justify()` again so the paragraph can be rescanned.
+example a container width change with `observeResize: false`. After changing the
+CSS of paragraphs already justified — `hyphens`, the font, `letter-spacing`,
+`line-height`, `text-indent` — call `rescan()`, which re-reads author CSS and
+re-lays out only the paragraphs whose styling actually changed. Paragraphs it
+previously declined are reconsidered too. If paragraph *content* changes, call
+`destroy()` and run `justify()` again.
 
 `justify()` accepts one `Element` or any iterable of elements. The returned
-controller exposes `ready`, `refresh()`, `destroy()`, the selected
+controller exposes `ready`, `refresh()`, `rescan()`, `destroy()`, the selected
 `paragraphs`, and `managed` — the paragraphs it is still responsible for, which
 excludes any it declined and any released since. `unjustify(elements)` can
 restore elements without access to their original controller.
@@ -273,13 +276,18 @@ and the default applies. One value covers both directions for
 `--justif-expansion` and `--justif-tracking`—use the JavaScript API for more
 advanced configuration.
 
-Justif automatically watches for changes to the CSS and updates accordingly,
-with some restrictions. Older browsers (older than Chrome 117, Safari 17.4,
+Justif automatically watches for changes to your CSS and updates accordingly —
+both these properties and the ordinary ones a paragraph's layout depends on, so a
+theme toggle that switches `hyphens` or the body font re-lays out on its own.
+There are some restrictions. Older browsers (older than Chrome 117, Safari 17.4,
 Firefox 129) won't update automatically. And paragraphs that have their own
-`transition` property but don't declare the `--justif-*` property in question
-will also not be updated, since Justif uses transitions internally to track
-updates. In either case you can use `window.justif.reconfigure()` to apply
-changes manually as needed.
+`transition` property but don't declare the property in question will also not be
+updated, since Justif uses transitions internally to track updates. In either case
+you can use `window.justif.reconfigure()` to apply changes manually as needed; it
+covers both kinds of change. Two more limits are worth knowing: a rule that
+targets only an inline element inside a paragraph (`p code { font-size: … }`) is
+not noticed, and neither is a change to `text-align`, because Justif sets that
+itself on the paragraphs it manages.
 
 ### Protrusion and hanging punctuation
 

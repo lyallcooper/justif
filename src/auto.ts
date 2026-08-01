@@ -141,6 +141,41 @@ async function hyphenatorFor(id: string | null): Promise<((w: string) => string[
 
 const KNOWN_PROPERTIES = new Set<string>(CSS_PROPERTIES);
 
+/**
+ * The standard properties a paragraph's SCAN depends on, watched the same way the
+ * `--justif-*` configuration is: each one fires `transitionstart` under
+ * `transition-behavior: allow-discrete` in all three engines (verified — several
+ * are non-animatable in the older sense and carry only because interpolation is
+ * discrete), so a change to any of them reaches `controller.rescan()`.
+ *
+ * Named individually rather than through `all`: `all` would fire on every
+ * property a managed paragraph animates — a hover colour, a theme fade — turning
+ * cosmetic changes into scan work.
+ *
+ * `direction` is absent because it transitions in no engine, and `display`
+ * deliberately so: transitioning it would delay an author's own show/hide by the
+ * watcher's duration. Alignment (`text-align`, `text-align-last`) is absent for a
+ * different reason — the enhancement overwrites it, so its computed value is
+ * justif's own answer and a change to the author's underneath it is invisible.
+ */
+const SCAN_PROPERTIES = [
+  "hyphens",
+  "font-family",
+  "font-size",
+  "font-weight",
+  "font-style",
+  "font-stretch",
+  "font-variant",
+  "font-feature-settings",
+  "font-variation-settings",
+  "letter-spacing",
+  "word-spacing",
+  "white-space",
+  "line-height",
+  "text-indent",
+  "text-transform",
+] as const;
+
 /** Marks the paragraphs the watcher rule may transition. Separate from
  * ownership: it is present only where no author transition would be replaced. */
 const WATCH_ATTRIBUTE = "data-justif-watch";
@@ -213,8 +248,10 @@ function registerProperties(): void {
  * and have its animation silently deleted.
  */
 const watcherRule =
-  `:where([${WATCH_ATTRIBUTE}]){transition-property:${CSS_PROPERTIES.join(",")};` +
-  `transition-duration:1ms;transition-behavior:allow-discrete}`;
+  `:where([${WATCH_ATTRIBUTE}]){transition-property:${[
+    ...CSS_PROPERTIES,
+    ...SCAN_PROPERTIES,
+  ].join(",")};transition-duration:1ms;transition-behavior:allow-discrete}`;
 
 /**
  * May the watcher be armed here?
@@ -313,6 +350,33 @@ function boot(): Promise<void> {
   };
 
   /**
+   * Paragraphs whose author CSS has just changed, and the pass that re-reads them.
+   *
+   * Coalesced over the same two frames as `scheduleReconcile`, for the same
+   * reason: `transitionstart` fires before a discretely-interpolated value has
+   * actually moved. The work is then handed to `rescan()`, which compares each
+   * paragraph's author styling against what its enhancement was built from — so a
+   * burst of events that changes nothing the scan reads (a `font-variant` that
+   * was already `normal`, an inherited value re-declared) costs one computed-style
+   * read per paragraph and no layout at all.
+   */
+  const dirty = new Set<HTMLElement>();
+  let rescanFrame = 0;
+  const scheduleRescan = (el: HTMLElement): void => {
+    dirty.add(el);
+    if (rescanFrame !== 0) return;
+    rescanFrame = requestAnimationFrame(() => {
+      rescanFrame = requestAnimationFrame(() => {
+        rescanFrame = 0;
+        const targets = [...dirty];
+        dirty.clear();
+        // Every controller is offered the whole set; each keeps only its own.
+        for (const entry of entries) entry.controller?.rescan(targets);
+      });
+    });
+  };
+
+  /**
    * Make one paragraph watchable: preflight its transition longhands, mark it
    * only if nothing would be replaced, and ensure its root carries the rule and
    * the listener. Re-run on every scan, which is what notices an author
@@ -326,8 +390,9 @@ function boot(): Promise<void> {
           "justif: live updates off for",
           el,
           `— an author transition occupies it (${style.transitionProperty} /` +
-            ` ${style.transitionDuration}). Add the --justif-* properties to that` +
-            " declaration, or call window.justif.reconfigure() after a change.",
+            ` ${style.transitionDuration}). Add justif's own properties to that` +
+            ` declaration (${[...CSS_PROPERTIES, ...SCAN_PROPERTIES].join(", ")}),` +
+            " or call window.justif.reconfigure() after a change.",
         );
       }
       return;
@@ -342,7 +407,17 @@ function boot(): Promise<void> {
     // listener are per root, even though the registration above is not.
     adopt(root, watcherRule);
     root.addEventListener("transitionstart", (event) => {
-      if (KNOWN_PROPERTIES.has((event as TransitionEvent).propertyName)) scheduleReconcile();
+      const property = (event as TransitionEvent).propertyName;
+      if (KNOWN_PROPERTIES.has(property)) {
+        scheduleReconcile();
+        return;
+      }
+      // Anything else our rule transitions is a scan input. The target is the
+      // watched paragraph itself — the rule is not inherited, so a descendant
+      // cannot be the source — and every property here inherits, so a change made
+      // anywhere above it arrives as its own event.
+      if (property.startsWith("--") || !(event.target instanceof HTMLElement)) return;
+      scheduleRescan(event.target);
     });
   };
 
@@ -523,6 +598,12 @@ function boot(): Promise<void> {
     entries = [...kept, ...reused];
     for (const group of unmatched.values()) entries.push(startGroup(group, false).entry);
     syncControllers();
+    // Standard CSS too, not just the `--justif-*` surface: a class swap or theme
+    // toggle usually moves both, and this makes reconfigure() the single manual
+    // call for everything — the one that matters where liveness is unavailable.
+    // Free where nothing changed: rescan() compares before it re-reads. Last, so
+    // the paragraphs it re-enhances are built with the configuration just applied.
+    for (const entry of entries) entry.controller?.rescan();
   };
 
   /** One entry per group: settles once the group's FINAL controller

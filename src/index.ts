@@ -52,6 +52,7 @@ import {
   floatInlineSizeOf,
   type HardBreak,
   type ParagraphScan,
+  paragraphStyleKey,
   readParagraph,
   type ScanBatch,
 } from "./dom/read.js";
@@ -282,10 +283,29 @@ export interface JustifyController {
   readonly ready: Promise<void>;
   /**
    * Re-measure with the currently loaded font files and re-layout (also runs
-   * automatically when webfonts finish loading). For content or CSS changes,
-   * destroy() and justify() again — the original scan is reused here.
+   * automatically when webfonts finish loading). The original scan is reused, so
+   * CSS changes need `rescan()` and content changes a fresh controller.
    */
   refresh(): void;
+  /**
+   * Re-read author CSS and re-enhance wherever it now reads differently: what to
+   * call after changing the styling of managed paragraphs — `hyphens`, the font,
+   * `letter-spacing`, `white-space`, `line-height`, `text-indent` — from a
+   * stylesheet, a class, a theme toggle, or the devtools inspector.
+   *
+   * Returns the paragraphs it re-read. Ones whose styling is unchanged are left
+   * strictly alone, so calling this on every suspicion is cheap: the check is one
+   * computed-style read each. Paragraphs previously DECLINED are retried on the
+   * same terms, since a style change is exactly what can make one eligible.
+   *
+   * `targets` narrows the work to some of this controller's paragraphs; omitted,
+   * it considers all of them. Paragraphs released by `unjustify()` stay released.
+   *
+   * A re-read paragraph is restored to its author DOM and enhanced again, so —
+   * unlike `refresh()` — a selection or caret inside one does not survive. Text
+   * `content` changes are still out of scope: what gets re-read is the CSS.
+   */
+  rescan(targets?: Iterable<Element>): readonly HTMLElement[];
   /**
    * Replace this controller's layout settings and re-lay out its paragraphs,
    * reusing the existing scan. Cheaper than `destroy()` + `justify()`, and it
@@ -321,6 +341,18 @@ interface ParaPart {
   breakAfter: HardBreak | null;
 }
 
+/** One property justif has written over, with what the author had there. */
+interface MaskedDeclaration {
+  property: string;
+  /** The value justif wrote, so a later author write can be recognized: if the
+   * property no longer holds this, the author has taken it back and there is
+   * nothing left to lift. */
+  ours: string;
+  /** The author's own inline declaration, "" when they had none. */
+  author: string;
+  authorPriority: string;
+}
+
 interface ParaState {
   /** The controller that owns this enhancement (guards zombie observers). */
   owner: symbol;
@@ -339,6 +371,13 @@ interface ParaState {
    * applied. Stored as WRITTEN, so a percentage indent re-resolving across a
    * resize is caught even though the hang itself is unchanged. */
   nativeIndent: number | null;
+  /**
+   * Inline declarations of justif's that sit on a property `rescan()`'s
+   * comparison reads — `hyphens`, and a one-line hang's `text-indent`. An inline
+   * declaration outranks the author's stylesheet, so the author's current value
+   * is invisible until each of these is lifted (`authorStyleKeys`).
+   */
+  masked: MaskedDeclaration[];
 }
 
 /** Enhancement state is shared so unjustify() works from anywhere; each
@@ -358,6 +397,33 @@ function restoreStyleAttribute(el: HTMLElement, style: string | null): void {
   }
 }
 
+/**
+ * Write an inline declaration that covers an author value `rescan()` reads,
+ * remembering what was underneath. Re-writing a property justif already owns
+ * (a one-line hang whose indent changed) updates what to recognize later,
+ * without forgetting the author's original.
+ */
+function maskAuthorStyle(
+  p: HTMLElement,
+  state: ParaState,
+  property: string,
+  value: string,
+  priority = "",
+): void {
+  const existing = state.masked.find((mask) => mask.property === property);
+  if (existing === undefined) {
+    state.masked.push({
+      property,
+      ours: value,
+      author: p.style.getPropertyValue(property),
+      authorPriority: p.style.getPropertyPriority(property),
+    });
+  } else {
+    existing.ours = value;
+  }
+  p.style.setProperty(property, value, priority);
+}
+
 /** The author's own first-line indent in px. Percentage indents resolve
  * against the LIVE width (a scan-time resolution goes stale across
  * resizes). */
@@ -374,6 +440,7 @@ function firstLineIndentPx(state: ParaState): number {
 function clearNativeHang(p: HTMLElement, state: ParaState): boolean {
   if (state.nativeIndent === null) return false;
   state.nativeIndent = null;
+  state.masked = [];
   restoreStyleAttribute(p, state.originalStyleAttr);
   return true;
 }
@@ -410,10 +477,10 @@ function applyNativeHang(
   if (indent === null) return clearNativeHang(p, state);
   if (indent === state.nativeIndent) return false;
   state.nativeIndent = indent;
-  p.style.setProperty("text-indent", `${indent}px`);
+  maskAuthorStyle(p, state, "text-indent", `${indent}px`);
   // Neutralized for the same reason as in beginEnhancement: a CSS
   // hanging-punctuation hang would compound with this one.
-  p.style.setProperty("hanging-punctuation", "none");
+  maskAuthorStyle(p, state, "hanging-punctuation", "none");
   return true;
 }
 
@@ -433,6 +500,8 @@ function restoreManagedOutput(p: HTMLElement, state: ParaState): boolean {
   p.removeAttribute("data-justif-dropcap");
   state.lastPatch = "";
   state.enhanced = false;
+  // The author's style attribute is back, so nothing of justif's covers it.
+  state.masked = [];
   return true;
 }
 
@@ -477,6 +546,7 @@ function noopController(): JustifyController {
   return {
     ready: Promise.resolve(),
     refresh() {},
+    rescan: () => [],
     applyLayoutOptions() {},
     destroy() {},
     paragraphs: [],
@@ -644,25 +714,28 @@ function beginEnhancement(p: HTMLElement, state: ParaState): void {
   state.enhanced = true;
   p.setAttribute("data-justif", "");
   if (state.scan.floatIntrusion !== null) p.setAttribute("data-justif-dropcap", "");
-  disableTextAutosizing(p);
+  disableTextAutosizing(p, (property, value, priority) =>
+    maskAuthorStyle(p, state, property, value, priority),
+  );
   // Neutralize the author's text-align: justify (the browser must not
   // re-justify our exactly-filled lines) — toward the line-START edge,
   // which is the right edge in an RTL paragraph.
-  p.style.textAlign = state.scan.direction === "rtl" ? "right" : "left";
+  maskAuthorStyle(p, state, "text-align", state.scan.direction === "rtl" ? "right" : "left");
   // text-align-last also applies to lines terminated by <br>. The core
   // has already implemented its `justify` case by setting each segment
   // ending as a rectangle, so neutralize that native second pass.
   // Other author alignments remain useful: the browser can center/end-
   // align our already-sized ragged ending without changing its breaks.
   if (state.scan.justifyAll) {
-    p.style.textAlignLast = state.scan.direction === "rtl" ? "right" : "left";
+    const last = state.scan.direction === "rtl" ? "right" : "left";
+    maskAuthorStyle(p, state, "text-align-last", last);
   }
   // Neutralize CSS hanging-punctuation (Safari): it would hang quotes
   // and stops on top of our protrusion — a double hang — and shift
   // rendered widths our wrap model doesn't know about. A no-op in
   // engines that don't support the property. Use a `hangingPunctuation`
   // mode for the full-hang style instead.
-  p.style.setProperty("hanging-punctuation", "none");
+  maskAuthorStyle(p, state, "hanging-punctuation", "none");
   // Reset the properties that decide where the engine MAY break. The
   // model chose every break and each glyph run is `nowrap`, so neither
   // the permissive values (which license a break where the text offers
@@ -681,9 +754,9 @@ function beginEnhancement(p: HTMLElement, state: ParaState): void {
   // opportunities apply *inside* a nowrap run. The segment rules cover the
   // licences an author rule grants closer to the break point than this
   // (see SHEET_TEXT).
-  p.style.setProperty("overflow-wrap", "normal");
-  p.style.setProperty("word-break", "normal");
-  p.style.setProperty("line-break", "auto");
+  maskAuthorStyle(p, state, "overflow-wrap", "normal");
+  maskAuthorStyle(p, state, "word-break", "normal");
+  maskAuthorStyle(p, state, "line-break", "auto");
   // Neutralize CSS `hyphens: auto`: the model chose every break, so
   // auto-hyphenation has no work left in the enhanced DOM (the
   // `hyphenate` option is the replacement) — and it makes Chromium's
@@ -697,8 +770,10 @@ function beginEnhancement(p: HTMLElement, state: ParaState): void {
   // where measurement integrity is at stake), enhancement never
   // escalates against an explicit author override.
   if (state.scan.specs[state.scan.baseSpec]!.hyphens === "auto") {
-    p.style.setProperty("hyphens", "manual");
-    p.style.setProperty("-webkit-hyphens", "manual");
+    // Through maskAuthorStyle: from here on this paragraph's computed `hyphens`
+    // is justif's, and rescan() has to look underneath it.
+    maskAuthorStyle(p, state, "hyphens", "manual");
+    maskAuthorStyle(p, state, "-webkit-hyphens", "manual");
   }
 }
 
@@ -924,6 +999,14 @@ export function justify(
   /** Per-controller, so a destroy() + justify() retry gets a fresh chance
    * after content that previously caused a bail has been fixed. */
   const bailed = new WeakSet<HTMLElement>();
+  /**
+   * The author styling behind this controller's current decision about each
+   * paragraph — the scan it kept, or the styling it declined. `rescan()` compares
+   * against it to answer "could re-reading reach a different answer?", so a
+   * declined paragraph is retried exactly when its styling changes, and an
+   * enhanced one is left alone until its own.
+   */
+  const decidedStyleKey = new WeakMap<HTMLElement, string>();
   let destroyed = false;
 
   const initialResolution = resolveOptions(options);
@@ -969,6 +1052,10 @@ export function justify(
     } catch (error) {
       scan = `threw while scanning: ${describeError(error)}`;
     }
+    // Recorded either way, and here rather than after the enhancement lands:
+    // this is the last moment the paragraph is in its author styling, which is
+    // exactly what the key has to describe.
+    decidedStyleKey.set(p, styleKeyNow(p));
     if (typeof scan === "string") {
       bailed.add(p);
       // The batch's temporary autosizing declarations are still present;
@@ -978,6 +1065,65 @@ export function justify(
     }
     scanned.set(p, scan);
     return true;
+  };
+
+  /**
+   * The paragraph's styling as it computes right now.
+   *
+   * (One asymmetry worth knowing, on engines that autosize text: the scan reads
+   * with autosizing suppressed and an enhanced paragraph keeps that suppression,
+   * but a managed NATIVE one does not, so its `font-size` can read back
+   * differently there. The cost is a redundant rescan, not a wrong one.)
+   */
+  function styleKeyNow(p: HTMLElement): string {
+    const style = getComputedStyle(p);
+    return `${paragraphStyleKey(style)} ${style.textIndent}`;
+  }
+
+  /**
+   * The AUTHOR's key for each paragraph — what `styleKeyNow` would read if justif
+   * had never touched it. Two of justif's own inline declarations sit on
+   * properties the key describes (`hyphens`, and a one-line hang's
+   * `text-indent`), and an inline declaration outranks the author's stylesheet,
+   * so on those paragraphs the author's current value is invisible.
+   *
+   * Each masked declaration is put back to what the author had there — their own
+   * inline value, or nothing — rather than simply removed, since removing it
+   * would let the read fall through to a rule their inline declaration had
+   * overridden. Batched into write → read → write, so any number of paragraphs
+   * costs two style recalculations, with no paint between them and every
+   * declaration back where it was at the end.
+   */
+  const authorStyleKeys = (targets: readonly HTMLElement[]): Map<HTMLElement, string> => {
+    const undo: Array<() => void> = [];
+    for (const p of targets) {
+      for (const mask of ownedState(p)?.masked ?? []) {
+        // Not ours any more: the author (or a script, or the inspector) has
+        // written this property since, so what computes IS their current value.
+        if (p.style.getPropertyValue(mask.property) !== mask.ours) continue;
+        const { property, ours, author, authorPriority } = mask;
+        if (author === "") p.style.removeProperty(property);
+        else p.style.setProperty(property, author, authorPriority);
+        undo.push(() => p.style.setProperty(property, ours));
+      }
+    }
+    const keys = new Map(targets.map((p) => [p, styleKeyNow(p)]));
+    // Every declaration of justif's is lifted right now, so this is also the one
+    // moment the author's CURRENT style attribute is readable — including inline
+    // declarations they added after the enhancement, which the attribute saved at
+    // adoption cannot know about. Re-saving it here is what lets a re-read see
+    // them instead of reverting them.
+    for (const p of targets) {
+      const state = ownedState(p);
+      if (state === undefined || state.masked.length === 0) continue;
+      // Lifting every declaration of ours off a paragraph that had no style
+      // attribute of its own leaves an empty one behind; saving that would put
+      // `style=""` on the author's element at teardown.
+      const attribute = p.getAttribute("style");
+      state.originalStyleAttr = attribute === "" ? null : attribute;
+    }
+    for (const restoreMask of undo) restoreMask();
+    return keys;
   };
 
   const buildParts = (
@@ -1070,6 +1216,7 @@ export function justify(
         lastPatch: "",
         enhanced: false,
         nativeIndent: null,
+        masked: [],
       });
     } catch (error) {
       // Same fail-safe as the scan: this paragraph stays native.
@@ -1385,9 +1532,9 @@ export function justify(
     // anchors, and scrollbars stay stable across reveals even in engines
     // whose remembered-size recording is unreliable (WebKit).
     if (state.scan.pinIntrinsicSize && state.scan.lineHeightPx !== null) {
-      p.style.containIntrinsicBlockSize = `auto ${
-        Math.round(layout.visualLineCount * state.scan.lineHeightPx * 1000) / 1000
-      }px`;
+      const height =
+        Math.round(layout.visualLineCount * state.scan.lineHeightPx * 1000) / 1000;
+      maskAuthorStyle(p, state, "contain-intrinsic-block-size", `auto ${height}px`);
     }
     // This re-patch detaches any previous segment DOM: corrections queued
     // for the old nodes are stale and must never be measured or parked. A
@@ -1952,26 +2099,38 @@ export function justify(
   // document.fonts.check() is no arbiter either: WebKit answers true for
   // a still-loading face whenever the font string carries an available
   // fallback family. Probe advances are the only ground truth used here.)
-  const restoreScanStyles = suppressAutosizingForScan(paragraphs);
-  let scannable: HTMLElement[];
-  const scanBatch = beginScanBatch(paragraphs.length);
-  try {
-    scannable = paragraphs.filter((p) => scanParagraph(p, scanBatch));
-  } finally {
-    // Ends here, not at controller teardown: the batch's conclusions about
-    // author CSS are only sound while no page script has run.
-    endScanBatch(scanBatch);
-    restoreScanStyles();
-  }
-  for (const { p, reason } of pendingSkips) emitSkip(p, reason);
-  fontProbes = collectFontProbes(
-    scannable.flatMap((p) => scanned.get(p) ?? []),
-    hyphenate !== undefined,
-  );
+  /**
+   * Read `targets` and enhance whatever of them can be: the whole adoption
+   * sequence, shared by this first pass and by every later `rescan()`.
+   *
+   * `fontProbes` is REPLACED rather than extended — the probes describe the
+   * content this controller is currently responsible for, and a rescan has just
+   * re-read that content.
+   */
+  const adopt = (targets: readonly HTMLElement[]): void => {
+    const restoreScanStyles = suppressAutosizingForScan(targets);
+    let scannable: HTMLElement[];
+    const scanBatch = beginScanBatch(targets.length);
+    try {
+      scannable = targets.filter((p) => scanParagraph(p, scanBatch));
+    } finally {
+      // Ends here, not at controller teardown: the batch's conclusions about
+      // author CSS are only sound while no page script has run.
+      endScanBatch(scanBatch);
+      restoreScanStyles();
+    }
+    // Drained, so a later pass reports only what it declined itself.
+    for (const { p, reason } of pendingSkips.splice(0)) emitSkip(p, reason);
+    fontProbes = collectFontProbes(
+      scannable.flatMap((p) => scanned.get(p) ?? []),
+      hyphenate !== undefined,
+    );
+    commit(scannable);
+  };
 
   let ready: Promise<void>;
   try {
-    commit(scannable);
+    adopt(paragraphs);
     reprobeBaselines();
     attachObservers();
     // `ready` keeps its contract — it resolves only once the needed faces
@@ -2016,6 +2175,46 @@ export function justify(
     refresh() {
       refreshNativeFloatIntrusions();
       remeasureAll(true);
+    },
+    rescan(targets) {
+      if (destroyed) return [];
+      const candidates =
+        targets === undefined
+          ? paragraphs
+          : [...targets].filter(
+              (el): el is HTMLElement =>
+                el instanceof HTMLElement && paragraphs.includes(el),
+            );
+      // Whose answer could actually change. A paragraph this controller has
+      // released — unjustify(), a teardown from outside — is neither managed nor
+      // declined, and stays released: that was a decision, not a state.
+      const considered = candidates.filter(
+        (p) => ownedState(p) !== undefined || bailed.has(p),
+      );
+      const current = authorStyleKeys(considered);
+      const stale = considered.filter((p) => decidedStyleKey.get(p) !== current.get(p));
+      if (stale.length === 0) return [];
+      for (const p of stale) {
+        const state = ownedState(p);
+        if (state !== undefined) {
+          // Back to the author's own DOM and style attribute FIRST: the scan
+          // must read author CSS, not the enhancement's inline declarations.
+          restoreManagedOutput(p, state);
+          states.delete(p);
+          dropQueued(p);
+        }
+        bailed.delete(p);
+        scanned.delete(p);
+      }
+      adopt(stale);
+      // A paragraph may have changed sides — newly enhanced, or newly declined.
+      for (const p of stale) {
+        if (observer === null) continue;
+        if (ownedState(p) === undefined) observer.unobserve(p);
+        else observer.observe(p);
+      }
+      reprobeBaselines();
+      return stale;
     },
     applyLayoutOptions(config) {
       if (destroyed) return;

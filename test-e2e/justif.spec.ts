@@ -5,6 +5,7 @@ import { kinsokuNotAtLineEnd, kinsokuNotAtLineStart } from "../src/core/cjk.js";
 interface TestController {
   ready: Promise<void>;
   refresh(): void;
+  rescan(targets?: Iterable<Element>): readonly HTMLElement[];
   applyLayoutOptions(config: object): void;
   destroy(): void;
   readonly managed: readonly Element[];
@@ -3784,6 +3785,125 @@ test("a first-line hang composes with the author's own text-indent", async ({ pa
   expect(Math.abs(result.oneLine.lines[0]!.left - (32 - hang))).toBeLessThan(1);
 });
 
+/**
+ * `rescan()`: author CSS is a scan input, and the scan is otherwise read once.
+ * Everything here changes styling AFTER enhancement — the case `refresh()`
+ * cannot serve, because it re-measures from the cached scan.
+ */
+test("rescan() picks up author CSS changes and leaves the rest alone", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    const text =
+      "The extraordinarily complicated development of unquestionably " +
+      "international typographical conventions demonstrates considerable " +
+      "responsibility, naturally, whenever compositors compare alternatives.";
+    const make = (id: string, extra = "") => {
+      const p = document.createElement("p");
+      p.id = id;
+      p.setAttribute(
+        "style",
+        `width: 260px; text-align: justify; font: 17px Georgia, serif; hyphens: auto;` +
+          ` margin: 0 0 1em; ${extra}`,
+      );
+      p.textContent = text;
+      host.append(p);
+      return p;
+    };
+    const subject = make("rescan-subject");
+    const bystander = make("rescan-bystander");
+    // Declined at scan time: text-transform renders glyphs canvas never measured.
+    const declined = make("rescan-declined", "text-transform: uppercase;");
+    const skips: string[] = [];
+    const relayouts: string[] = [];
+    const controller = window.__justif.justify([subject, bystander, declined], {
+      hyphenate: window.__justif.hyphenateEnUS,
+      expansion: false,
+      tracking: false,
+      onSkip: (p: HTMLElement) => skips.push(p.id),
+      onRelayout: (p: HTMLElement) => relayouts.push(p.id),
+    } as object);
+    await controller.ready;
+
+    const shape = (p: HTMLElement) => ({
+      hyphens: p.querySelectorAll(".justif-hyphen").length,
+      lines: window.__justifLines(p).lines.length,
+      enhanced: p.hasAttribute("data-justif"),
+    });
+    const before = {
+      subject: shape(subject),
+      bystander: shape(bystander),
+      declined: shape(declined),
+      skips: [...skips],
+    };
+
+    // (1) A style change with nothing to notice: same key, so no work at all.
+    subject.style.color = "darkred";
+    const noop = controller.rescan().map((p) => p.id);
+
+    // (2) A scan input, on one paragraph only.
+    subject.style.hyphens = "none";
+    relayouts.length = 0;
+    const rescanned = controller.rescan().map((p) => p.id);
+    const afterHyphens = {
+      subject: shape(subject),
+      bystander: shape(bystander),
+      relayouts: [...relayouts],
+    };
+
+    // (3) The reason for the decline, removed: a rescan reconsiders it.
+    declined.style.textTransform = "none";
+    skips.length = 0;
+    const retried = controller.rescan([declined]).map((p) => p.id);
+    const afterRetry = { declined: shape(declined), skips: [...skips] };
+
+    // (4) Released by hand: stays released, whatever its CSS does next.
+    window.__justif.unjustify([bystander]);
+    bystander.style.letterSpacing = "0.4px";
+    const afterRelease = controller.rescan().map((p) => p.id);
+
+    const managed = controller.managed.map((p) => (p as HTMLElement).id);
+    controller.destroy();
+    host.replaceChildren();
+    return {
+      before,
+      noop,
+      rescanned,
+      afterHyphens,
+      retried,
+      afterRetry,
+      afterRelease,
+      managed,
+    };
+  });
+
+  // The fixture has to hyphenate to start with, or nothing below is a signal.
+  expect(result.before.subject.hyphens).toBeGreaterThan(0);
+  expect(result.before.bystander.hyphens).toBe(result.before.subject.hyphens);
+  expect(result.before.declined.enhanced).toBe(false);
+  expect(result.before.skips).toEqual(["rescan-declined"]);
+
+  // (1) Nothing the scan reads changed, so nothing was re-read.
+  expect(result.noop).toEqual([]);
+
+  // (2) `hyphens: none` now suppresses hyphenation — and only where it was set.
+  expect(result.rescanned).toEqual(["rescan-subject"]);
+  expect(result.afterHyphens.subject.hyphens).toBe(0);
+  expect(result.afterHyphens.subject.enhanced).toBe(true);
+  expect(result.afterHyphens.bystander.hyphens).toBe(result.before.bystander.hyphens);
+  expect(result.afterHyphens.bystander.lines).toBe(result.before.bystander.lines);
+  // Re-enhancing is a relayout, and reported as one — for the subject alone.
+  expect(result.afterHyphens.relayouts).toEqual(["rescan-subject"]);
+
+  // (3) The declined paragraph is enhanced now, and not re-reported as skipped.
+  expect(result.retried).toEqual(["rescan-declined"]);
+  expect(result.afterRetry.declined.enhanced).toBe(true);
+  expect(result.afterRetry.skips).toEqual([]);
+
+  // (4) A hand-torn-down paragraph is not re-adopted by a rescan.
+  expect(result.afterRelease).toEqual([]);
+  expect(result.managed).toEqual(["rescan-subject", "rescan-declined"]);
+});
+
 test("an unchanged native hang does not report or mutate a relayout", async ({ page }) => {
   const result = await page.evaluate(async () => {
     const p = document.createElement("p");
@@ -4766,6 +4886,74 @@ test('auto drop-in: "first-line-and-line-ends" is part of the CSS surface', asyn
   expect(
     await page.evaluate(() => document.getElementById("plain")!.hasAttribute("data-justif")),
   ).toBe(true);
+});
+
+/**
+ * The drop-in watches standard CSS the same way it watches `--justif-*`: a
+ * `hyphens` change from a stylesheet applies on its own, with no library call.
+ *
+ * The hazard this also pins down is a feedback loop. The enhancement writes
+ * inline declarations on properties in the watched set (`hyphens` among them), and
+ * those writes fire the very transitions the watcher listens to — so a re-scan
+ * that did not compare against the AUTHOR's styling would trigger the next one for
+ * as long as the page is open.
+ */
+test("auto drop-in: a standard CSS change applies by itself", async ({ page }) => {
+  await page.goto("/test-e2e/fixture-auto-css.html");
+  await page.waitForFunction(() => (window as Window & { justif?: unknown }).justif !== undefined);
+  await page.evaluate(async () => {
+    await (window as Window & { justif?: { booted: Promise<void> } }).justif!.booted;
+  });
+  const live = await page.evaluate(
+    () =>
+      typeof CSS.registerProperty === "function" &&
+      CSS.supports("transition-behavior", "allow-discrete"),
+  );
+  test.skip(!live, "engine lacks @property or allow-discrete: liveness is opt-out here");
+
+  // #as-default holds prose that hyphenates readily; a narrow measure is all it
+  // needs. Width changes travel by ResizeObserver, so this needs no rescan.
+  await page.evaluate(() => {
+    const style = document.createElement("style");
+    style.id = "probe";
+    style.textContent = ".col { width: 190px }";
+    document.head.append(style);
+  });
+  const hyphens = () =>
+    page.evaluate(() => document.querySelectorAll("#as-default .justif-hyphen").length);
+  await expect.poll(hyphens, { timeout: 4000 }).toBeGreaterThan(0);
+
+  // From here on, count DOM churn inside the paragraph: a feedback loop between
+  // the enhancement's own inline writes and the watcher would never stop.
+  await page.evaluate(() => {
+    const global = window as Window & { __churn?: number };
+    global.__churn = 0;
+    new MutationObserver((records) => {
+      global.__churn! += records.length;
+    }).observe(document.getElementById("as-default")!, { childList: true, subtree: true });
+  });
+
+  // The change under test: one stylesheet edit, no library call of any kind.
+  await page.evaluate(() => {
+    document.getElementById("probe")!.textContent =
+      ".col { width: 190px } .col p { hyphens: none }";
+  });
+  await expect.poll(hyphens, { timeout: 4000 }).toBe(0);
+
+  const settled = await page.evaluate(async () => {
+    const global = window as Window & { __churn?: number };
+    const before = global.__churn!;
+    await new Promise((r) => setTimeout(r, 700));
+    return {
+      quiet: global.__churn === before,
+      segments: document.querySelectorAll("#as-default .justif-seg").length,
+      enhanced: document.getElementById("as-default")!.hasAttribute("data-justif"),
+    };
+  });
+  // Still enhanced, and the DOM stops changing once it has caught up.
+  expect(settled.enhanced).toBe(true);
+  expect(settled.segments).toBeGreaterThan(0);
+  expect(settled.quiet).toBe(true);
 });
 
 test("auto drop-in: an author transition is never replaced", async ({ page }) => {
