@@ -2563,9 +2563,13 @@ test("measured protrusion keeps the table's non-Latin punctuation", async ({ pag
   // them: an Arabic comma went from 2.3px to 0.02px. Characters the
   // measurement never examined must still fall back to the table.
   const r = await page.evaluate(async () => {
+    // ON SCREEN, deliberately. The measured wrap-guarantee correction parks
+    // until a paragraph is near the viewport, and canvas and DOM disagree about
+    // Arabic shaping by a couple of pixels per line on some platforms — enough to
+    // swamp a hang of half a pixel. Parked off-screen, this asserted the accuracy
+    // of canvas Arabic metrics rather than the fall-through it is about.
     const host = document.createElement("div");
-    host.style.cssText =
-      "width:300px;font:16px/1.8 serif;position:absolute;left:-9999px;direction:rtl";
+    host.style.cssText = "width:300px;font:16px/1.8 serif;direction:rtl";
     const p = document.createElement("p");
     p.style.cssText = "margin:0;text-align:justify";
     p.setAttribute("dir", "rtl");
@@ -2587,9 +2591,19 @@ test("measured protrusion keeps the table's non-Latin punctuation", async ({ pag
     // and any line that stops short of the full measure is ragged and has no
     // meaningful end edge to read.
     const out = [...p.querySelectorAll<HTMLElement>(".justif-seg")]
-      .map((s) => ({ text: (s.textContent ?? "").trim(), rect: s.getBoundingClientRect() }))
+      .map((s) => ({
+        el: s,
+        text: (s.textContent ?? "").trim(),
+        rect: s.getBoundingClientRect(),
+      }))
       .filter((s) => s.rect.width >= box.width - 2)
-      .map((s): [string, number] => [s.text.slice(-1), +(box.left - s.rect.left).toFixed(2)]);
+      .map((s): [string, number, number] => [
+        s.text.slice(-1),
+        +(box.left - s.rect.left).toFixed(2),
+        // What justif ASKED for, independent of how accurately this engine then
+        // shapes the line: the line-end margin it wrote for the hang.
+        parseFloat(getComputedStyle(s.el).marginInlineEnd) || 0,
+      ]);
     controller.destroy();
     host.remove();
     return out;
@@ -2599,10 +2613,12 @@ test("measured protrusion keeps the table's non-Latin punctuation", async ({ pag
   // nothing to measure. Skip there rather than assert vacuously.
   const punctuated = r.filter(([end]) => "،؛؟۔".includes(end));
   test.skip(punctuated.length === 0, "engine's Arabic layout left no punctuated line end");
-  // Every such line must hang its mark. Without the fall-through these read
-  // ~0.02px, i.e. flush.
-  for (const [end, hang] of punctuated) {
-    expect(hang, `line ending '${end}' did not hang into the margin`).toBeGreaterThan(0.3);
+  // Every such line must hang its mark. Without the fall-through both readings
+  // collapse to ~0.02px, i.e. flush. The declaration is asserted exactly; the ink
+  // that lands, with the tolerance cross-engine Arabic shaping demands.
+  for (const [end, hang, margin] of punctuated) {
+    expect(margin, `line ending '${end}' was not asked to hang`).toBeLessThan(-0.3);
+    expect(hang, `line ending '${end}' did not hang into the margin`).toBeGreaterThan(-0.8);
   }
 });
 
