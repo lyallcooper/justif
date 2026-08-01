@@ -225,7 +225,14 @@ function composedForFamily(
   // the model's, and skipping it is most of what `protrusion: false` buys.
   let base: ProtrusionTable = {};
   if (settings.model) {
-    const measured = settings.measured ? opticalProtrusion(spec) : undefined;
+    // Pure-RTL paragraphs take the table-backed path: every character the raster
+    // pass forms an opinion about is Latin, so measuring buys such a paragraph
+    // nothing — while the script-specific stops it does NOT examine are exactly
+    // what the built-in tables carry for it. Measured on CI, where `serif`
+    // resolves to a face with no Arabic at all: the measured path left an Arabic
+    // question mark sitting inside the margin.
+    const measured =
+      settings.measured && spec.direction !== "rtl" ? opticalProtrusion(spec) : undefined;
     base =
       measured !== undefined
         ? { ...unmeasuredProtrusion(), ...measured }
