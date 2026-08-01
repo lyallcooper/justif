@@ -2354,9 +2354,34 @@ export function justify(
    * Called with transitions suppressed on `considered`.
    */
   const reread = (considered: readonly HTMLElement[]): readonly HTMLElement[] => {
-    const current = authorStyleKeys(considered);
+    // Transitions come off only where this pass will actually write: the
+    // paragraphs whose masked declarations have to be lifted for the comparison,
+    // and then the ones being re-adopted. Suppressing on all of them would touch
+    // the class attribute of every paragraph on the page for a check that in the
+    // ordinary case changes nothing — visible to any MutationObserver the page
+    // has of its own.
+    const lifted = considered.filter((p) =>
+      (ownedState(p)?.masked ?? []).some((mask) => mask.inKey),
+    );
+    const restoreLifted = suppressTransitions(lifted);
+    let current: Map<HTMLElement, string>;
+    try {
+      current = authorStyleKeys(considered);
+    } finally {
+      restoreLifted();
+    }
     const stale = considered.filter((p) => decidedStyleKey.get(p) !== current.get(p));
     if (stale.length === 0) return [];
+    const restoreStale = suppressTransitions(stale);
+    try {
+      return readapt(stale);
+    } finally {
+      restoreStale();
+    }
+  };
+
+  /** Restore `stale` to author styling, read it again, and enhance what can be. */
+  const readapt = (stale: readonly HTMLElement[]): readonly HTMLElement[] => {
     /** Had rendered output to lose, for the relayout report below. */
     const wasEnhanced = new Set<HTMLElement>();
     for (const p of stale) {
@@ -2442,14 +2467,7 @@ export function justify(
       const considered = candidates.filter(
         (p) => ownedState(p) !== undefined || bailed.has(p),
       );
-      // Everything from here to the end of the re-adoption reads styles justif has
-      // just written, so it runs with transitions off (see suppressTransitions).
-      const restoreTransitions = suppressTransitions(considered);
-      try {
-        return reread(considered);
-      } finally {
-        restoreTransitions();
-      }
+      return reread(considered);
     },
     applyLayoutOptions(config) {
       if (destroyed) return;
