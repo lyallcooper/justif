@@ -27,6 +27,21 @@
     border: 0;
   }
   #rtl-vf p { font-family: "Junicode", Georgia, serif; }
+  /* Fonts whose U+00A0 advance differs from their space (Charter doubles
+     it, Hoefler Text more than triples it, Skia halves it): run-boundary
+     glue renders as NBSP, so the surplus has to come back off as a start
+     margin. No Linux CI font is known to diverge — the test skips when the
+     stack resolves to a face where the two agree. */
+  #nbsp-host { width: 440px; }
+  #nbsp-host p {
+    font-family: Charter, "Hoefler Text", Geneva, Georgia, serif;
+    font-size: 17px;
+    line-height: 1.45;
+    text-align: justify;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
   #ja-host { width: 440px; }
   #ja-host p {
     /* A system CJK stack every engine can shape (the fixture runs on the
@@ -89,6 +104,11 @@
      would introduce breakable ones. -->
 <div id="ja-host">
   <p id="pja" lang="ja">吾輩は猫である。名前はまだ無い。どこで生れたかとんと見当がつかぬ。何でも薄暗いじめじめした所でニャーニャー泣いていた事だけは記憶している。吾輩はここで始めて人間というものを見た。しかもあとで聞くとそれは書生という人間中で一番獰悪な種族であったそうだ。この書生というのは時々我々を捕えて煮て食うという話である。</p>
+</div>
+<div id="nbsp-host">
+  <p id="p-nbsp">The king's daughter followed it with her eyes and saw that
+  the <em>deep dark well</em> had swallowed it whole, so deep that nobody
+  standing at the mossy rim could ever hope to see the bottom of it.</p>
 </div>
 <script type="module">
   import { hangingPunctuation, justify, unjustify } from "/dist/index.js";

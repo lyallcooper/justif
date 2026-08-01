@@ -55,6 +55,9 @@
 - Fixed Safari keeping the fallback font's line breaks and spacing when a font
   arrives after the text is justified, such as one loaded by a script or by
   late-running CSS.
+- Fixed a wide gap opening beside an italic, bold, small-caps, or linked run
+  in Charter, Hoefler Text, and a few other fonts, with every other word space
+  on that line squeezed narrow to make room for it.
 
 ## 0.6.5 (2026-07-28)
 

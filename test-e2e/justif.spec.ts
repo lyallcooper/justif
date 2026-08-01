@@ -1805,6 +1805,60 @@ test("author NBSP and NNBSP boxes keep authored spacing and inline ancestry", as
   expect(result.narrowRects).toBe(1);
 });
 
+test("a divergent-NBSP font's run-boundary space renders one space wide", async ({
+  page,
+}) => {
+  // The space at a styling-run boundary renders as U+00A0 so the boundary can
+  // never become a stray wrap point, and the model prices it as an ordinary
+  // space. Charter, Hoefler Text, Geneva and Skia each give U+00A0 an advance
+  // of its own, and the boundary then reads as a hole (or a collision) while
+  // the corrective pass pays for it out of every other gap on the line.
+  // #nbsp-host carries the font stack. WebKit renders U+00A0 with the space
+  // glyph outright — canvas and DOM agree there, nothing to correct, skip.
+  const surplus = await page.evaluate(() => {
+    const style = getComputedStyle(document.getElementById("p-nbsp")!);
+    const ctx = document.createElement("canvas").getContext("2d")!;
+    ctx.font = `${style.fontSize} ${style.fontFamily}`;
+    const gap = (separator: string): number =>
+      ctx.measureText(`n${separator}n`).width - 2 * ctx.measureText("n").width;
+    return gap("\u00A0") - gap(" ");
+  });
+  test.skip(Math.abs(surplus) < 1, "no font here gives U+00A0 an advance of its own");
+
+  await enhance(page, {}, "#nbsp-host p");
+  await waitForQuiescence(page, "#nbsp-host");
+
+  const measured = await page.evaluate(() => {
+    const segments = [...document.querySelectorAll<HTMLElement>("#nbsp-host .justif-seg")];
+    const range = document.createRange();
+    for (let i = 1; i < segments.length; i++) {
+      const text = segments[i]!.textContent ?? "";
+      // An interior space of the SAME segment is the exact comparison: it
+      // carries this segment's word-spacing and letter-spacing too, so only
+      // the two separators' glyph advances differ.
+      const interior = text.indexOf(" ", 1);
+      if (text.charCodeAt(0) !== 0xa0 || interior < 0) continue;
+      const node = segments[i]!.firstChild as Text;
+      const previous = segments[i - 1]!.getBoundingClientRect();
+      range.setStart(node, 1);
+      range.setEnd(node, 2);
+      const afterBoundary = range.getBoundingClientRect();
+      // A boundary the breaker turned into a line break renders no NBSP gap.
+      if (Math.abs(afterBoundary.top - previous.top) > 1) continue;
+      range.setStart(node, interior);
+      range.setEnd(node, interior + 1);
+      return {
+        boundary: afterBoundary.left - previous.right,
+        interior: range.getBoundingClientRect().width,
+      };
+    }
+    return null;
+  });
+
+  expect(measured).not.toBeNull();
+  expect(measured!.boundary).toBeCloseTo(measured!.interior, 0);
+});
+
 test("fixed no-break segments preserve dash-junction word joiners on both sides", async ({
   page,
 }) => {

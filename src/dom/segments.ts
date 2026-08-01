@@ -76,6 +76,11 @@ function trackingFeatureSettings(spec: FontSpec, active: boolean): string | unde
  * text (they bail), and keep the one-glyph measurement unchanged.
  */
 function spaceWidthIn(spec: FontSpec, context: () => string): number {
+  return separatorWidthIn(spec, context, " ");
+}
+
+/** `spaceWidthIn` for an arbitrary word-separator character. */
+function separatorWidthIn(spec: FontSpec, context: () => string, separator: string): number {
   // `context` is a thunk: only the paths below that actually probe in script
   // or letter context need the text, and materializing a paragraph-wide
   // string for the ordinary case was pure waste. Memoized because an RTL spec
@@ -90,7 +95,9 @@ function spaceWidthIn(spec: FontSpec, context: () => string): number {
         ? "א" // Hebrew alef
         : null;
     if (probe !== null) {
-      return measureWidth(`${probe} ${probe}`, spec) - 2 * measureWidth(probe, spec);
+      return (
+        measureWidth(`${probe}${separator}${probe}`, spec) - 2 * measureWidth(probe, spec)
+      );
     }
   }
   if (requiresDomMeasurement(spec) && spec.variantPosition === "normal") {
@@ -105,9 +112,11 @@ function spaceWidthIn(spec: FontSpec, context: () => string): number {
     // contextually across a run), so their spaces really do render alone
     // and the lone-space measurement is the matching one.
     const letter = /\p{L}/u.exec(runText())?.[0] ?? "n";
-    return measureWidth(`${letter} ${letter}`, spec) - 2 * measureWidth(letter, spec);
+    return (
+      measureWidth(`${letter}${separator}${letter}`, spec) - 2 * measureWidth(letter, spec)
+    );
   }
-  return measureWidth(" ", spec);
+  return measureWidth(separator, spec);
 }
 
 /** Core Measure implementation backed by the canvas cache. */
@@ -358,6 +367,25 @@ export function buildRenderSegments(
   const lastSegForRun = new Map<number, number>();
   let floatStyleEmitted = false;
 
+  // How much wider a synthetic run-boundary NBSP renders than the ordinary
+  // space the model prices it as (see the glue branches below). Nearly every
+  // font gives the two characters one advance, but macOS Charter maps U+00A0
+  // to its own glyph at exactly twice the space width (Hoefler Text more than
+  // triples it; Skia halves it) — enough that the boundary reads as a hole
+  // while the corrective pass squeezes every other gap on the line to pay for
+  // it. Probed lazily and per spec: a paragraph without a run boundary never
+  // measures at all.
+  const nbspExcessByKey = new Map<string, number>();
+  const nbspExcessIn = (spec: FontSpec, runIndex: number): number => {
+    let excess = nbspExcessByKey.get(spec.key);
+    if (excess === undefined) {
+      const context = (): string => scan.runs[runIndex]!.text;
+      excess = separatorWidthIn(spec, context, "\u00A0") - separatorWidthIn(spec, context, " ");
+      nbspExcessByKey.set(spec.key, excess);
+    }
+    return excess;
+  };
+
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
     const line = lines[lineIndex]!;
     // Absolute word-spacing per run on this line: the author's own
@@ -393,6 +421,10 @@ export function buildRenderSegments(
     /** True only while flushing one Box that contains author U+00A0/U+202F.
      * Such a box owns a segment so line glue never leaks into its spaces. */
     let fixedNoBreakBox = false;
+    /** This segment opens with a SYNTHETIC boundary NBSP — glue the model
+     * prices as an ordinary space — rather than with author no-break text,
+     * whose real advance the box measurement already sees. */
+    let leadingSyntheticNbsp = false;
     /** A fixed box has already flushed, but an unrendered Penalty may still
      * separate it from the next Box. Retain its source edge so cross-run
      * dash junctions receive the same WJ protection as unflushed boxes. */
@@ -452,6 +484,18 @@ export function buildRenderSegments(
         ? spec.wordSpacingPx
         : desired(run, rigidFlex ?? undefined);
       const spacePx = spaceWidthIn(spec, () => scan.runs[run]!.text) * ratio + wordSpacing;
+      // Shave a fatter-than-space NBSP back to the glue width the model
+      // assigned it. The character stays U+00A0 (the boundary must remain
+      // unbreakable) and takes this segment's word-spacing like any other
+      // space; only the surplus glyph advance comes off, as a negative start
+      // margin — which measureLineExtent folds into the corrective model, so
+      // the line's accounting stays exact. Zero for every font whose two
+      // separators share an advance, and the declaration is then never
+      // written.
+      const nbspExcessPx =
+        leadingSyntheticNbsp && flowText.charCodeAt(0) === 0xa0
+          ? nbspExcessIn(spec, run) * ratio
+          : 0;
       const srcRun = scan.runs[run]!;
       let decorPx: number | undefined;
       if (srcRun.padStartPx !== undefined && !decorStartSeen.has(run)) {
@@ -476,7 +520,7 @@ export function buildRenderSegments(
         fontFeatureSettings: trackingFeatureSettings(spec, ls !== 0),
         isolateShaping: spec.variantPosition !== "normal",
         fontStretchPct: line.fontStretch,
-        marginStartPx: first ? -line.leftHang : 0,
+        marginStartPx: (first ? -line.leftHang : 0) - nbspExcessPx,
         marginEndPx: 0, // the line's last segment is patched after the loop
         edgeTrim: { lead, trail, modelPx: (lead + trail) * spacePx },
         decorPx,
@@ -505,6 +549,7 @@ export function buildRenderSegments(
       boxChars = 0;
       adjustableSpaceCount = 0;
       fixedNoBreakBox = false;
+      leadingSyntheticNbsp = false;
       flowExclusion = undefined;
     };
 
@@ -597,6 +642,7 @@ export function buildRenderSegments(
           run = it.run;
           text = "\u00A0";
           adjustableSpaceCount = 1;
+          leadingSyntheticNbsp = true;
           rigidFlex = { stretch: it.stretch, shrink: it.shrink };
           flush();
           rigidFlex = null;
@@ -607,8 +653,9 @@ export function buildRenderSegments(
         // the link). A space at a segment edge becomes U+00A0: NBSP is
         // line-break class GL — unbreakable by specification — so run
         // boundaries can never become stray wrap points, whatever the
-        // engine's edge-space heuristics. Same glyph advance, and
-        // word-spacing applies to it identically.
+        // engine's edge-space heuristics. Word-spacing applies to it
+        // identically; the glyph advance usually matches too, and flush()
+        // shaves off the surplus in the fonts where it does not.
         if (run === -1 || run === it.run) {
           run = it.run;
           text += " ";
@@ -620,6 +667,7 @@ export function buildRenderSegments(
           run = it.run;
           text = "\u00A0";
           adjustableSpaceCount = 1;
+          leadingSyntheticNbsp = true;
         }
       }
       // Penalties not broken at render nothing.
