@@ -3904,6 +3904,252 @@ test("rescan() picks up author CSS changes and leaves the rest alone", async ({ 
   expect(result.managed).toEqual(["rescan-subject", "rescan-declined"]);
 });
 
+/**
+ * What a re-read must NOT cost, all of it invisible to the tests above because
+ * they never rescan before tearing down:
+ *
+ * - the author's style attribute, restored byte-for-byte at teardown. Undoing
+ *   justif's declarations one property at a time is what preserves the parts a
+ *   CSSOM round trip would drop — a fallback declaration pair, a property this
+ *   engine does not parse — while still honouring an inline edit the author made
+ *   after the enhancement landed;
+ * - the `!important` on the text-autosizing opt-out, whose whole purpose is that
+ *   no later author rule may move the metrics measurement was taken from;
+ * - the `onRelayout` report when a paragraph loses its rendered output.
+ */
+test("rescan() costs neither the author's style attribute nor its guarantees", async ({
+  page,
+}) => {
+  const result = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    const text =
+      "The extraordinarily complicated development of unquestionably " +
+      "international typographical conventions demonstrates considerable " +
+      "responsibility, naturally, whenever compositors compare alternatives.";
+    // A fallback declaration pair and a property no engine parses, both of which
+    // a serialize-and-restore round trip loses.
+    const ATTRIBUTE =
+      "width:260px;text-align:justify;font:17px Georgia, serif;hyphens:auto;" +
+      "color:red;color:rgb(1, 2, 3);-moz-osx-font-smoothing:grayscale";
+    const make = (id: string) => {
+      const p = document.createElement("p");
+      p.id = id;
+      p.setAttribute("style", ATTRIBUTE);
+      p.textContent = text;
+      host.append(p);
+      return p;
+    };
+    const subject = make("rescan-attr");
+    const untouched = make("rescan-untouched");
+    const demoted = make("rescan-demoted");
+    const relayouts: string[] = [];
+    const controller = window.__justif.justify([subject, untouched, demoted], {
+      hyphenate: window.__justif.hyphenateEnUS,
+      expansion: false,
+      tracking: false,
+      onRelayout: (p: HTMLElement) => relayouts.push(p.id),
+    } as object);
+    await controller.ready;
+
+    // Both spellings: which one an engine accepts differs, and one of them
+    // carrying `important` is the guarantee — whichever it is.
+    const priorityOf = (p: HTMLElement) =>
+      [
+        p.style.getPropertyPriority("-webkit-text-size-adjust"),
+        p.style.getPropertyPriority("text-size-adjust"),
+      ].join("/");
+    const before = { priority: priorityOf(subject) };
+
+    // A rescan that finds nothing to do must still leave both intact.
+    controller.rescan();
+    const afterNoop = { priority: priorityOf(subject) };
+
+    // And one that re-reads: an inline edit the author makes now is honoured,
+    // not reverted.
+    subject.style.letterSpacing = "0.2px";
+    controller.rescan();
+    const afterEdit = {
+      priority: priorityOf(subject),
+      letterSpacing: subject.style.letterSpacing,
+      enhanced: subject.hasAttribute("data-justif"),
+    };
+
+    // A re-read driven from a STYLESHEET, leaving the attribute alone. This is
+    // the case that has to come back byte-for-byte.
+    const sheet = document.createElement("style");
+    sheet.textContent = "#rescan-untouched { letter-spacing: 0.3px }";
+    document.head.append(sheet);
+    controller.rescan([untouched]);
+
+    // A paragraph the re-read sends back to native rendering: its output is gone,
+    // which is a layout change like any other.
+    relayouts.length = 0;
+    demoted.style.whiteSpace = "pre";
+    controller.rescan([demoted]);
+    const afterDemotion = {
+      relayouts: [...relayouts],
+      enhanced: demoted.hasAttribute("data-justif"),
+      segments: demoted.querySelectorAll(".justif-seg").length,
+    };
+
+    controller.destroy();
+    const restored = {
+      untouched: untouched.getAttribute("style"),
+      subject: subject.getAttribute("style"),
+      demoted: demoted.getAttribute("style"),
+    };
+    sheet.remove();
+    host.replaceChildren();
+    return {
+      before,
+      afterNoop,
+      afterEdit,
+      afterDemotion,
+      restored,
+      expected: ATTRIBUTE,
+      untouchedRescanned: untouched.hasAttribute("data-justif"),
+    };
+  });
+
+  // The autosizing opt-out keeps the priority it was written with across both
+  // kinds of rescan. Asserted as stability rather than as a literal, because
+  // which spelling an engine accepts is its own business — and on the engines
+  // that accept one, demoting it is exactly the regression this catches.
+  expect(result.afterNoop.priority).toBe(result.before.priority);
+  expect(result.afterEdit.priority).toBe(result.before.priority);
+  if (result.before.priority !== "/") expect(result.before.priority).toContain("important");
+  // The author's later inline edit survived the re-read that noticed it.
+  expect(result.afterEdit.letterSpacing).toBe("0.2px");
+  expect(result.afterEdit.enhanced).toBe(true);
+  // Losing the enhancement is reported.
+  expect(result.afterDemotion.enhanced).toBe(false);
+  expect(result.afterDemotion.segments).toBe(0);
+  expect(result.afterDemotion.relayouts).toEqual(["rescan-demoted"]);
+  // Teardown returns the attribute the author wrote, character for character —
+  // including the two parts no CSSOM round trip preserves — however many times the
+  // paragraph has been re-read in between.
+  expect(result.restored.untouched).toBe(result.expected);
+  // Where the author DID write to the attribute, their value is what survives:
+  // reverting it to reclaim the original text would be the worse trade.
+  expect(result.restored.subject).toContain("letter-spacing: 0.2px");
+  expect(result.restored.demoted).toContain("white-space: pre");
+});
+
+/**
+ * A paragraph adopted by a rescan is a full member: the wrap guarantee's measured
+ * correction reaches it. The correction parks until the paragraph is known to be
+ * near the viewport, so one that nothing observes keeps its provisional safety pad
+ * — every line 1.5px short of the measure — for good, and re-parks on every later
+ * patch. Read as the corrective margins themselves, which is where an uncorrected
+ * paragraph is unmistakable.
+ */
+test("rescan() gives an adopted paragraph the wrap guarantee", async ({ page }) => {
+  const margins = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    const text =
+      "The extraordinarily complicated development of unquestionably " +
+      "international typographical conventions demonstrates considerable " +
+      "responsibility, naturally, whenever compositors compare alternatives.";
+    const make = (id: string, extra = "") => {
+      const p = document.createElement("p");
+      p.id = id;
+      p.setAttribute(
+        "style",
+        `width: 260px; text-align: justify; font: 17px Georgia, serif; margin: 0 0 1em; ${extra}`,
+      );
+      p.textContent = text;
+      host.append(p);
+      return p;
+    };
+    const control = make("wrap-control");
+    // Declined at first scan, so it is not among the paragraphs the observers
+    // were given.
+    const adopted = make("wrap-adopted", "text-transform: uppercase;");
+    const controller = window.__justif.justify([control, adopted], {
+      hyphenate: window.__justif.hyphenateEnUS,
+      expansion: false,
+      tracking: false,
+    });
+    await controller.ready;
+    // Let the viewport observers report first: adopting DURING the initial flush
+    // is the easy case, since the synchronous seed still covers what is on screen.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    adopted.style.textTransform = "none";
+    controller.rescan([adopted]);
+    await new Promise((resolve) => setTimeout(resolve, 800));
+
+    const corrections = (p: HTMLElement) =>
+      [...p.querySelectorAll<HTMLElement>(".justif-seg")]
+        .map((seg) => +parseFloat(getComputedStyle(seg).marginInlineEnd || "0").toFixed(2))
+        .filter((margin) => margin !== 0);
+    const out = { control: corrections(control), adopted: corrections(adopted) };
+    controller.destroy();
+    host.replaceChildren();
+    return out;
+  });
+
+  // Identical text at an identical measure, so identical corrections. Uncorrected,
+  // the adopted paragraph carries -1.5px pads its control does not have.
+  expect(margins.control.length).toBeGreaterThan(0);
+  expect(margins.adopted).toEqual(margins.control);
+});
+
+/**
+ * A rescan of ONE paragraph must not cost the others their font convergence: the
+ * controller's probes describe everything it holds, so a face arriving later
+ * still re-measures the paragraphs waiting for it. Replacing the probe set with
+ * the rescanned subset left them on their fallback line breaks for good.
+ */
+test("rescan() keeps font convergence for the paragraphs it did not read", async ({
+  page,
+}) => {
+  const result = await page.evaluate(async () => {
+    const FACE = "JunicodeAfterRescan";
+    const host = document.getElementById("host")!;
+    const make = (id: string, family: string) => {
+      const p = document.createElement("p");
+      p.id = id;
+      p.style.cssText = `font-family:${family};text-align:justify;width:300px;margin:0 0 1em`;
+      p.textContent =
+        "them the that this then they there their theme thence thermal took time " +
+        "these those through thought thorough threshold therefore thereafter";
+      host.append(p);
+      return p;
+    };
+    // The face is absent, so this first justifies in the fallback.
+    const waiting = make("probe-waiting", `"${FACE}", monospace`);
+    const other = make("probe-other", "Georgia, serif");
+    const lines = (p: HTMLElement) =>
+      [...p.querySelectorAll<HTMLElement>(".justif-seg")].map((s) =>
+        (s.textContent ?? "").trim(),
+      );
+
+    const controller = window.__justif.justify([waiting, other], { hyphenate: undefined });
+    await controller.ready;
+    const beforeLoad = lines(waiting);
+
+    // A rescan driven by the OTHER paragraph entirely.
+    other.style.letterSpacing = "0.3px";
+    const rescanned = controller.rescan().map((p) => p.id);
+
+    const face = new FontFace(FACE, 'url("/demo/fonts/Junicode-Roman.ttf")');
+    document.fonts.add(face);
+    await face.load();
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    const afterLoad = lines(waiting);
+    controller.destroy();
+    host.replaceChildren();
+    return { rescanned, beforeLoad, afterLoad };
+  });
+
+  expect(result.rescanned).toEqual(["probe-other"]);
+  expect(result.beforeLoad.length).toBeGreaterThan(2);
+  // The waiting paragraph re-measured on the real face, despite never being the
+  // subject of the rescan.
+  expect(result.afterLoad).not.toEqual(result.beforeLoad);
+});
+
 test("an unchanged native hang does not report or mutate a relayout", async ({ page }) => {
   const result = await page.evaluate(async () => {
     const p = document.createElement("p");
@@ -4954,6 +5200,74 @@ test("auto drop-in: a standard CSS change applies by itself", async ({ page }) =
   expect(settled.enhanced).toBe(true);
   expect(settled.segments).toBeGreaterThan(0);
   expect(settled.quiet).toBe(true);
+});
+
+/**
+ * An author transition on a watched paragraph fires the same events the watcher
+ * listens to, and it has a real duration. Reading two frames in — right for
+ * justif's own 1ms rule — samples a value still interpolating and then never
+ * hears about the settled one, leaving the paragraph laid out for a width the text
+ * never actually has.
+ */
+test("auto drop-in: a transitioned CSS change is read at its settled value", async ({
+  page,
+}) => {
+  await page.goto("/test-e2e/fixture-auto-css.html");
+  await page.waitForFunction(() => (window as Window & { justif?: unknown }).justif !== undefined);
+  await page.evaluate(async () => {
+    await (window as Window & { justif?: { booted: Promise<void> } }).justif!.booted;
+  });
+  const live = await page.evaluate(
+    () =>
+      typeof CSS.registerProperty === "function" &&
+      CSS.supports("transition-behavior", "allow-discrete"),
+  );
+  test.skip(!live, "engine lacks @property or allow-discrete: liveness is opt-out here");
+
+  // The author's own transition, added after the watcher was armed — so the
+  // paragraph keeps its liveness but the transitions now run at 150ms.
+  await page.evaluate(() => {
+    const style = document.createElement("style");
+    style.id = "authored";
+    style.textContent =
+      ".col { width: 200px } .col p { transition: letter-spacing 150ms linear }";
+    document.head.append(style);
+  });
+  // This fixture is the drop-in's, without the line reader; distinct segment tops
+  // are line count enough here.
+  const layout = () =>
+    page.evaluate(() => {
+      const p = document.getElementById("as-default")!;
+      const tops = new Set(
+        [...p.querySelectorAll<HTMLElement>(".justif-seg")].map((seg) =>
+          Math.round(seg.getBoundingClientRect().top),
+        ),
+      );
+      return { lines: tops.size, enhanced: p.hasAttribute("data-justif") };
+    });
+  await expect.poll(async () => (await layout()).lines, { timeout: 4000 }).toBeGreaterThan(2);
+
+  await page.evaluate(() => {
+    document.getElementById("authored")!.textContent =
+      ".col { width: 200px } .col p { transition: letter-spacing 150ms linear;" +
+      " letter-spacing: 1px }";
+  });
+  // Well past the transition's end.
+  await page.waitForTimeout(900);
+  const settled = await layout();
+
+  // The value is final now, so asking for a re-read by hand must find nothing
+  // left to do: that equality IS the invariant. Sampling mid-transition leaves a
+  // layout only the manual call can correct.
+  await page.evaluate(async () => {
+    await (window as Window & { justif?: { reconfigure: () => Promise<void> } }).justif!.reconfigure();
+  });
+  await page.waitForTimeout(300);
+  const afterManual = await layout();
+
+  expect(settled.enhanced).toBe(true);
+  expect(afterManual.enhanced).toBe(true);
+  expect(settled.lines).toBe(afterManual.lines);
 });
 
 test("auto drop-in: an author transition is never replaced", async ({ page }) => {

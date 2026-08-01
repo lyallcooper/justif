@@ -143,12 +143,12 @@ const KNOWN_PROPERTIES = new Set<string>(CSS_PROPERTIES);
 
 /**
  * The standard properties a paragraph's SCAN depends on, watched the same way the
- * `--justif-*` configuration is: each one fires `transitionstart` under
+ * `--justif-*` configuration is: each one transitions under
  * `transition-behavior: allow-discrete` in all three engines (verified — several
  * are non-animatable in the older sense and carry only because interpolation is
  * discrete), so a change to any of them reaches `controller.rescan()`.
  *
- * Named individually rather than through `all`: `all` would fire on every
+ * Named individually rather than through `all`: `all` would transition every
  * property a managed paragraph animates — a hover colour, a theme fade — turning
  * cosmetic changes into scan work.
  *
@@ -175,6 +175,22 @@ const SCAN_PROPERTIES = [
   "text-indent",
   "text-transform",
 ] as const;
+
+/** Spellings engines report that no prefix of the list above covers. */
+const SCAN_PROPERTY_ALIASES = new Set(["text-wrap-mode", "-webkit-hyphens"]);
+
+/**
+ * Does a transition event name a property the scan reads?
+ *
+ * Prefix-matched, because an event names the longhand the engine actually
+ * animated: `white-space` arrives as `white-space-collapse`, `font-variant` as
+ * `font-variant-caps`. Over-matching costs at most a rescan that compares equal
+ * and does nothing.
+ */
+function isScanProperty(property: string): boolean {
+  if (SCAN_PROPERTY_ALIASES.has(property)) return true;
+  return SCAN_PROPERTIES.some((watched) => property.startsWith(watched));
+}
 
 /** Marks the paragraphs the watcher rule may transition. Separate from
  * ownership: it is present only where no author transition would be replaced. */
@@ -407,18 +423,27 @@ function boot(): Promise<void> {
     // listener are per root, even though the registration above is not.
     adopt(root, watcherRule);
     root.addEventListener("transitionstart", (event) => {
-      const property = (event as TransitionEvent).propertyName;
-      if (KNOWN_PROPERTIES.has(property)) {
-        scheduleReconcile();
-        return;
-      }
-      // Anything else our rule transitions is a scan input. The target is the
-      // watched paragraph itself — the rule is not inherited, so a descendant
-      // cannot be the source — and every property here inherits, so a change made
-      // anywhere above it arrives as its own event.
-      if (property.startsWith("--") || !(event.target instanceof HTMLElement)) return;
-      scheduleRescan(event.target);
+      if (KNOWN_PROPERTIES.has((event as TransitionEvent).propertyName)) scheduleReconcile();
     });
+    // Scan inputs are taken at the END of their transition, not the start.
+    // Transition events bubble, so this listener sees the page's own animations
+    // too, and those have real durations: sampling two frames in (which is right
+    // for our own 1ms rule) would re-lay out a paragraph from a value still
+    // interpolating, with no later event to correct it. `transitioncancel` counts
+    // as an ending — an interrupted transition still leaves a new value.
+    for (const type of ["transitionend", "transitioncancel"]) {
+      root.addEventListener(type, (event) => {
+        if (!isScanProperty((event as TransitionEvent).propertyName)) return;
+        // Only from a watched paragraph itself. Every property in the set
+        // inherits, so a change made above one arrives as its own event on it;
+        // an event from anything else is some other element's animation.
+        const target = event.target;
+        if (!(target instanceof HTMLElement) || !target.hasAttribute(WATCH_ATTRIBUTE)) {
+          return;
+        }
+        scheduleRescan(target);
+      });
+    }
   };
 
   /**

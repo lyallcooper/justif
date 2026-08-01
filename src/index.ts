@@ -348,6 +348,10 @@ interface MaskedDeclaration {
    * property no longer holds this, the author has taken it back and there is
    * nothing left to lift. */
   ours: string;
+  /** Priority justif wrote it with — "important" for the autosizing opt-out,
+   * whose whole point is that no author rule may override it after
+   * measurement. Putting it back without this would quietly demote it. */
+  oursPriority: string;
   /** The author's own inline declaration, "" when they had none. */
   author: string;
   authorPriority: string;
@@ -415,13 +419,49 @@ function maskAuthorStyle(
     state.masked.push({
       property,
       ours: value,
+      oursPriority: priority,
       author: p.style.getPropertyValue(property),
       authorPriority: p.style.getPropertyPriority(property),
     });
   } else {
     existing.ours = value;
+    existing.oursPriority = priority;
   }
   p.style.setProperty(property, value, priority);
+}
+
+/**
+ * Has the author written to this paragraph's style attribute since justif saved a
+ * copy of it? Asked once justif's own declarations are off, and compared as
+ * SERIALIZATIONS: the saved copy is the author's original text, which need not
+ * equal its own round trip, so comparing it to the live attribute directly would
+ * call every paragraph edited.
+ */
+function authorRewroteStyleAttribute(p: HTMLElement, saved: string | null): boolean {
+  const probe = p.ownerDocument.createElement("span");
+  if (saved !== null) probe.setAttribute("style", saved);
+  return probe.style.cssText !== p.style.cssText;
+}
+
+/**
+ * Undo justif's own inline declarations, one property at a time, leaving every
+ * other declaration exactly as it stands — including any the author has written
+ * since the enhancement landed.
+ *
+ * The alternative, restoring the whole style attribute from the saved copy, is
+ * what `destroy()` wants (byte-for-byte, so a fallback declaration pair or a
+ * property the engine does not parse survives) but not what a re-read wants: it
+ * would revert an author's later inline edit rather than honour it.
+ */
+function unmaskAuthorStyle(p: HTMLElement, state: ParaState): void {
+  for (const mask of state.masked) {
+    // Already the author's again: they have written this property since, so
+    // there is nothing of ours here to take back.
+    if (p.style.getPropertyValue(mask.property) !== mask.ours) continue;
+    if (mask.author === "") p.style.removeProperty(mask.property);
+    else p.style.setProperty(mask.property, mask.author, mask.authorPriority);
+  }
+  state.masked = [];
 }
 
 /** The author's own first-line indent in px. Percentage indents resolve
@@ -433,13 +473,20 @@ function firstLineIndentPx(state: ParaState): number {
     : state.scan.textIndent;
 }
 
+/** Forget a native one-line hang. Undoing the declarations themselves is the
+ * caller's, by whichever route it restores author styling. */
+function forgetNativeHang(state: ParaState): boolean {
+  if (state.nativeIndent === null) return false;
+  state.nativeIndent = null;
+  return true;
+}
+
 /** Drop the inline `text-indent` hang written for a native one-line
  * paragraph, restoring the author's style attribute byte-for-byte. Only ever
  * applied while `enhanced` is false, so this restoration cannot clobber the
  * enhancement's own declarations — promotion clears it first. */
 function clearNativeHang(p: HTMLElement, state: ParaState): boolean {
-  if (state.nativeIndent === null) return false;
-  state.nativeIndent = null;
+  if (!forgetNativeHang(state)) return false;
   state.masked = [];
   restoreStyleAttribute(p, state.originalStyleAttr);
   return true;
@@ -488,20 +535,36 @@ function applyNativeHang(
  * its measurements or controller ownership. A one-line paragraph uses this
  * native state while ResizeObserver keeps watching for a narrower measure
  * that makes total-fit line breaking useful again. */
-function restoreManagedOutput(p: HTMLElement, state: ParaState): boolean {
+function restoreManagedOutput(
+  p: HTMLElement,
+  state: ParaState,
+  /**
+   * How to give the author their inline styling back. "restore" puts the saved
+   * attribute back verbatim, which is what teardown wants: byte-for-byte, so a
+   * fallback declaration pair or a property this engine does not parse survives.
+   * "keep" leaves the live attribute alone, for a caller that has already taken
+   * justif's own declarations off it one property at a time
+   * (`unmaskAuthorStyle`) — a re-read, which must not revert an author's later
+   * inline edit along with them.
+   */
+  styleAttribute: "restore" | "keep" = "restore",
+): boolean {
   // The native one-line hang is the one inline declaration justif writes
   // WITHOUT enhancing, so it has to be undone before that early return —
   // otherwise destroy(), unjustify() and a bail would all leak it.
-  const clearedHang = clearNativeHang(p, state);
+  const clearedHang =
+    styleAttribute === "restore" ? clearNativeHang(p, state) : forgetNativeHang(state);
   if (!state.enhanced) return clearedHang;
   p.replaceChildren(state.original);
-  restoreStyleAttribute(p, state.originalStyleAttr);
+  if (styleAttribute === "restore") {
+    restoreStyleAttribute(p, state.originalStyleAttr);
+    // The author's style attribute is back, so nothing of justif's covers it.
+    state.masked = [];
+  }
   p.removeAttribute("data-justif");
   p.removeAttribute("data-justif-dropcap");
   state.lastPatch = "";
   state.enhanced = false;
-  // The author's style attribute is back, so nothing of justif's covers it.
-  state.masked = [];
   return true;
 }
 
@@ -1007,6 +1070,25 @@ export function justify(
    * enhanced one is left alone until its own.
    */
   const decidedStyleKey = new WeakMap<HTMLElement, string>();
+  /** Membership, for the `rescan(targets)` filter: the drop-in hands every
+   * controller the same set of changed paragraphs, so this is asked once per
+   * target per controller and a linear scan of `paragraphs` showed up as real
+   * time on long pages. */
+  const owned = new Set(paragraphs);
+  /**
+   * A re-read paragraph's saved style attribute, handed from the state being
+   * dropped to the one about to replace it. Without it the new state would save
+   * the attribute as it stands, which the CSSOM has re-serialized — and
+   * `destroy()`'s byte-for-byte restoration would quietly lose whatever does not
+   * survive a round trip (a fallback declaration pair, a property this engine
+   * does not parse).
+   *
+   * It stays the attribute as first seen, so an inline declaration the author
+   * added after enhancement lives on in the DOM and is honoured by every
+   * re-read, but is still restored away at teardown — exactly as it was before
+   * re-reading existed.
+   */
+  const carriedStyleAttr = new WeakMap<HTMLElement, string | null>();
   let destroyed = false;
 
   const initialResolution = resolveOptions(options);
@@ -1101,27 +1183,13 @@ export function justify(
         // Not ours any more: the author (or a script, or the inspector) has
         // written this property since, so what computes IS their current value.
         if (p.style.getPropertyValue(mask.property) !== mask.ours) continue;
-        const { property, ours, author, authorPriority } = mask;
+        const { property, ours, oursPriority, author, authorPriority } = mask;
         if (author === "") p.style.removeProperty(property);
         else p.style.setProperty(property, author, authorPriority);
-        undo.push(() => p.style.setProperty(property, ours));
+        undo.push(() => p.style.setProperty(property, ours, oursPriority));
       }
     }
     const keys = new Map(targets.map((p) => [p, styleKeyNow(p)]));
-    // Every declaration of justif's is lifted right now, so this is also the one
-    // moment the author's CURRENT style attribute is readable — including inline
-    // declarations they added after the enhancement, which the attribute saved at
-    // adoption cannot know about. Re-saving it here is what lets a re-read see
-    // them instead of reverting them.
-    for (const p of targets) {
-      const state = ownedState(p);
-      if (state === undefined || state.masked.length === 0) continue;
-      // Lifting every declaration of ours off a paragraph that had no style
-      // attribute of its own leaves an empty one behind; saving that would put
-      // `style=""` on the author's element at teardown.
-      const attribute = p.getAttribute("style");
-      state.originalStyleAttr = attribute === "" ? null : attribute;
-    }
     for (const restoreMask of undo) restoreMask();
     return keys;
   };
@@ -1207,7 +1275,9 @@ export function justify(
       states.set(p, {
         owner,
         original: document.createDocumentFragment(),
-        originalStyleAttr: p.getAttribute("style"),
+        originalStyleAttr: carriedStyleAttr.has(p)
+          ? (carriedStyleAttr.get(p) ?? null)
+          : p.getAttribute("style"),
         scan,
         runsMetrics,
         specByKey,
@@ -2102,10 +2172,6 @@ export function justify(
   /**
    * Read `targets` and enhance whatever of them can be: the whole adoption
    * sequence, shared by this first pass and by every later `rescan()`.
-   *
-   * `fontProbes` is REPLACED rather than extended — the probes describe the
-   * content this controller is currently responsible for, and a rescan has just
-   * re-read that content.
    */
   const adopt = (targets: readonly HTMLElement[]): void => {
     const restoreScanStyles = suppressAutosizingForScan(targets);
@@ -2121,11 +2187,16 @@ export function justify(
     }
     // Drained, so a later pass reports only what it declined itself.
     for (const { p, reason } of pendingSkips.splice(0)) emitSkip(p, reason);
+    commit(scannable);
+    // Probes cover every paragraph this controller holds, not just the ones this
+    // pass read: a rescan of ONE paragraph must not discard the faces the others
+    // are still waiting to converge on, or a webfont landing afterwards would
+    // leave them on their fallback line breaks forever. Collected after the
+    // commit, which is where each state's scan becomes reachable.
     fontProbes = collectFontProbes(
-      scannable.flatMap((p) => scanned.get(p) ?? []),
+      paragraphs.flatMap((p) => ownedState(p)?.scan ?? []),
       hyphenate !== undefined,
     );
-    commit(scannable);
   };
 
   let ready: Promise<void>;
@@ -2182,8 +2253,7 @@ export function justify(
         targets === undefined
           ? paragraphs
           : [...targets].filter(
-              (el): el is HTMLElement =>
-                el instanceof HTMLElement && paragraphs.includes(el),
+              (el): el is HTMLElement => el instanceof HTMLElement && owned.has(el),
             );
       // Whose answer could actually change. A paragraph this controller has
       // released — unjustify(), a teardown from outside — is neither managed nor
@@ -2194,12 +2264,31 @@ export function justify(
       const current = authorStyleKeys(considered);
       const stale = considered.filter((p) => decidedStyleKey.get(p) !== current.get(p));
       if (stale.length === 0) return [];
+      /** Had rendered output to lose, for the relayout report below. */
+      const wasEnhanced = new Set<HTMLElement>();
       for (const p of stale) {
         const state = ownedState(p);
         if (state !== undefined) {
-          // Back to the author's own DOM and style attribute FIRST: the scan
-          // must read author CSS, not the enhancement's inline declarations.
-          restoreManagedOutput(p, state);
+          if (state.enhanced) wasEnhanced.add(p);
+          // The scan has to read author CSS, so justif's own declarations come
+          // off first — one property at a time, so that an inline edit the author
+          // made since is honoured rather than reverted.
+          const saved = state.originalStyleAttr;
+          unmaskAuthorStyle(p, state);
+          if (authorRewroteStyleAttribute(p, saved)) {
+            // Their attribute now, so let the next state save it as it stands.
+            carriedStyleAttr.delete(p);
+          } else {
+            // Untouched: put the author's own TEXT back and carry it across, so
+            // `destroy()` still restores it byte-for-byte however many times this
+            // paragraph has been re-read. Undoing our declarations individually
+            // leaves a CSSOM serialization, which drops what does not survive a
+            // round trip — a fallback declaration pair, a property this engine
+            // does not parse.
+            restoreStyleAttribute(p, saved);
+            carriedStyleAttr.set(p, saved);
+          }
+          restoreManagedOutput(p, state, "keep");
           states.delete(p);
           dropQueued(p);
         }
@@ -2207,11 +2296,23 @@ export function justify(
         scanned.delete(p);
       }
       adopt(stale);
-      // A paragraph may have changed sides — newly enhanced, or newly declined.
       for (const p of stale) {
-        if (observer === null) continue;
-        if (ownedState(p) === undefined) observer.unobserve(p);
-        else observer.observe(p);
+        carriedStyleAttr.delete(p);
+        // A paragraph may have changed sides. Viewport tracking matters as much
+        // as width tracking: an unobserved paragraph never enters nearViewport,
+        // so its measured correction would park and never be promoted.
+        if (ownedState(p) === undefined) {
+          observer?.unobserve(p);
+          viewObserver?.unobserve(p);
+          revealObserver?.unobserve(p);
+          // Its segments are gone, which is a layout change like any other —
+          // reported for the same consumers that track the one-line demotion.
+          if (wasEnhanced.has(p)) emitRelayout(p);
+        } else {
+          observer?.observe(p);
+          viewObserver?.observe(p);
+          revealObserver?.observe(p);
+        }
       }
       reprobeBaselines();
       return stale;
