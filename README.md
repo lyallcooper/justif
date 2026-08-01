@@ -121,8 +121,8 @@ observers.
 Container width changes and newly loaded web fonts are handled automatically.
 `refresh()` forces a re-measure for changes Justif cannot observe, for
 example a container width change with `observeResize: false`. After changing the
-CSS of paragraphs already justified — `hyphens`, the font, `letter-spacing`,
-`line-height`, `text-indent` — call `rescan()`, which re-reads author CSS and
+CSS of paragraphs already justified—`hyphens`, the font, `letter-spacing`,
+`line-height`, `text-indent`—call `rescan()`, which re-reads author CSS and
 re-lays out only the paragraphs whose styling actually changed. Paragraphs it
 previously declined are reconsidered too. If paragraph *content* changes, call
 `destroy()` and run `justify()` again.
@@ -283,14 +283,7 @@ There are some restrictions. Older browsers (older than Chrome 117, Safari 17.4,
 Firefox 129) won't update automatically. And paragraphs that have their own
 `transition` property but don't declare the property in question will also not be
 updated, since Justif uses transitions internally to track updates. In either case
-you can use `window.justif.reconfigure()` to apply changes manually as needed; it
-covers both kinds of change. Three limits are worth knowing, and
-`reconfigure()` covers all of them: a rule that targets only an inline element
-inside a paragraph (`p code { font-size: … }`) is not noticed; a change to
-`text-align` is not either, because Justif sets that itself on the paragraphs it
-manages; and on a paragraph that asked for `hyphens: auto`, changing `hyphens`
-*alone* is not, for the same reason. Changing it together with anything else —
-as a theme or class usually does — applies normally.
+you can use `window.justif.reconfigure()` to apply changes manually as needed.
 
 ### Protrusion and hanging punctuation
 

@@ -27,13 +27,6 @@
   any arbitrary font you use with Justif. See the
   [README](https://github.com/lyallcooper/justif#protrusion-and-hanging-punctuation)
   for more details.
-- **Changing the CSS of justified paragraphs now works.** Switch `hyphens`, the
-  font, `letter-spacing` or `line-height` — from a stylesheet, a class, a media
-  query, a theme toggle, or the devtools inspector — and the drop-in re-reads and
-  re-lays out the paragraphs affected, as it already did for `--justif-*`.
-  Previously the paragraph kept the styling it was first justified with. With the
-  JavaScript API, the new `controller.rescan()` does the same on demand; it also
-  reconsiders paragraphs that were previously left in native rendering.
 
 ### Various fixes
 
