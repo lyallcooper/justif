@@ -101,6 +101,59 @@ test("drawer controls form compact responsive rows", async ({ page }) => {
   expect(Math.abs(layout.pretty.top - layout.blur.top)).toBeLessThan(1);
 });
 
+test("open drawer leaves the bottom of the sample scrollable", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/demo/");
+  await page.click("#dock-toggle");
+  await page.selectOption("#sample", "frankenstein");
+
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  const geometry = await page.evaluate(() => ({
+    articleBottom: document.querySelector("#enhanced")!.getBoundingClientRect().bottom,
+    dockTop: document.querySelector("#dock")!.getBoundingClientRect().top,
+    scrollable: document.documentElement.scrollHeight > window.innerHeight,
+  }));
+
+  expect(geometry.scrollable).toBe(true);
+  expect(geometry.articleBottom).toBeLessThan(geometry.dockTop);
+});
+
+test("opening the drawer preserves the current sample viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/demo/");
+  await page.click("#dock-toggle");
+  await page.selectOption("#sample", "frankenstein");
+  await page.click("#dock-toggle");
+  await page.evaluate(() => window.scrollTo(0, 360));
+
+  const viewportBefore = await page.evaluate(() => {
+    const paragraph = [...document.querySelectorAll("#enhanced > p")].find((element) => {
+      const { top } = element.getBoundingClientRect();
+      return top >= 0 && top < innerHeight;
+    });
+    return {
+      scrollY: window.scrollY,
+      paragraphTop: paragraph?.getBoundingClientRect().top ?? null,
+    };
+  });
+
+  await page.click("#dock-toggle");
+  await page.waitForTimeout(250);
+  const viewportAfter = await page.evaluate(() => {
+    const paragraph = [...document.querySelectorAll("#enhanced > p")].find((element) => {
+      const { top } = element.getBoundingClientRect();
+      return top >= 0 && top < innerHeight;
+    });
+    return {
+      scrollY: window.scrollY,
+      paragraphTop: paragraph?.getBoundingClientRect().top ?? null,
+    };
+  });
+
+  expect(viewportAfter.scrollY).toBe(viewportBefore.scrollY);
+  expect(viewportAfter.paragraphTop).toBeCloseTo(viewportBefore.paragraphTop!, 1);
+});
+
 test("short Alice excerpt is available as a sample", async ({ page }) => {
   await page.goto("/demo/");
   await page.click("#dock-toggle");

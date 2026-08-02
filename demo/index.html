@@ -267,8 +267,9 @@
   }
   html.fonts-loading body { visibility: hidden; }
   body {
+    --dock-space: 4.5rem;
     margin: 0 auto;
-    padding: 2rem 1.5rem 4.5rem;
+    padding: 2rem 1.5rem var(--dock-space);
     max-width: 72rem;
     color: var(--ink);
     font-family: "Junicode", Georgia, serif;
@@ -822,7 +823,7 @@
   /* Phone-width windows: scale the em grid down with the type and stack
      the section ledger, while retaining the grids within each section. */
   @media (max-width: 480px) {
-    body { padding: 1.6rem 1rem 4.5rem; }
+    body { padding: 1.6rem 1rem var(--dock-space); }
     .masthead h1 { font-size: 2.2rem; }
     .masthead .subtitle { font-size: 1rem; }
     .view-toggle button {
@@ -937,6 +938,10 @@
     background-attachment: local, local, scroll, scroll;
   }
   #dock-body #metrics { margin-top: 1.2rem; }
+  /* The fixed dock covers the bottom of the document. When it is open, its
+     height is measured by JS and reserved below the sample so the final
+     lines can still be scrolled above the drawer. */
+  body.dock-open { --dock-space: calc(var(--dock-height, 0px) + 1rem); }
 </style>
 </head>
 <body>
@@ -3964,11 +3969,36 @@ await controller.ready;</code></pre>
     document.getElementById("metrics").hidden = false;
   }
 
-  // Bottom dock: collapsed by default, no persistence.
+  // Bottom dock: collapsed by default, no persistence. Reserve its measured
+  // height in the document while open so the fixed drawer cannot cover the
+  // end of the sample text.
+  const dock = $("dock");
+  function syncDockSpace() {
+    if ($("dock-body").hidden) {
+      document.body.style.removeProperty("--dock-height");
+      return;
+    }
+    document.body.style.setProperty(
+      "--dock-height",
+      `${dock.getBoundingClientRect().height}px`,
+    );
+  }
+  new ResizeObserver(syncDockSpace).observe(dock);
+
   $("dock-toggle").addEventListener("click", () => {
     const body = $("dock-body");
     body.hidden = !body.hidden;
     const expanded = !body.hidden;
+    // Set the measured height before applying the open class. This avoids a
+    // transient zero-height reservation that can clamp scroll at the bottom
+    // of the document for one layout.
+    if (expanded) {
+      syncDockSpace();
+      document.body.classList.add("dock-open");
+    } else {
+      document.body.classList.remove("dock-open");
+      syncDockSpace();
+    }
     $("dock-toggle").setAttribute("aria-expanded", String(expanded));
     $("dock-toggle").textContent = `controls & metrics ${expanded ? "▾" : "▴"}`;
     // Analysis is skipped while the dock is closed — refresh on reveal.
