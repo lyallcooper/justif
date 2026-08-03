@@ -973,6 +973,88 @@ function plainTextOf(node: Node): string {
   return out;
 }
 
+/** Text nodes that contribute at least one character to a live selection
+ * range, in document order. Empty endpoint slices are deliberately omitted:
+ * the first non-empty node is the one that determines whether a copied
+ * fragment starts with a layout-only joint, even when the range starts at the
+ * end of the preceding text node. */
+function nonEmptyTextNodesInRange(range: Range): Text[] {
+  const root = range.commonAncestorContainer;
+  const out: Text[] = [];
+  const visit = (node: Node): void => {
+    if (node.nodeType !== Node.TEXT_NODE) return;
+    const text = node as Text;
+    if (!range.intersectsNode(text)) return;
+    const start = text === range.startContainer ? range.startOffset : 0;
+    const end = text === range.endContainer ? range.endOffset : text.data.length;
+    if (start < end) out.push(text);
+  };
+  if (root.nodeType === Node.TEXT_NODE) visit(root);
+  else {
+    const walker = root.ownerDocument!.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      visit(node);
+    }
+  }
+  return out;
+}
+
+/** The only ordinary whitespace text node the enhanced DOM emits outside a
+ * `.justif-seg`: the literal space that carries a real soft-wrap joint.
+ * Author whitespace is inside a segment, so this remains safe even when a
+ * selection crosses non-enhanced content before or after a managed paragraph.
+ */
+function isJustifBoundaryJoint(node: Text): boolean {
+  const parent = node.parentElement;
+  return (
+    node.data === " " &&
+    parent !== null &&
+    parent.closest(".justif-seg") === null &&
+    parent.closest("[data-justif]") !== null
+  );
+}
+
+/** Clone-side counterpart to isJustifBoundaryJoint(). The cloned fragment no
+ * longer has the enhanced paragraph ancestor, so only its segment boundary
+ * shape can be checked there; the live-node check already established the
+ * paragraph provenance. */
+function isClonedBoundaryJoint(node: Text): boolean {
+  const parent = node.parentElement;
+  return node.data === " " && (parent === null || parent.closest(".justif-seg") === null);
+}
+
+/** Remove leading/trailing layout-only joints from one copied range. The live
+ * range identifies the first and last included text nodes before cloning;
+ * cloneContents() may add empty endpoint text clones, so the corresponding
+ * clone is found by its first/last NON-EMPTY text position instead. */
+function removeCopiedBoundaryJoints(range: Range, fragment: DocumentFragment): void {
+  const included = nonEmptyTextNodesInRange(range);
+  if (included.length === 0) return;
+  const trimLeading = isJustifBoundaryJoint(included[0]!);
+  const trimTrailing = isJustifBoundaryJoint(included[included.length - 1]!);
+  if (!trimLeading && !trimTrailing) return;
+
+  const cloned = nonEmptyTextNodesInRange(
+    // A detached fragment is not a live selection range, so collect its text
+    // nodes directly rather than reusing the range helper above.
+    (() => {
+      const cloneRange = fragment.ownerDocument!.createRange();
+      cloneRange.selectNodeContents(fragment);
+      return cloneRange;
+    })(),
+  );
+  const remove = new Set<Text>();
+  const first = cloned[0];
+  const last = cloned[cloned.length - 1];
+  if (trimLeading && first !== undefined && isClonedBoundaryJoint(first)) {
+    remove.add(first);
+  }
+  if (trimTrailing && last !== undefined && isClonedBoundaryJoint(last)) {
+    remove.add(last);
+  }
+  for (const node of remove) node.remove();
+}
+
 /** One entry per ctx font the content needs. `sample` holds every distinct
  * code point set in that font — faces are matched by unicode-range against
  * concrete text, so both the load() await and the change probe must carry the
@@ -1096,7 +1178,9 @@ const onDocumentCopy = (e: ClipboardEvent): void => {
   const html = document.createElement("div");
   let plain = "";
   for (let i = 0; i < sel.rangeCount; i++) {
-    const frag = sel.getRangeAt(i).cloneContents();
+    const range = sel.getRangeAt(i);
+    const frag = range.cloneContents();
+    removeCopiedBoundaryJoints(range, frag);
     const walker = document.createTreeWalker(frag, NodeFilter.SHOW_TEXT);
     for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
       n.nodeValue = clean(n.nodeValue ?? "");

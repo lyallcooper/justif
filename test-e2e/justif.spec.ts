@@ -4542,6 +4542,102 @@ test("selection across a line break copies a space, not a newline", async ({ pag
   expect(copied.replace(/\s+/g, " ")).toContain("olden times when wishing still helped");
 });
 
+test("copy cleanup removes line-boundary spaces for every range shape", async ({ page }) => {
+  await enhance(page, { hyphenate: true, protrusion: false, hangingPunctuation: "none" });
+  const r = await page.evaluate(() => {
+    const p = document.getElementById("p1")!;
+    const children = [...p.childNodes];
+    const boundaryIndex = children.findIndex(
+      (node) => node.nodeType === Node.TEXT_NODE && node.nodeValue === " ",
+    );
+    if (boundaryIndex < 1 || boundaryIndex + 1 >= children.length) {
+      throw new Error("fixture did not produce a line-boundary space");
+    }
+    const boundary = children[boundaryIndex] as Text;
+    const previous = children[boundaryIndex - 1] as HTMLElement;
+    const following = children[boundaryIndex + 1] as HTMLElement;
+    const previousText = previous.firstChild as Text;
+    const followingText = following.firstChild as Text;
+    const copy = (ranges: Range[]) => {
+      const sel = getSelection()!;
+      sel.removeAllRanges();
+      for (const range of ranges) sel.addRange(range);
+      const e = new ClipboardEvent("copy", {
+        clipboardData: new DataTransfer(),
+        cancelable: true,
+      });
+      document.dispatchEvent(e);
+      const result = {
+        rangeCount: sel.rangeCount,
+        prevented: e.defaultPrevented,
+        plain: e.clipboardData!.getData("text/plain"),
+        html: e.clipboardData!.getData("text/html"),
+      };
+      sel.removeAllRanges();
+      return result;
+    };
+    const range = (
+      start: Node,
+      startOffset: number,
+      end: Node,
+      endOffset: number,
+    ): Range => {
+      const result = document.createRange();
+      result.setStart(start, startOffset);
+      result.setEnd(end, endOffset);
+      return result;
+    };
+
+    // The boundary node itself is the start container.
+    const leadingText = copy([range(boundary, 0, followingText, followingText.length)]);
+    // The element contains the boundary at startOffset.
+    const leadingElement = copy([range(p, boundaryIndex, followingText, followingText.length)]);
+    // The start endpoint contributes no text; the boundary is the first
+    // non-empty text node in the copied range.
+    const leadingEmpty = copy([range(previousText, previousText.length, followingText, followingText.length)]);
+
+    // Mirror the three shapes at the range end.
+    const trailingText = copy([range(previousText, 0, boundary, 1)]);
+    const trailingElement = copy([range(previousText, 0, p, boundaryIndex + 1)]);
+    const trailingEmpty = copy([range(previousText, 0, followingText, 0)]);
+
+    // Both endpoint checks identify the same node; removal must be idempotent.
+    const onlyBoundary = copy([range(boundary, 0, boundary, 1)]);
+
+    // Firefox supports multiple ranges; Chromium/WebKit retain the first one.
+    const multiRange = copy([
+      range(boundary, 0, followingText, followingText.length),
+      range(previousText, 0, boundary, 1),
+    ]);
+    return {
+      leadingText,
+      leadingElement,
+      leadingEmpty,
+      trailingText,
+      trailingElement,
+      trailingEmpty,
+      onlyBoundary,
+      multiRange,
+    };
+  });
+
+  for (const result of [r.leadingText, r.leadingElement, r.leadingEmpty]) {
+    expect(result.prevented).toBe(true);
+    expect(result.plain).not.toMatch(/^ /);
+    expect(result.html).not.toMatch(/^ /);
+  }
+  for (const result of [r.trailingText, r.trailingElement, r.trailingEmpty]) {
+    expect(result.prevented).toBe(true);
+    expect(result.plain).not.toMatch(/ $/);
+    expect(result.html).not.toMatch(/ $/);
+  }
+  expect(r.onlyBoundary.prevented).toBe(true);
+  expect(r.onlyBoundary.plain).toBe("");
+  expect(r.onlyBoundary.html).toBe("");
+  expect(r.multiRange.prevented).toBe(true);
+  expect(r.multiRange.plain).not.toMatch(/^ | $/);
+});
+
 test("copy cleanup strips run-boundary NBSPs and word joiners", async ({ page }) => {
   await enhance(page, { hyphenate: true });
   const r = await page.evaluate(() => {
