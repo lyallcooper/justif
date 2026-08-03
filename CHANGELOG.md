@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.1 (2026-08-03)
+
 - Fixed a bug where copying text could unexpectedly have a leading
   space.
 
