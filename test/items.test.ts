@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { INF_PENALTY } from "../src/core/badness.js";
 import { buildItems, textMakesBox } from "../src/core/items.js";
 import {
   type BuildOptions,
@@ -131,6 +132,157 @@ describe("buildItems", () => {
     if (pen.type !== ItemType.Penalty) throw new Error("expected penalty");
     expect(pen.width).toBe(0);
     expect(pen.hyphen).toBe(false);
+  });
+
+  describe("dashes", () => {
+    // Every dash a line may break after takes the same zero-width flagged
+    // penalty an explicit hyphen does — no materialized hyphen, since the
+    // dash is already box text.
+    it.each([
+      ["em dash", "soft—hard", "box(soft—) pen(50) box(hard)"],
+      ["en dash", "soft–hard", "box(soft–) pen(50) box(hard)"],
+      ["U+2010 hyphen", "soft‐hard", "box(soft‐) pen(50) box(hard)"],
+    ])("breaks after an %s", (_name, text, expected) => {
+      const para = build(text);
+      expect(shape(para.items)).toBe(`${expected} pen(10000) fil pen(-10000)`);
+      const pen = para.items[1]!;
+      if (pen.type !== ItemType.Penalty) throw new Error("expected penalty");
+      expect(pen.width).toBe(0);
+      expect(pen.flagged).toBe(true);
+      expect(pen.hyphen).toBe(false); // not hyphenation: available in pass 1
+    });
+
+    it.each([
+      ["U+2011 non-breaking hyphen", "soft‑hard"],
+      ["U+2012 figure dash", "soft‒hard"],
+      ["U+2015 horizontal bar", "soft―hard"],
+    ])("never breaks at a %s", (_name, text) => {
+      const para = build(text);
+      expect(shape(para.items)).toBe(`box(${text}) pen(10000) fil pen(-10000)`);
+    });
+
+    it("breaks around a run of dashes but never inside one", () => {
+      const para = build("soft——hard");
+      expect(shape(para.items)).toBe(
+        "box(soft——) pen(50) box(hard) pen(10000) fil pen(-10000)",
+      );
+    });
+
+    it("takes the dash break penalty from exHyphenPenalty", () => {
+      const para = build("soft—hard", { exHyphenPenalty: 77 });
+      expect(shape(para.items)).toBe(
+        "box(soft—) pen(77) box(hard) pen(10000) fil pen(-10000)",
+      );
+    });
+
+    it("credits the dash's own protrusion to the break", () => {
+      const para = build("soft—hard", { protrusion: { "—": { r: 150 } } });
+      const pen = para.items[1]!;
+      if (pen.type !== ItemType.Penalty) throw new Error("expected penalty");
+      expect(pen.rp).toBeCloseTo((150 / 1000) * charWidth("—"));
+    });
+
+    // Numeric ranges are split into chunks (so anything hyphenatable around
+    // them still is) and the junction is priced near-prohibitively rather
+    // than forbidden outright: the digit test is per junction, so a long
+    // chain of them would otherwise be one unbreakable unit.
+    it.each([
+      ["en dash", "1914–1918", "box(1914–) pen(9999) box(1918)"],
+      ["em dash", "1914—1918", "box(1914—) pen(9999) box(1918)"],
+      ["hyphen-minus", "1914-1918", "box(1914-) pen(9999) box(1918)"],
+      ["ISO date", "2026-08-06", "box(2026-) pen(9999) box(08-) pen(9999) box(06)"],
+      ["ISBN", "0-13-2", "box(0-) pen(9999) box(13-) pen(9999) box(2)"],
+    ])("prices a numeric range near-prohibitively across an %s", (_name, text, expected) => {
+      const para = build(text);
+      expect(shape(para.items)).toBe(`${expected} pen(10000) fil pen(-10000)`);
+      const pen = para.items[1]!;
+      if (pen.type !== ItemType.Penalty) throw new Error("expected penalty");
+      expect(pen.penalty).toBeLessThan(INF_PENALTY);
+      expect(pen.width).toBe(0); // no hyphen materialized: the dash is box text
+    });
+
+    it("still breaks a dash between a digit and a letter", () => {
+      const para = build("1914–style");
+      expect(shape(para.items)).toBe(
+        "box(1914–) pen(50) box(style) pen(10000) fil pen(-10000)",
+      );
+    });
+
+    it("offers no dash break in front of punctuation that cannot open a line", () => {
+      const para = build("soft—, hard");
+      expect(shape(para.items)).toBe(
+        "box(soft—) box(,) glue box(hard) pen(10000) fil pen(-10000)",
+      );
+    });
+
+    // A CLOSING bracket or quote can end a line, so the break survives there.
+    it.each([
+      ["a closing quote", 'said\u201d\u2014then', 'box(said\u201d\u2014) pen(50) box(then)'],
+      ["a closing paren", "(aside)—then", "box((aside)—) pen(50) box(then)"],
+    ])("keeps the dash break after %s", (_name, text, expected) => {
+      expect(shape(build(text).items)).toBe(`${expected} pen(10000) fil pen(-10000)`);
+    });
+
+    it("hyphenates both sides of a dash-joined compound", () => {
+      const hyphenate = (w: string) => w.match(/.{1,3}/g) ?? [w];
+      expect(shape(build("bramble—thicket", { hyphenate }).items)).toBe(
+        "box(bra) pen(50) box(mbl) pen(50) box(e—) pen(50) " +
+          "box(thi) pen(50) box(cke) pen(50) box(t) pen(10000) fil pen(-10000)",
+      );
+      // The hyphen-minus form, unchanged, for comparison.
+      expect(shape(build("bramble-thicket", { hyphenate }).items)).toBe(
+        "box(bra) pen(50) box(mbl) pen(50) box(e-) pen(50) " +
+          "box(thi) pen(50) box(cke) pen(50) box(t) pen(10000) fil pen(-10000)",
+      );
+    });
+
+    it("prices the space before a dash-initial token off the front of a line", () => {
+      const para = build("Moscow — the");
+      expect(shape(para.items)).toBe(
+        "box(Moscow) pen(9999) glue box(—) glue box(the) pen(10000) fil pen(-10000)",
+      );
+      const pen = para.items[1]!;
+      if (pen.type !== ItemType.Penalty) throw new Error("expected penalty");
+      // Steep but finite: an absolute ban would overflow a narrow measure.
+      expect(pen.penalty).toBeLessThan(INF_PENALTY);
+      expect(pen.flagged).toBe(false);
+      expect(pen.width).toBe(0);
+    });
+
+    it("prices the space before any dash-initial token, not just a lone dash", () => {
+      expect(shape(build("Moscow —the").items)).toBe(
+        "box(Moscow) pen(9999) glue box(—) box(the) pen(10000) fil pen(-10000)",
+      );
+    });
+
+    // A dash with nothing before it but dashes, or a character that cannot end
+    // a line, is not joining two words: it offers no break of its own, leaving
+    // adjacent unbreakable boxes. A bracket must not make "(-5)" breakable
+    // where "-5" is not.
+    it.each([
+      ["a sign", "down -5 degrees", "box(down) pen(9999) glue box(-) box(5) glue box(degrees)"],
+      ["a CLI flag", "run --verbose now", "box(run) pen(9999) glue box(--) box(verbose) glue box(now)"],
+      ["a dialogue dash", "—Yes", "box(—) box(Yes)"],
+      ["a parenthesized negative", "loss (-5) here", "box(loss) glue box((-) box(5)) glue box(here)"],
+      ["interval notation", "over [-1,1] now", "box(over) glue box([-) box(1,1]) glue box(now)"],
+      ["a quoted dialogue dash", "“—Yes”", "box(“—) box(Yes”)"],
+      ["a guillemet", "«—Oui", "box(«—) box(Oui)"],
+    ])("stands off %s", (_name, text, expected) => {
+      expect(shape(build(text).items)).toBe(`${expected} pen(10000) fil pen(-10000)`);
+    });
+
+    it("does not weaken the nowrap prohibition at a dash-initial token", () => {
+      const para = buildItems(
+        [{ text: "Moscow — the", run: 0, atomicKey: 3 }],
+        [mockRun()],
+        defaultBuildOptions,
+        mockMeasure,
+      );
+      expect(shape(para.items)).toBe(
+        "box(Moscow) pen(10000) glue box(—) pen(10000) glue box(the) " +
+          "pen(10000) fil pen(-10000)",
+      );
+    });
   });
 
   it("uses the hyphenator on long-enough letter cores, preserving case and punctuation", () => {

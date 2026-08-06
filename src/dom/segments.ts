@@ -761,7 +761,7 @@ export function buildRenderSegments(
       // joint. Explicit-hyphen breaks are flagged and keep the zero-width
       // joint below.
       pendingJoint = brk.cjk === true ? "wbr" : "space";
-    } else pendingJoint = "wbr"; // zero-width flagged penalty (explicit hyphen)
+    } else pendingJoint = "wbr"; // zero-width flagged penalty (dash break)
   }
 
   // Closing decorations attach to each padded run's LAST segment — known

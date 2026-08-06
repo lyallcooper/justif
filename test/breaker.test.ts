@@ -179,6 +179,11 @@ describe("breakParagraph vs brute-force oracle", () => {
     // CJK item streams (per-cluster boxes, penalty(0) + inter-character
     // glue, kinsoku INF penalties) must satisfy the same optimality.
     "吾輩は猫である。名前はまだ無い。どこで生れたかとんと見当がつかぬ。何でも薄暗い所で泣いていた。",
+    // Dash streams: flagged dash breaks, the steep finite penalty in front of
+    // a spaced dash, and the penalty-less junctions of a numeric range and a
+    // stood-off flag, all of which reprice the search space.
+    "The frog king — or rather the iron Henry — sat by the well from 1914–1918 " +
+      "beside a rose—garden wall, run --verbose, and wept for -5 degrees",
   ];
   const widths = [140, 170, 210, 260, 320];
 
@@ -212,6 +217,11 @@ describe("breakParagraph vs brute-force oracle", () => {
     expect(bruteForce(para, 260, pass2Opts)).not.toBeNull();
     // The CJK stream too: inter-character glue makes most widths feasible.
     expect(bruteForce(build(texts[3]!), 210, pass2Opts)).not.toBeNull();
+    // And the dash stream, whose steep pre-dash penalties could otherwise
+    // make every one of its optimality checks pass by skipping.
+    expect(
+      bruteForce(build(texts[4]!, { hyphenate: fakeHyphenator }), 260, pass2Opts),
+    ).not.toBeNull();
   });
 
   it("agrees with the oracle under lastLineMinWidth's render-aware ending cost", () => {
@@ -964,5 +974,116 @@ describe("layout algebra", () => {
       if (brk.type === ItemType.Penalty) width += brk.width;
       expect(width).toBeCloseTo(line.width, 6);
     }
+  });
+});
+
+describe("dash breaks", () => {
+  const setLines = (text: string, width: number): string[] => {
+    const para = build(text);
+    const result = breakParagraph(para, width, defaultBreakOptions);
+    return layoutLines(para, result, width, defaultBuildOptions).map((l) =>
+      lineText(para, l).trim(),
+    );
+  };
+
+  it("breaks an UNSPACED em dash compound, leaving the dash on the first line", () => {
+    // "bramble—" is 59px and "thicket" 43px in the mock: at 70px the only
+    // break available is the dash junction.
+    expect(setLines("bramble—thicket", 70)).toEqual(["bramble—", "thicket"]);
+  });
+
+  it("adds no hyphen at a dash break (the dash is already box text)", () => {
+    const para = build("bramble—thicket");
+    const result = breakParagraph(para, 70, defaultBreakOptions);
+    const lines = layoutLines(para, result, 70, defaultBuildOptions);
+    expect(lines).toHaveLength(2);
+    expect(lines[0]!.hyphenated).toBe(false);
+    expect(lineText(para, lines[0]!)).not.toContain("-");
+  });
+
+  it("sets an unspaced em dash whole when the measure allows", () => {
+    expect(setLines("bramble—thicket", 200)).toEqual(["bramble—thicket"]);
+  });
+
+  // The rule no other engine implements. It is deliberately CONDITIONAL:
+  // DASH_LINE_START_PENALTY is finite so an impossible measure resolves
+  // instead of overflowing, so the invariant is not "never" but "only when
+  // the alternative was physically impossible" — keeping the dash on the
+  // previous line must have overflowed it even at full shrink.
+  it.each([
+    ["unspaced", "the bramble—thicket beside a rose—garden wall"],
+    ["spaced", "Moscow — the capital — of all Russia"],
+    ["mixed", "a rose—garden — the wall beside it — and bramble—thicket"],
+  ])("opens a line with a dash only when nothing else fits (%s)", (_name, text) => {
+    const para = build(text);
+    for (let width = 60; width <= 400; width += 5) {
+      const result = breakParagraph(para, width, defaultBreakOptions);
+      const lines = layoutLines(para, result, width, defaultBuildOptions);
+      for (let i = 0; i < lines.length; i++) {
+        if (!lineText(para, lines[i]!).trim().startsWith("—")) continue;
+        expect(i).toBeGreaterThan(0);
+        // The previous line extended through the dash box that opens this one.
+        const start = lines[i - 1]!.start;
+        const through = lines[i]!.start + 1;
+        const natural = para.cumW[through]! - para.cumW[start]!;
+        const shrink =
+          para.cumZ[through]! -
+          para.cumZ[start]! +
+          (para.cumExpZ[through]! - para.cumExpZ[start]!);
+        expect(natural - shrink).toBeGreaterThan(width);
+      }
+    }
+  });
+
+  it("pulls a spaced dash up onto the previous line at a cost", () => {
+    // The mock gives "—" and "b" the same 8px advance, so a control text with
+    // "b" in place of every dash isolates the rule from the metrics: at this
+    // measure the control happily opens lines with the token and the dash
+    // version pays looser lines to avoid it.
+    const text = "The frog king — or rather the iron Henry — sat beside the well and wept";
+    const control = text.replaceAll("—", "b");
+    expect(setLines(text, 95)).toEqual([
+      "The frog king —",
+      "or rather the",
+      "iron Henry —",
+      "sat beside the",
+      "well and wept",
+    ]);
+    expect(setLines(control, 95).some((l) => l.startsWith("b "))).toBe(true);
+  });
+
+  // Near-prohibitive, not forbidden: same conditional shape as the dash
+  // line-start rule above. A range splits only when carrying it whole would
+  // have overflowed, which is what keeps a long digit chain from becoming an
+  // unbreakable unit in a narrow measure.
+  it("splits a numeric range only when carrying it whole overflows", () => {
+    const para = build("from 1914–1918 the war ran on");
+    let whole = 0;
+    let split = 0;
+    for (let width = 60; width <= 400; width += 5) {
+      const result = breakParagraph(para, width, defaultBreakOptions);
+      const lines = layoutLines(para, result, width, defaultBuildOptions);
+      const texts = lines.map((l) => lineText(para, l).trim());
+      const at = texts.findIndex((t) => /\d[-–—]$/.test(t));
+      if (at < 0) {
+        expect(texts.join(" ")).toContain("1914–1918");
+        whole++;
+        continue;
+      }
+      split++;
+      const start = lines[at]!.start;
+      const through = lines[at + 1]!.start + 1;
+      const natural = para.cumW[through]! - para.cumW[start]!;
+      const shrink =
+        para.cumZ[through]! -
+        para.cumZ[start]! +
+        (para.cumExpZ[through]! - para.cumExpZ[start]!);
+      expect(natural - shrink, `${width}px split a range that would have fit`).toBeGreaterThan(
+        width,
+      );
+    }
+    // Both branches must be exercised, or this passes for the wrong reason.
+    expect(whole).toBeGreaterThan(0);
+    expect(split).toBeGreaterThan(0);
   });
 });

@@ -6330,3 +6330,64 @@ test("canvas measureText advances are direction-independent (cache-key guard)", 
   });
   expect(diffs).toEqual([]);
 });
+
+test("carries dash breaks into the DOM and keeps dashes off line starts", async ({ page }) => {
+  // Compounds too long to sit on one line at these measures, so the model's
+  // only useful break is the dash junction itself: the rendered lines prove
+  // the zero-width joint carries a dash break into the DOM, adding no hyphen
+  // glyph the way an explicit-hyphen break would not.
+  const read = async (width: number) => {
+    const result = await page.evaluate(async (w) => {
+      document.body.innerHTML = `
+        <style>
+          #dashes {
+            width: ${w}px;
+            margin: 0;
+            padding: 0;
+            border: 0;
+            font: 17px/24px Georgia, serif;
+            text-align: justify;
+          }
+        </style>
+        <p id="dashes"></p>
+      `;
+      const p = document.getElementById("dashes")!;
+      p.textContent =
+        "The unfortunately—nevertheless of it all, quite suddenly — the frog " +
+        "king's own incomprehensibly—straightforward well, dug in 1914–1918.";
+      const j = window.__justif;
+      j.controller?.destroy();
+      j.controller = j.justify([p], { observeResize: false });
+      await j.controller.ready;
+      return {
+        segs: p.querySelectorAll(".justif-seg").length,
+        lines: window.__justifLines(p).lines.map((l) => l.texts),
+      };
+    }, width);
+    return result;
+  };
+
+  for (const width of [170, 210, 260]) {
+    const { segs, lines } = await read(width);
+    // Guard against the whole test passing against unenhanced browser layout,
+    // which breaks dashes on BOTH sides and would satisfy some of the below.
+    expect(segs, `${width}px: paragraph was not enhanced`).toBeGreaterThan(3);
+    expect(lines.length).toBeGreaterThan(2);
+
+    const texts = lines.map((l) => l.join(" "));
+    // A line ends at an UNSPACED dash: a dash with a letter right before it,
+    // which this text's standalone spaced dash cannot produce.
+    expect
+      .soft(texts.some((t) => /\p{L}—$/u.test(t.trimEnd())), `${width}px: ${JSON.stringify(texts)}`)
+      .toBe(true);
+    for (const [i, line] of lines.entries()) {
+      const text = texts[i]!;
+      expect.soft(text.trimStart().startsWith("—"), `${width}px opened with a dash: "${text}"`).toBe(false);
+      // The fixture's line reader reports a materialized hyphen as its own
+      // "-" entry; a dash break must never add one.
+      expect.soft(line.includes("-"), `${width}px added a hyphen: "${text}"`).toBe(false);
+    }
+    // The numeric range never splits.
+    expect.soft(texts.some((t) => t.includes("1914–1918"))).toBe(true);
+  }
+});

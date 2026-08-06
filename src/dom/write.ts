@@ -122,7 +122,7 @@ export interface RenderSegment {
    * "space" — line boundary at a space (bare text node, hangs at wrap),
    * "hyphen" — line boundary at a hyphenation point (pseudo-hyphen +
    *   zero-width break span),
-   * "wbr" — zero-width line boundary (explicit hyphen or CJK), rendered as
+   * "wbr" — zero-width line boundary (dash break or CJK), rendered as
    *   a break span whose ::after is a generated ZWSP.
    */
   joint: "none" | "space" | "hyphen" | "wbr";

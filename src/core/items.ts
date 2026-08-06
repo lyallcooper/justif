@@ -24,6 +24,71 @@ const SOFT_HYPHEN = "\u00AD";
 /** Letters-only word core eligible for pattern hyphenation. */
 const WORD_CORE = /^(\P{L}*)(\p{L}+)(\P{L}*)$/u;
 const MIN_HYPHENATION_LENGTH = 5;
+
+/**
+ * Dash characters a line may break AFTER: hyphen-minus, U+2010 HYPHEN, en
+ * dash, em dash. Absent on purpose: U+2011 NON-BREAKING HYPHEN exists to
+ * forbid the break, and no browser engine breaks at U+2012 FIGURE DASH's
+ * flanking digits or at U+2015 HORIZONTAL BAR (a quotation dash) either.
+ */
+function isBreakingDash(code: number): boolean {
+  return code === 0x2d || code === 0x2010 || code === 0x2013 || code === 0x2014;
+}
+
+/**
+ * Every dash character, including the three that never take a break of their
+ * own. No break is ever offered BEFORE one of these: a run of dashes sets
+ * solid, and a line may not open with a dash.
+ */
+function isAnyDash(code: number): boolean {
+  return code === 0x2d || (code >= 0x2010 && code <= 0x2015);
+}
+
+/**
+ * Punctuation that may not open a line, so a dash break is not offered in
+ * front of one: "AAA\u2013, BBB" breaks at the space, never after the dash. The
+ * Japanese form of this rule, over a much larger character set, is cjk.ts's
+ * kinsoku pair. Only unambiguously closing and terminal marks are listed: the
+ * straight quotes are omitted because a dash followed by one is far more
+ * likely to be OPENING a quotation ("said\u2014'no'") than closing it, and
+ * suppressing a legitimate break costs more than the rare curly apostrophe
+ * ("\u2014\u2019tis") this lets through.
+ */
+const NO_LINE_START = /[,.;:!?%)\]}\u00BB\u203A\u2019\u201D\u2026\u2030\u203C\u2047\u2048\u2049]/;
+/**
+ * The mirror: punctuation that may not END a line, so a dash sitting directly
+ * after one is opening something rather than joining two words, and gets no
+ * break of its own. Without this, "(-5)" and "[-1, 1]" break after the sign
+ * — leaving "(-" to end a line — while a bare "-5" is protected, an
+ * inconsistency an opening bracket should not create. Straight quotes are
+ * omitted here for the same ambiguity reason as above, in the other
+ * direction: a dash after one is as likely to be closing a quotation
+ * ("said \u2014 'no'\u2014then left") as opening it.
+ */
+const NO_LINE_END = /[([{\u00AB\u2039\u2018\u201C\u00BF\u00A1]/;
+const DIGIT = /\p{Nd}/u;
+
+/**
+ * The dash rules' "essentially never, but not never": one below INF_PENALTY,
+ * where the squared penalty term (\u00A7859) costs about as much as one maximally
+ * bad line, so the breaker takes such a break only to escape something worse.
+ *
+ * Used where a prohibition would otherwise weld an UNBOUNDED run of text into
+ * one atomic unit, which an absolute ban turns from a typographic preference
+ * into an overfull line:
+ *
+ * - the space before a dash-initial token, keeping a spaced dash off the front
+ *   of a line ("Moscow \u2014" / "the capital", never "Moscow" / "\u2014 the
+ *   capital"), which binds a whole word plus its dash;
+ * - a dash between digits, which binds every digit-flanked junction in the
+ *   token at once: a range or a date is short, but "978-0-13-235088-4" is not,
+ *   and it should still yield in a narrow measure rather than overflow.
+ *
+ * The bounded prohibitions get no penalty item at all (no break point
+ * whatever) since they cannot cause an overflow: see dashJunctionClass.
+ */
+const NEAR_PROHIBITIVE_PENALTY = 9999;
+
 /**
  * Breakable whitespace: everything \s matches EXCEPT no-break spaces
  * (U+00A0, U+202F), which stay inside boxes — unbreakable and unstretchable,
@@ -145,28 +210,83 @@ function codePointLength(text: string): number {
 }
 
 /**
- * Split a token after every explicit hyphen that is followed by a non-hyphen:
- * "self-made" → ["self-", "made"], while "a--b" keeps its run of dashes
- * together ("a--", "b"). Written as a loop rather than the equivalent
- * lookbehind-plus-lookahead regex: lookbehind assertions are Safari 16.4+,
- * they are SYNTAX
+ * Split a token after every dash that is followed by a non-dash: "self-made"
+ * → ["self-", "made"], "1914–1918" → ["1914–", "1918"], while "a--b" keeps
+ * its run of dashes together ("a--", "b").
+ *
+ * Chunks are the unit hyphenation runs on, so a token is split at a junction
+ * even when that junction will go on to FORBID the break (see
+ * dashJunctionClass): splitting is what lets both sides of a dash-joined
+ * compound hyphenate at all — the letters-only WORD_CORE gate rejects any
+ * chunk with a dash inside it, which is why "unfortunately—nevertheless" used
+ * to offer no break point anywhere.
+ *
+ * Written as a loop rather than the equivalent lookbehind-plus-lookahead
+ * regex: lookbehind assertions are Safari 16.4+, they are SYNTAX
  * (an older engine fails to parse the whole module, taking any bundle this
  * ships inside down with it), and no build step can lower them — esbuild
  * passes them through even when the target says otherwise.
  */
-function splitAfterHyphens(token: string): string[] {
-  // Most tokens carry no hyphen at all; one native scan settles them.
-  if (token.indexOf("-") < 0) return [token];
+function splitAtDashes(token: string): string[] {
+  // Most tokens carry no dash at all; one native scan settles them.
+  let dashed = false;
+  for (let i = 0; i < token.length; i++) {
+    if (isBreakingDash(token.charCodeAt(i))) {
+      dashed = true;
+      break;
+    }
+  }
+  if (!dashed) return [token];
   const chunks: string[] = [];
   let start = 0;
   for (let i = 0; i < token.length - 1; i++) {
-    if (token[i] === "-" && token[i + 1] !== "-") {
+    if (isBreakingDash(token.charCodeAt(i)) && !isAnyDash(token.charCodeAt(i + 1))) {
       chunks.push(token.slice(start, i + 1));
       start = i + 1;
     }
   }
   chunks.push(token.slice(start));
   return chunks;
+}
+
+/** The character before `chunk`'s trailing run of dashes ("" if it is all dashes). */
+function beforeTrailingDashes(chunk: string): string {
+  let i = chunk.length - 1;
+  while (i >= 0 && isAnyDash(chunk.charCodeAt(i))) i--;
+  return i >= 0 ? chunk[i]! : "";
+}
+
+/**
+ * What kind of break, if any, the junction between two chunks of one token
+ * carries — that is, the break after the dash `before` ends with. The `after`
+ * codes pushWord uses: 2 an ordinary dash break, 3 a near-prohibitive one, 0
+ * no break point at all.
+ *
+ * Two junctions are split for hyphenation but refuse the break outright,
+ * both of them bounded in the text they weld together, so neither can
+ * overflow a measure:
+ *
+ * - a dash with nothing before it but dashes, or something that cannot end a
+ *   line, so the dash is not joining two words at all: a sign ("-5" and
+ *   "(-5)"), a CLI flag ("--verbose"), interval notation ("[-1, 1]"), an
+ *   opening dialogue dash ("—Yes", "“—Yes”"). Breaking there strands the
+ *   dash at a line end away from what it belongs to.
+ * - a junction whose next character cannot open a line at all.
+ *
+ * A dash BETWEEN DIGITS is near-prohibitive rather than absolute. Keeping
+ * "1914–1918" and "2026-08-06" whole is the rule — every engine measured
+ * breaks them, and Chicago and Bringhurst both say not to, a deliberate
+ * departure from UAX #14 where en dash is class BA and the break is legal.
+ * But the test is per junction, so a long chain of them ("978-0-13-235088-4")
+ * would otherwise become one unbreakable 17-character unit; at
+ * NEAR_PROHIBITIVE_PENALTY it splits only when nothing else fits.
+ */
+function dashJunctionClass(before: string, after: string): number {
+  const stem = beforeTrailingDashes(before);
+  if (stem === "" || NO_LINE_END.test(stem)) return 0;
+  const next = after[0]!;
+  if (NO_LINE_START.test(next)) return 0;
+  return DIGIT.test(next) && DIGIT.test(stem) ? 3 : 2;
 }
 
 /** Half-open range of text consumed by a floated ::first-letter. */
@@ -282,7 +402,7 @@ function protrusionHang(
  * Flattens a paragraph's styled runs into the Knuth-Plass item stream.
  * Whitespace is collapsed; words become boxes measured whole (kerning-safe),
  * spaces become glue from the run's space spec, and break opportunities
- * (soft hyphens, hyphenator output, explicit hyphens) become penalties.
+ * (soft hyphens, hyphenator output, dashes) become penalties.
  * Ends with the TeX parfillskip idiom so the last line sets naturally.
  */
 export function buildItems(
@@ -440,7 +560,8 @@ export function buildItems(
    * and then fully emitted before the next one is touched: `pieceCount` is the
    * only live extent, so stale entries past it are unreachable. `pieceAfter`
    * says what follows fragment q — 0 nothing, 1 a hyphenation penalty, 2 an
-   * explicit-hyphen penalty — and `pieceFromHyphenator` is meaningful only
+   * dash penalty, 3 a near-prohibitive dash penalty — and
+   * `pieceFromHyphenator` is meaningful only
    * where `pieceAfter` is 1.
    */
   const pieceText: string[] = [];
@@ -449,7 +570,7 @@ export function buildItems(
   let pieceCount = 0;
 
   /**
-   * Split one chunk (no explicit hyphens) at soft hyphens or hyphenator
+   * Split one chunk (no dashes) at soft hyphens or hyphenator
    * points, APPENDING the fragments to the scratch arrays. Returns whether
    * they came from the hyphenator, which decides the penalty's `hyphen` flag
    * (and so whether pass 1 may break there).
@@ -521,12 +642,23 @@ export function buildItems(
    * (penalty ∞ in front — flex intact, break forbidden), and a space at a
    * font-family boundary shrinks only by `boundaryShrink` (rigid by
    * default; see BuildOptions.boundaryShrink).
+   *
+   * `dashInitial` says the box about to follow this space opens with a dash,
+   * which earns the space a steep but finite penalty instead
+   * (NEAR_PROHIBITIVE_PENALTY). All three prohibitions work the same way: a
+   * penalty item in FRONT of the glue, which retires the glue's own break
+   * point (the breaker requires a preceding box) and substitutes its own
+   * price. Breaking at that penalty discards the glue, so the rare line that
+   * pays the price still renders its space — segments.ts gives a break at a
+   * hand-built pre-glue penalty the "space" joint for exactly this reason.
    */
-  const flushPendingSpace = (nextRun: number): void => {
+  const flushPendingSpace = (nextRun: number, dashInitial = false): void => {
     if (pendingSpaceRun >= 0 && hasBox) {
       const space = runs[pendingSpaceRun]!.space;
       if (pendingLeadingSpace || (pieceKey !== undefined && pieceKey === lastBoxKey)) {
         pushPenalty(INF_PENALTY, 0, false, false, 0, pendingSpaceRun);
+      } else if (dashInitial) {
+        pushPenalty(NEAR_PROHIBITIVE_PENALTY, 0, false, false, 0, pendingSpaceRun);
       }
       const boundary =
         lastBoxRun >= 0 && runs[lastBoxRun]!.familyKey !== runs[nextRun]!.familyKey;
@@ -556,7 +688,7 @@ export function buildItems(
   ): void => {
     const run = runs[runIndex]!;
 
-    // Plan all fragments: explicit hyphens ("self-made" → "self-" | "made"),
+    // Plan all fragments: dash junctions ("self-made" → "self-" | "made"),
     // then soft-hyphen/hyphenator splits within each chunk.
     pieceCount = 0;
     if (pieceKey !== undefined) {
@@ -566,7 +698,7 @@ export function buildItems(
       if (pieceCount > 0) pieceAfter[pieceCount - 1] = 0;
     } else {
       const noHyphens = run.noHyphens === true;
-      const chunks = splitAfterHyphens(token);
+      const chunks = splitAtDashes(token);
       for (let c = 0; c < chunks.length; c++) {
         const first = pieceCount;
         const fromHyphenator = chunkPieces(chunks[c]!, noHyphens);
@@ -575,10 +707,13 @@ export function buildItems(
           pieceFromHyphenator[q] = fromHyphenator;
         }
         // A chunk that yielded NO fragments (a lone soft hyphen) has no last
-        // fragment to hang the explicit-hyphen penalty on, and must not steal
-        // the previous chunk's.
+        // fragment to hang the dash penalty on, and must not steal the
+        // previous chunk's. A junction the dash rules forbid takes class 0:
+        // with no penalty item between the two boxes the breaker has no
+        // break point there at all, which is exactly the intent.
         if (pieceCount > first) {
-          pieceAfter[pieceCount - 1] = c < chunks.length - 1 ? 2 : 0;
+          pieceAfter[pieceCount - 1] =
+            c < chunks.length - 1 ? dashJunctionClass(chunks[c]!, chunks[c + 1]!) : 0;
         }
       }
     }
@@ -587,7 +722,7 @@ export function buildItems(
     // would get a doubled glue.
     if (pieceCount === 0) return;
 
-    flushPendingSpace(runIndex);
+    flushPendingSpace(runIndex, isAnyDash(token.charCodeAt(0)));
 
     // The shape almost every prose token has — one unbreakable fragment with
     // nothing withdrawn from flow — is the whole token measured once. The
@@ -633,10 +768,17 @@ export function buildItems(
           hyphenRp(run),
           runIndex,
         );
-      } else if (after === 2) {
-        // An explicit "-" is box text, so the break inherits the box's own
+      } else if (after === 2 || after === 3) {
+        // The dash is box text, so the break inherits the box's own
         // right protrusion rather than a materialized hyphen's.
-        pushPenalty(opts.exHyphenPenalty, 0, true, false, box.rp, runIndex);
+        pushPenalty(
+          after === 3 ? NEAR_PROHIBITIVE_PENALTY : opts.exHyphenPenalty,
+          0,
+          true,
+          false,
+          box.rp,
+          runIndex,
+        );
       }
     }
   };
@@ -701,7 +843,7 @@ export function buildItems(
       } else groups.push({ cjk, text: cluster, flowText, flowExclusion: clusterExclusion });
     }
 
-    flushPendingSpace(runIndex);
+    flushPendingSpace(runIndex, isAnyDash(clean.charCodeAt(0)));
 
     // Each group is measured in ISOLATION, deliberately unlike pushWord's
     // prefix-incremental scheme: engines disagree on kana kerning between
