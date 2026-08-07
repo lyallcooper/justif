@@ -2,9 +2,11 @@
 
 ## Unreleased
 
+## 0.7.2 (2026-08-07)
+
 - Breaks can now happen properly after dashes. Lines may now end in an em or en
   dash, though a line will never start with a dash. Number ranges such as
-  "1914—1918" will prefer to stay unbroken, however. 
+  "1914—1918" will prefer to stay unbroken, however.
 
 ## 0.7.1 (2026-08-03)
 
