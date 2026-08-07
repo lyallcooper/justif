@@ -23,11 +23,26 @@ poor break near the end of the paragraph.
 
 <p align="center">
   <a href="https://justif.lyall.co">
-    <img
-      src="docs/images/browser-vs-justif.png"
-      alt="Native browser justification with uneven spacing compared with Justif's more balanced line breaks"
-      width="760"
-    >
+    <picture>
+      <source
+        media="(prefers-color-scheme: dark)"
+        type="image/avif"
+        srcset="docs/images/browser-vs-justif-dark.avif"
+      >
+      <source
+        media="(prefers-color-scheme: dark)"
+        srcset="docs/images/browser-vs-justif-dark.png"
+      >
+      <source
+        type="image/avif"
+        srcset="docs/images/browser-vs-justif.avif"
+      >
+      <img
+        src="docs/images/browser-vs-justif.png"
+        alt="Native browser justification with uneven spacing compared with Justif's more balanced line breaks"
+        width="760"
+      >
+    </picture>
   </a><br>
   <em>Native browser vs. Justif rendering, Google Chrome.</em>
 </p>
