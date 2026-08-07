@@ -1,11 +1,12 @@
 # Justif
 
-_Publication-grade text justification for the web._
+_Text justification for perfectionists._
 
 Justif is a JavaScript library that applies TeX-style paragraph layout to
-existing HTML. It chooses line breaks across the whole paragraph and uses
-hyphenation and microtypography techniques to produce more even spacing than
-the browser's built-in justification.
+existing HTML, upgrading justified text on your website to print-quality. Justif
+chooses line breaks across the whole paragraph and uses hyphenation and
+microtypography techniques to produce more even spacing than the browser's
+built-in justification. It makes text easier and more enjoyable to read.
 
 It is a progressive enhancement. Your HTML and CSS provide the initial and
 fallback rendering, while Justif upgrades paragraphs it can measure reliably.

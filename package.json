@@ -1,7 +1,7 @@
 {
   "name": "justif",
   "version": "0.7.2",
-  "description": "Publication-grade text justification for the web",
+  "description": "Text justification for perfectionists",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/lyallcooper/justif.git"
