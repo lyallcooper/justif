@@ -1,4 +1,18 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
+
+/**
+ * Load the demo as a first-time visitor would, after the caller has cleared
+ * the saved parameters. It must be a NAVIGATION and not a reload: Firefox
+ * restores form control state across a reload, and `#view` is the one control
+ * the demo's init reads rather than assigns, so a restored "flicker" would
+ * silently pick the flicker defaults out of a supposedly fresh load.
+ */
+async function freshVisit(page: Page): Promise<void> {
+  await page.goto("/demo/");
+  await page.waitForFunction(
+    () => !document.documentElement.classList.contains("fonts-loading"),
+  );
+}
 
 test.describe("without JavaScript", () => {
   test.use({ javaScriptEnabled: false });
@@ -481,7 +495,7 @@ test("narrow windows use the 10em type specimen defaults", async ({ page }) => {
 
   await page.evaluate(() => localStorage.removeItem("justif-demo-params"));
   await page.setViewportSize({ width: 456, height: 844 });
-  await page.reload();
+  await freshVisit(page);
   await expect(sample).toHaveValue("aliceExcerpt");
   await expect(measure).toHaveValue("12");
 });
@@ -524,7 +538,7 @@ test("comparison views retain independent widths", async ({ page }) => {
 
   await page.evaluate(() => localStorage.removeItem("justif-demo-params"));
   await page.setViewportSize({ width: 1280, height: 844 });
-  await page.reload();
+  await freshVisit(page);
   await expect(measure).toHaveValue("13");
   await page.click("#view-flicker");
   await expect(measure).toHaveValue("19");
