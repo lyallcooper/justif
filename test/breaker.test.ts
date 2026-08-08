@@ -21,6 +21,7 @@ import {
   lineWidthAt,
   type ParagraphItems,
 } from "../src/core/types.js";
+import { hangingPunctuation, latinProtrusion } from "../src/core/protrusion.js";
 import { frogKing } from "./fixtures/frogKing.js";
 import { charWidth, kernedMeasure, mockMeasure, mockRun } from "./helpers/mock.js";
 
@@ -204,6 +205,19 @@ describe("breakParagraph vs brute-force oracle", () => {
     const para = build(texts[2]!, {
       protrusion: { ",": { r: 700 }, ".": { r: 700 }, "-": { r: 700 }, C: { l: 50 } },
       expansion: { max: 0.02, shrink: 0.02, step: 0.005 },
+    });
+    for (const width of widths) {
+      const oracle = bruteForce(para, width, pass2Opts);
+      if (oracle === null) continue;
+      expect(breakParagraph(para, width, pass2Opts).demerits).toBeCloseTo(oracle, 6);
+    }
+  });
+
+  it("agrees with the oracle under full hanging punctuation", () => {
+    // A hung mark clears its whole advance AND credits the glyph behind it,
+    // so a quote-led line buys more free width than any table code can.
+    const para = build(`“${texts[2]!}”`, {
+      protrusion: { ...latinProtrusion, ...hangingPunctuation },
     });
     for (const width of widths) {
       const oracle = bruteForce(para, width, pass2Opts);

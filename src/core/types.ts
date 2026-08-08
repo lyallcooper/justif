@@ -60,6 +60,8 @@ export interface RunMetrics {
   protrusion?: ProtrusionTable;
   /** First-line variant of `protrusion` (see BuildOptions.protrusionFirst). */
   protrusionFirst?: ProtrusionTable;
+  /** Per-run variant of `BuildOptions.protrusionCredit`. */
+  protrusionCredit?: ProtrusionTable;
   /**
    * Identity of this run's font family (stack), independent of style,
    * weight, and size. Word spaces BETWEEN runs of different families lose
@@ -240,6 +242,11 @@ export interface BuildOptions {
   /** Table for boxes starting the paragraph's FIRST line (full hanging
    * punctuation on opening quotes). undefined → same as `protrusion`. */
   protrusionFirst?: ProtrusionTable;
+  /** The protrusion model WITHOUT the hang overlay, used for the one glyph a
+   * fully hung mark leaves at the line's start: it takes an ordinary optical
+   * depth, never a second full hang. undefined → that glyph is credited
+   * nothing. */
+  protrusionCredit?: ProtrusionTable;
   expansion: ExpansionOptions | false;
   /** Letterfit tracking: inter-character space may open/close each line's
    * set width by these fractions (Bringhurst's tolerance is 0.03). Off by

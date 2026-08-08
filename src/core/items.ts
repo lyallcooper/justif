@@ -16,6 +16,7 @@ import {
   type Measure,
   type ParagraphItems,
   type Penalty,
+  type ProtrusionTable,
   type RunMetrics,
   type RunText,
 } from "./types.js";
@@ -349,6 +350,18 @@ function excludeFlow(
 /** `protrusionHang`'s "fetch the advance yourself, if you turn out to need it". */
 const LAZY_ADVANCE = -1;
 
+/** The protrusion table governing `run` on the line named by `firstLine`. */
+function protrusionTable(
+  opts: BuildOptions,
+  run: RunMetrics,
+  firstLine: boolean,
+): ProtrusionTable | false {
+  if (opts.protrusion === false) return false;
+  return firstLine
+    ? (run.protrusionFirst ?? opts.protrusionFirst ?? run.protrusion ?? opts.protrusion)
+    : (run.protrusion ?? opts.protrusion);
+}
+
 /**
  * Protrusion hang for `ch` at a line edge, in px: code/1000 × advance
  * (pdfTeX semantics), from the run's own hand-tuned table when one matched
@@ -357,7 +370,7 @@ const LAZY_ADVANCE = -1;
  * bearing so ink never leaves the measure.
  */
 function protrusionHang(
-  opts: BuildOptions,
+  table: ProtrusionTable | false,
   measure: Measure,
   ch: string,
   run: RunMetrics,
@@ -372,30 +385,135 @@ function protrusionHang(
    */
   advanceOrLazy: number,
   side: "l" | "r",
-  firstLine = false,
 ): number {
-  if (opts.protrusion === false) return 0;
-  const table = firstLine
-    ? (run.protrusionFirst ?? opts.protrusionFirst ?? run.protrusion ?? opts.protrusion)
-    : (run.protrusion ?? opts.protrusion);
-  const advCode = protrusionCodes(table, ch)?.[side] ?? 0;
+  if (table === false) return 0;
+  // Capped at 1000: a whole advance is as far out as a glyph goes, because
+  // that is the point where it has left the measure and there is nothing
+  // beyond gone. Negatives pass through — they pull a glyph IN, which is a
+  // real thing the measured model asks for. The cap matters most on the paths
+  // that never reach classification — `hyphenRp`'s materialized hyphen and
+  // `protrudeInkOnly` runs — so that one rule holds everywhere.
+  const advCode = Math.min(1000, protrusionCodes(table, ch)?.[side] ?? 0);
   if (advCode === 0) return 0;
   const advance = advanceOrLazy < 0 ? measure.charAdvance(ch, run) : advanceOrLazy;
   const advHang = (advCode / 1000) * advance;
   if (run.protrudeInkOnly === true && measure.inkBearings !== undefined) {
     return Math.min(advHang, measure.inkBearings(ch, run)[side]);
   }
-  // A line-START hang past the glyph's ink is pure displacement: the mark
-  // detaches from the very margin it is meant to anchor (worst in
-  // monospace, where a full-cell "“" floats ~4px out with a hole before
-  // the text). Cap at ink-exit — the ink may leave the measure entirely
-  // but stays flush against the margin. Line ENDS keep the full hang:
-  // there the preceding text anchors the margin and the mark drifts
-  // outward harmlessly.
+  // A PARTIAL line-start hang past the glyph's ink is pure displacement: the
+  // mark detaches from the very margin it is meant to anchor. Cap at
+  // ink-exit — the ink may leave the measure entirely but stays flush
+  // against the margin. A FULL hang never reaches here (`leadingProtrusion`
+  // handles it, and the glyph behind the mark anchors the margin instead),
+  // and line ENDS keep the full hang: there the preceding text anchors the
+  // margin and the mark drifts outward harmlessly.
   if (side === "l" && measure.inkBearings !== undefined) {
     return Math.min(advHang, Math.max(0, advance - measure.inkBearings(ch, run).r));
   }
   return advHang;
+}
+
+/**
+ * Left protrusion for a box, in px.
+ *
+ * Ordinarily this is the first glyph's own hang. The exception is a mark that
+ * hangs its ENTIRE advance (`l: 1000`, i.e. hanging punctuation): such a mark
+ * occupies nothing inside the measure, so the glyph behind it is the line's
+ * start and takes the line-start treatment itself. That is what keeps a hung
+ * mark from moving the text it opens — without it `“Typography` set the T a
+ * side bearing INSIDE the margin and denied it the protrusion a bare
+ * `Typography` would have had, pushing the first line in by ~0.09em against
+ * every line below it.
+ *
+ * EXACTLY ONE mark hangs. The glyph behind it is credited from the model
+ * WITHOUT the hang overlay (`protrusionCredit`), so a second mark takes an
+ * ordinary optical depth rather than hanging in turn: `“‘Twas` puts one quote
+ * outside and gives the other what a `‘` is worth at a line start. Every
+ * other implementation consults one glyph per line edge; this consults two,
+ * for the two different questions, and stops.
+ *
+ * The mark's advance is taken IN CONTEXT (the width the box loses when the
+ * mark is dropped) so its kern against the following glyph — `“T` kerns
+ * tight in most Garaldes — lands outside the measure with the mark itself.
+ * Affinity does the same, to the hundredth of a point.
+ *
+ * A `protrudeInkOnly` run is exempt: its whole contract is that no ink may
+ * leave the measure, which a full hang would break.
+ *
+ * THE INVARIANT STOPS AT THE BOX. `<em>“</em>Typography` puts the mark in a box
+ * of its own, so there is no glyph beside it here to credit and the T in the
+ * next box keeps its own protrusion instead — a hair different from the
+ * one-box case, which also spends the pair's kern outside the margin. Both are
+ * deliberate: a contextual advance across two boxes is not well defined when
+ * they are set in different fonts, and every reference implementation is at
+ * least this narrow, consulting one glyph and stopping. Not worth widening.
+ */
+function leadingProtrusion(
+  opts: BuildOptions,
+  measure: Measure,
+  text: string,
+  run: RunMetrics,
+  firstLine: boolean,
+): number {
+  const table = protrusionTable(opts, run, firstLine);
+  if (table === false) return 0;
+  const mark = firstCodePoint(text);
+  const inkOnly = run.protrudeInkOnly === true && measure.inkBearings !== undefined;
+  if (inkOnly || (protrusionCodes(table, mark)?.l ?? 0) < 1000) {
+    return protrusionHang(table, measure, mark, run, LAZY_ADVANCE, "l");
+  }
+  const tail = text.slice(mark.length);
+  const hang =
+    tail.length === 0
+      ? measure.charAdvance(mark, run)
+      : measure.width(text, run) - measure.width(tail, run);
+  // Nothing in THIS box to credit — see the box-boundary note above.
+  if (tail.length === 0) return hang;
+  const credit = run.protrusionCredit ?? opts.protrusionCredit ?? false;
+  return hang + protrusionHang(credit, measure, firstCodePoint(tail), run, LAZY_ADVANCE, "l");
+}
+
+/**
+ * Right protrusion for a box, in px — `leadingProtrusion` mirrored.
+ *
+ * Hanging is a CLASSIFICATION, not a large protrusion: it says the mark is not
+ * part of the text's rectangle. So the text sets as though the mark were not
+ * there, and the glyph that then ends the line takes the ordinary line-end
+ * treatment. `content.” ` therefore hangs the quote and lets the period
+ * protrude on its own account, exactly as `content.` would — the same rule
+ * that governs the left edge, so that adding a mark never moves the text it
+ * sits beside.
+ *
+ * As on the left, EXACTLY ONE mark is classified per edge: the rule applies
+ * once and the protrusion model handles everything inward of it, which is what
+ * keeps it from recursing with no place to stop. It stops at the box for the
+ * same reasons too: `content<em>”</em>` credits nothing, because the period is
+ * in a different box and `breakRp` reads only the last one.
+ */
+function trailingProtrusion(
+  opts: BuildOptions,
+  measure: Measure,
+  text: string,
+  run: RunMetrics,
+): number {
+  // The first-line table differs from the rest only in its LEFT codes, so the
+  // right edge always reads the ordinary one.
+  const table = protrusionTable(opts, run, false);
+  if (table === false) return 0;
+  const mark = lastCodePoint(text);
+  const inkOnly = run.protrudeInkOnly === true && measure.inkBearings !== undefined;
+  if (inkOnly || (protrusionCodes(table, mark)?.r ?? 0) < 1000) {
+    return protrusionHang(table, measure, mark, run, LAZY_ADVANCE, "r");
+  }
+  const head = text.slice(0, text.length - mark.length);
+  const hang =
+    head.length === 0
+      ? measure.charAdvance(mark, run)
+      : measure.width(text, run) - measure.width(head, run);
+  // Nothing in THIS box to credit — see the box-boundary note above.
+  if (head.length === 0) return hang;
+  const credit = run.protrusionCredit ?? opts.protrusionCredit ?? false;
+  return hang + protrusionHang(credit, measure, lastCodePoint(head), run, LAZY_ADVANCE, "r");
 }
 
 /**
@@ -465,7 +583,16 @@ export function buildItems(
   };
 
   const hyphenRp = (run: RunMetrics): number =>
-    piecePaintedEnd ? 0 : protrusionHang(opts, measure, "-", run, run.hyphenWidth, "r");
+    piecePaintedEnd
+      ? 0
+      : protrusionHang(
+          protrusionTable(opts, run, false),
+          measure,
+          "-",
+          run,
+          run.hyphenWidth,
+          "r",
+        );
 
   const makeBox = (
     text: string,
@@ -479,18 +606,14 @@ export function buildItems(
     let rp = 0;
     let lpFirst = 0;
     if (opts.protrusion !== false && flowText.length > 0) {
-      const first = firstCodePoint(flowText);
-      const last = lastCodePoint(flowText);
       if (!piecePaintedStart) {
-        lp = protrusionHang(opts, measure, first, run, LAZY_ADVANCE, "l");
+        lp = leadingProtrusion(opts, measure, flowText, run, false);
         lpFirst =
           (run.protrusionFirst ?? opts.protrusionFirst) === undefined
             ? lp
-            : protrusionHang(opts, measure, first, run, LAZY_ADVANCE, "l", true);
+            : leadingProtrusion(opts, measure, flowText, run, true);
       }
-      if (!piecePaintedEnd) {
-        rp = protrusionHang(opts, measure, last, run, LAZY_ADVANCE, "r");
-      }
+      if (!piecePaintedEnd) rp = trailingProtrusion(opts, measure, flowText, run);
     }
     let expStretch = 0;
     let expShrink = 0;

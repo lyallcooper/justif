@@ -243,14 +243,14 @@ native CSS property, so the browser's own rendering matches.
 ## Options
 
 Options are passed to `justify()`, or set in CSS when you use the drop-in script
-— see [Setting options in CSS](#setting-options-in-css). These are the ones most
+(see [Setting options in CSS](#setting-options-in-css)). These are the ones most
 applications need:
 
 | Option | CSS property | Default | What it controls |
 | --- | --- | --- | --- |
 | `hyphenate` | `hyphens: none` turns it off | none | Splits a lowercase word into hyphenatable fragments |
 | `protrusion` | `--justif-protrusion` | `true` | Optically aligns glyphs at line edges; `false` disables it, or pass a character table to use built-in values plus your overrides |
-| `hangingPunctuation` | `--justif-hanging-punctuation` | `"line-end-only"` | Controls where eligible punctuation hangs fully: `"line-end-only"`, `"first-line-and-line-ends"`, `"all-line-edges"`, or `"none"` |
+| `hangingPunctuation` | `--justif-hanging-punctuation`, `--justif-hanging-characters-start`, `--justif-hanging-characters-end` | `"line-end-only"` | Controls which line edges hang punctuation fully — `"line-end-only"`, `"first-line-and-line-ends"`, `"all-line-edges"`, or `"none"` — and which characters hang there |
 | `expansion` | `--justif-expansion` | `{ max: 0.02, shrink: 0.02, step: 0.005 }` | Uses a variable font's `wdth` axis to improve line fit; ignored when unavailable |
 | `tracking` | `--justif-tracking` | `{ max: 0.03, shrink: 0.03 }` | Uses small letter-spacing adjustments to improve line fit; `false` disables |
 | `spacing` | `--justif-space-stretch`, `--justif-space-shrink` | `{ stretch: 0.5, shrink: 1/3, pull: 0.7, boundaryShrink: 0 }` | Sets how far word spaces may stretch or shrink |
@@ -319,9 +319,27 @@ pass `"all-line-edges"` for fully hanging punctuation everywhere. Between those,
 opening quote hangs fully where it starts the paragraph, and later line starts
 set those marks flush.
 
-The two are independent: with protrusion off and hanging on, letters sit exactly
-flush while quotes and stops still hang. Switch off both for no margin effects at
-all.
+Pass an object to choose which characters hang at each edge. Each side replaces
+the built-in set, so build from the exported `hangingCharacters` to extend it;
+brackets are not hung by default. An empty string hangs nothing at that edge.
+
+```js
+import { hangingCharacters, justify } from "justif";
+
+justify(document.querySelectorAll("p"), {
+  hangingPunctuation: {
+    edges: "all-line-edges",
+    characters: { start: hangingCharacters.start + "([{" },
+  },
+});
+```
+
+In CSS the sets are quoted strings:
+`--justif-hanging-characters-start: "‘’“”([{"`.
+
+Protrustion and hanging are independent. With protrusion off and hanging on,
+letters sit exactly flush while quotes and stops still hang. Switch off both for
+no margin effects at all.
 
 ### Expansion, tracking, and spacing
 

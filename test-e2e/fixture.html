@@ -111,12 +111,12 @@
   standing at the mossy rim could ever hope to see the bottom of it.</p>
 </div>
 <script type="module">
-  import { hangingPunctuation, justify, unjustify } from "/dist/index.js";
+  import { hangingCharacters, hangingPunctuation, justify, unjustify } from "/dist/index.js";
   import { hyphenateEnUS } from "/dist/hyphenate/en-us.js";
   // Not a package export: the measurement module is bundled for this fixture
   // alone (playwright.config.ts globalSetup → test-e2e/tsup.optical.config.ts).
   import { opticalProtrusion } from "/test-e2e/build/optical.js";
-  window.__justif = { justify, unjustify, hyphenateEnUS, hangingPunctuation, opticalProtrusion, controller: null };
+  window.__justif = { justify, unjustify, hyphenateEnUS, hangingCharacters, hangingPunctuation, opticalProtrusion, controller: null };
 
   /**
    * Reconstruct the visual lines of `root` from rendered word rects (the

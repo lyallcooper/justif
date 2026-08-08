@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Hanging punctuation no longer shifts the text it sits beside. A hung mark now
+  clears the margin completely, and the character next to it keeps the optical
+  alignment it would have had on its own.
+- Which characters hang for hanging punctuation is now configurable. See the
+  [README
+  section](https://github.com/lyallcooper/justif#protrusion-and-hanging-punctuation)
+  for more details.
+
 ## 0.7.2 (2026-08-07)
 
 - Breaks can now happen properly after dashes. Lines may now end in an em or en

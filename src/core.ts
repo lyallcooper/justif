@@ -22,6 +22,7 @@ export { breakRp, buildItems, withSums } from "./core/items.js";
 export {
   composeProtrusion,
   type HangingPunctuationMode,
+  hangingCharacters,
   hangingPunctuation,
   latinProtrusion,
   protrusionCodes,

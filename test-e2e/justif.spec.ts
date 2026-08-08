@@ -19,6 +19,8 @@ declare global {
       hyphenateEnUS: (w: string) => string[];
       /** The hanging-punctuation protrusion table object. */
       hangingPunctuation: Readonly<Record<string, unknown>>;
+      /** The same characters as the set the table is derived from. */
+      hangingCharacters: { readonly start: string; readonly end: string };
       /** Measured protrusion for a font, or undefined when unmeasurable. */
       opticalProtrusion: (spec: {
         family: string;
@@ -3726,6 +3728,50 @@ test("a native one-line paragraph aligns its opener like its multi-line neighbou
  * native one-line path with an inline `text-indent` that must carry the author's
  * own indent along with it.
  */
+test("hangingPunctuation takes a character set, replacing the default per side", async ({
+  page,
+}) => {
+  const result = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    const text =
+      "(Typography exists to honor content.) There are few things more distracting " +
+      "than text justification done poorly, and this measure makes the wrap certain " +
+      "whatever the engine decides to do with it.";
+    const make = (id: string) => {
+      const p = document.createElement("p");
+      p.id = id;
+      p.setAttribute(
+        "style",
+        "width: 300px; text-align: justify; font: 17px Georgia, serif; margin: 0 0 1em",
+      );
+      p.textContent = text;
+      host.append(p);
+      return p;
+    };
+    const plain = make("hang-chars-plain");
+    const brackets = make("hang-chars-brackets");
+    await window.__justif.justify([plain], { hangingPunctuation: "all-line-edges" }).ready;
+    await window.__justif.justify([brackets], {
+      hangingPunctuation: {
+        edges: "all-line-edges",
+        // Brackets are out of the built-in set by design; CSS `first` hangs
+        // the whole Ps category, and this is how a caller asks for that.
+        characters: { start: window.__justif.hangingCharacters.start + "(" },
+      },
+    }).ready;
+    const startOf = (p: HTMLElement) => {
+      const geometry = window.__justifLines(p);
+      return geometry.lines[0]!.left - p.getBoundingClientRect().left;
+    };
+    return { plain: startOf(plain), brackets: startOf(brackets) };
+  });
+
+  // Unclassified, the bracket takes its ordinary optical protrusion — a
+  // fraction of a pixel. Classified, it clears its whole advance.
+  expect(result.plain).toBeGreaterThan(-2);
+  expect(result.brackets).toBeLessThan(-3);
+});
+
 test("a first-line hang composes with the author's own text-indent", async ({ page }) => {
   const result = await page.evaluate(async () => {
     const host = document.getElementById("host")!;
@@ -3749,8 +3795,10 @@ test("a first-line hang composes with the author's own text-indent", async ({ pa
       // The classic hanging-indent idiom, where line 0 starts LEFT of the rest.
       negative: make("indent-hang-negative", "-24px", text),
       // One line, so it keeps its native rendering and pays for the hang with an
-      // inline text-indent instead of a DOM rewrite.
-      oneLine: make("indent-hang-one-line", "32px", "“Short quoted line.”"),
+      // inline text-indent instead of a DOM rewrite. It opens on the same two
+      // characters as the reference: a fully hung mark carries the protrusion
+      // of the glyph behind it, so "“A" and "“S" hang by different amounts.
+      oneLine: make("indent-hang-one-line", "32px", "“Alpha quoted line.”"),
     };
     const controller = window.__justif.justify(Object.values(paragraphs), {
       expansion: false,
@@ -5078,6 +5126,77 @@ test("auto drop-in: configures typography from CSS custom properties", async ({ 
       ),
     ).toBe(true);
   }
+});
+
+/**
+ * These two properties are registered `*`, the only syntax admitting the quoted
+ * string their value is. Three things here only a browser can check: that such a
+ * registration is accepted at all, that the value survives the engine's own
+ * serialization on the way back to us, and that a non-interpolable property
+ * still carries the live-update signal under `allow-discrete`.
+ */
+test("auto drop-in: --justif-hanging-characters-* selects which marks hang", async ({
+  page,
+}) => {
+  await page.goto("/test-e2e/fixture-auto-css.html");
+  await page.waitForFunction(() => (window as Window & { justif?: unknown }).justif !== undefined);
+  await page.evaluate(async () => {
+    await (window as Window & { justif?: { booted: Promise<void> } }).justif!.booted;
+  });
+
+  const overhang = () =>
+    page.evaluate(async () => {
+      const g = window as Window & { justif?: { reconfigure: () => Promise<void> } };
+      await g.justif!.reconfigure();
+      const p = document.getElementById("plain")!;
+      const cs = getComputedStyle(p);
+      const contentRight =
+        p.getBoundingClientRect().right -
+        parseFloat(cs.paddingRight) -
+        parseFloat(cs.borderRightWidth);
+      let most = -Infinity;
+      for (const seg of p.querySelectorAll<HTMLElement>(".justif-seg")) {
+        most = Math.max(most, seg.getBoundingClientRect().right - contentRight);
+      }
+      return +most.toFixed(2);
+    });
+
+  const before = await overhang();
+  expect(before).toBeGreaterThan(2);
+
+  // Empty the line-end set: the marks stop being marginal, so they keep only
+  // the optical protrusion the model gives them.
+  await page.evaluate(() => {
+    document.documentElement.style.setProperty("--justif-hanging-characters-end", "none");
+  });
+  await expect.poll(overhang, { timeout: 4000 }).toBeLessThan(before - 1);
+
+  // An arbitrary set as a quoted string: the escape hatch for anything the
+  // groups do not spell. Registered `*`, so this is the one value shape whose
+  // round trip through the engine's own serialization only a browser can check.
+  await page.evaluate(() => {
+    document.documentElement.style.setProperty(
+      "--justif-hanging-characters-end",
+      '".,\u201D\u2019"',
+    );
+  });
+  await expect.poll(overhang, { timeout: 4000 }).toBeGreaterThan(before - 0.5);
+
+  // The same set written with CSS escapes is the same configuration.
+  await page.evaluate(() => {
+    document.documentElement.style.setProperty(
+      "--justif-hanging-characters-end",
+      '"\\2E\\2C\u201D\u2019"',
+    );
+  });
+  await expect.poll(overhang, { timeout: 4000 }).toBeGreaterThan(before - 0.5);
+
+  // And back: the change is not one-way, and reverting rejoins the original
+  // configuration rather than accumulating controllers.
+  await page.evaluate(() => {
+    document.documentElement.style.removeProperty("--justif-hanging-characters-end");
+  });
+  await expect.poll(overhang, { timeout: 4000 }).toBeGreaterThan(before - 0.5);
 });
 
 test("auto drop-in: a CSS configuration change applies by itself", async ({ page }) => {

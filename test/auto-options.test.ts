@@ -4,6 +4,7 @@ import {
   type CssProperty,
   parseCssOptions,
 } from "../src/auto-options.js";
+import { hangingCharacters } from "../src/core/protrusion.js";
 import { layoutDefaults } from "../src/index.js";
 
 /** Read from a plain record, standing in for a computed style declaration. */
@@ -22,6 +23,85 @@ describe("--justif-* parsing", () => {
     expect(auto.options).toEqual({});
     expect(auto.key).toBe("");
     expect(auto.invalid).toEqual([]);
+  });
+
+  it("keys hanging character sets on membership, not spelling", () => {
+    // The value is a set, so order and repeats are not a second configuration:
+    // two spellings must not split one controller into two.
+    const a = from({ "--justif-hanging-characters-end": '".,\u201D"' });
+    const b = from({ "--justif-hanging-characters-end": '"\u201D,.,"' });
+    expect(a.key).toBe(b.key);
+    expect(a.key).not.toBe("");
+    // ...while still rendering whatever the author wrote.
+    expect(a.options).toEqual({ hangingPunctuation: { characters: { end: ".,\u201D" } } });
+    // `none` empties that side: "line starts only" has no edges keyword.
+    expect(from({ "--justif-hanging-characters-end": "none" }).options).toEqual({
+      hangingPunctuation: { characters: { end: "" } },
+    });
+    // Bare keywords are not a value shape here — the set is always a string.
+    const bad = from({ "--justif-hanging-characters-start": "quotes" });
+    expect(bad.options).toEqual({});
+    expect(bad.invalid).toEqual([
+      { property: "--justif-hanging-characters-start", value: "quotes" },
+    ]);
+  });
+
+  it("takes an arbitrary set as a CSS string, escapes resolved", () => {
+    // Groups are the ergonomic path; a quoted string is the escape hatch for a
+    // set no combination of groups expresses.
+    expect(
+      from({ "--justif-hanging-characters-end": '".,\u201D\u2019"' }).options,
+    ).toEqual({ hangingPunctuation: { characters: { end: ".,\u201D\u2019" } } });
+    // CSS escapes and literal characters are the same set, so one key.
+    const escaped = from({ "--justif-hanging-characters-end": '"\\2E\\2C\u201D\u2019"' });
+    const literal = from({ "--justif-hanging-characters-end": '".,\u201D\u2019"' });
+    expect(escaped.options).toEqual(literal.options);
+    expect(escaped.key).toBe(literal.key);
+    // A hex escape's single trailing whitespace terminates it rather than
+    // joining the set — any whitespace, and CRLF as the one newline it is.
+    for (const ws of [" ", "\t", "\n", "\f", "\r", "\r\n"]) {
+      expect(
+        from({ "--justif-hanging-characters-start": `"\\201C${ws}\\201D"` }).options,
+        JSON.stringify(ws),
+      ).toEqual({ hangingPunctuation: { characters: { start: "\u201C\u201D" } } });
+    }
+    // Two spaces: the first terminates, the second is content.
+    expect(from({ "--justif-hanging-characters-start": '"\\201C  \\201D"' }).options).toEqual({
+      hangingPunctuation: { characters: { start: "\u201C \u201D" } },
+    });
+    // A backslash before anything else escapes that character.
+    expect(from({ "--justif-hanging-characters-start": '"\\"\'"' }).options).toEqual({
+      hangingPunctuation: { characters: { start: "\"'" } },
+    });
+    // Spelling the built-in set out literally is still the default.
+    expect(
+      from({ "--justif-hanging-characters-start": JSON.stringify(hangingCharacters.start) }),
+    ).toMatchObject({ options: {}, key: "" });
+    // An unterminated string is reported, not silently taken as a group name.
+    const bad = from({ "--justif-hanging-characters-end": '".,' });
+    expect(bad.options).toEqual({});
+    expect(bad.invalid).toEqual([
+      { property: "--justif-hanging-characters-end", value: '".,' },
+    ]);
+  });
+
+  it("merges the three hanging declarations into one setting", () => {
+    expect(
+      from({
+        "--justif-hanging-punctuation": "all-line-edges",
+        "--justif-hanging-characters-start": JSON.stringify(hangingCharacters.start + "([{"),
+        "--justif-hanging-characters-end": '".,"',
+      }).options,
+    ).toEqual({
+      hangingPunctuation: {
+        edges: "all-line-edges",
+        characters: { start: hangingCharacters.start + "([{", end: "." + "," },
+      },
+    });
+    // Edges alone keeps the plain string form, and the key it always produced.
+    const edgesOnly = from({ "--justif-hanging-punctuation": "all-line-edges" });
+    expect(edgesOnly.options).toEqual({ hangingPunctuation: "all-line-edges" });
+    expect(edgesOnly.key).toBe("hanging-punctuation:all-line-edges");
   });
 
   it("reads keywords and percentages", () => {

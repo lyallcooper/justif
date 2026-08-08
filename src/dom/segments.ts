@@ -7,6 +7,7 @@ import { CJK_CHAR } from "../core/cjk.js";
 import { opticalCandidates, opticalFontKey, opticalProtrusion } from "./optical.js";
 import {
   composeProtrusion,
+  type HangingCharacters,
   type HangingPunctuationMode,
   latinProtrusion,
 } from "../core/protrusion.js";
@@ -155,8 +156,11 @@ interface ProtrusionSettings {
   measured: boolean;
   user: ProtrusionTable | null;
   hang: HangingPunctuationMode;
+  characters: HangingCharacters;
 }
-type ComposedTables = { rest: ProtrusionTable; first?: ProtrusionTable } | null;
+type ComposedTables =
+  | { rest: ProtrusionTable; first?: ProtrusionTable; credit?: ProtrusionTable }
+  | null;
 /** Weakly keyed on the settings object, so two live controllers don't evict
  * each other and a destroyed one's tables are collectable. */
 let composedBySettings = new WeakMap<ProtrusionSettings, Map<string, ComposedTables>>();
@@ -238,10 +242,11 @@ function composedForFamily(
         ? { ...unmeasuredProtrusion(), ...measured }
         : { ...latinProtrusion, ...fontProtrusion(family) };
   }
-  const composed = composeProtrusion(base, settings.user, settings.hang);
+  const composed = composeProtrusion(base, settings.user, settings.hang, settings.characters);
   const tables: ComposedTables = {
     rest: composed.rest,
     first: composed.first !== composed.rest ? composed.first : undefined,
+    credit: composed.credit,
   };
   composedCache.set(key, tables);
   return tables;
@@ -286,6 +291,7 @@ export function buildRunMetrics(
     const perFontTables = composedForFamily(spec, protrusion);
     const perFont = perFontTables?.rest;
     const perFontFirst = perFontTables?.first;
+    const perFontCredit = perFontTables?.credit;
     const naturalSpace = spaceWidthIn(spec, () => run.text);
     // Oversized secondary-font spaces (monospace inline code — a full cell
     // wide) get downward pressure toward the paragraph's base space: the
@@ -348,6 +354,7 @@ export function buildRunMetrics(
       protrudeInkOnly: isMonospace(spec) && spec.key !== baseSpec.key,
       protrusion: perFont,
       protrusionFirst: perFontFirst,
+      protrusionCredit: perFontCredit,
     };
   });
 }

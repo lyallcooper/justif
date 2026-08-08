@@ -1,10 +1,5 @@
 import type { ProtrusionCodes, ProtrusionTable } from "./types.js";
 
-/** Every character in `chars` protrudes like `codes` (table-construction
- * shorthand for groups sharing one value). */
-const inherit = (codes: ProtrusionCodes, chars: string): Record<string, ProtrusionCodes> =>
-  Object.fromEntries(Array.from(chars, (c) => [c, codes]));
-
 /**
  * Non-decomposable shape inheritance: characters whose glyph is (or edge-
  * matches) another letter's but that Unicode NFD cannot reduce — stroked
@@ -170,44 +165,92 @@ export const latinProtrusion: ProtrusionTable = {
 
 
 /**
- * Full-hang character set in the style of classical book typography and
- * CSS `hanging-punctuation`: quotes hang entirely outside the measure at
- * line starts, stops and quotes hang entirely at line ends (brackets do
- * not — see below). `hangingPunctuation` can apply its RIGHT codes only
- * (`"line-end-only"`), those plus the paragraph opener's LEFT code — the CSS
- * `first` model (`"first-line-and-line-ends"`) — or both sides on every line
- * (`"all-line-edges"`). This table may also be passed directly as `protrusion`,
- * where it acts as a user override table rather than selecting a hanging
- * policy.
+ * The characters hanging punctuation treats as MARGINAL — not part of the
+ * text's rectangle — in the style of classical book typography and CSS
+ * `hanging-punctuation`. Membership, and nothing else: hanging is a
+ * classification, so a character is either outside the measure or it is not.
+ * How far a mark sits from the margin when it is NOT hung is a question for
+ * the protrusion model, which is the other feature entirely.
  *
- * A mark's hang depth belongs to the character, never to where its line
- * falls in the paragraph (see #14): two depths for one mark inside a
- * paragraph read as a misaligned edge rather than as either style.
+ * Quotes are marginal in either role at either edge; stops only at line ends.
+ * `HangingPunctuationMode` then says WHERE the classification applies — line
+ * ends alone, plus the paragraph opener (the CSS `first` model), or every line
+ * edge — and a mark's membership never varies with where its line falls in the
+ * paragraph (see #14): one mark at two depths inside a paragraph reads as a
+ * misaligned edge rather than as either style.
+ *
+ * Brackets are deliberately absent, on either side. CSS `first` hangs the whole
+ * Ps category, but no print system hangs a bracket more than slightly: measured
+ * in Junicode, a line-start "(" hangs 100‰ of its advance in Affinity and 249‰
+ * in InDesign, against microtype's generic 100‰. Leaving them out gives them
+ * exactly that ordinary protrusion, the same depth on every line.
+ *
+ * The CJK stops are burasage (ぶら下げ組み): the classical Japanese
+ * newspaper/book setting hangs them fully into the right margin. Their glyphs
+ * sit in the left half of a fullwidth advance, so the ink lands just past the
+ * margin while the em-box hangs; kinsoku already guarantees they can end a line
+ * but never start one.
  */
-export const hangingPunctuation: ProtrusionTable = {
-  // Stops (CSS force-end).
-  ".": { r: 1000 },
-  ",": { r: 1000 },
-  // Quotes, either role at either edge.
-  "'": { l: 1000, r: 1000 },
-  '"': { l: 1000, r: 1000 },
-  ...inherit({ l: 1000, r: 1000 }, "‘’“”‚„‹›«»"),
-  // Brackets are deliberately NOT here, on either side. CSS `first` hangs
-  // the whole Ps category, but no print system hangs a bracket more than
-  // slightly: measured in Junicode, a line-start "(" hangs 100‰ of its
-  // advance in Affinity and 249‰ in InDesign, against microtype's generic
-  // 100‰. Leaving them out gives them exactly that ordinary protrusion, the
-  // same depth on every line.
-  // Burasage (ぶら下げ組み): the ideographic and fullwidth stops hang fully
-  // into the right margin — the classical Japanese newspaper/book setting.
-  // Their glyphs sit in the left half of a fullwidth advance, so the ink
-  // lands just past the margin while the em-box hangs; kinsoku already
-  // guarantees they can end a line but never start one.
-  "、": { r: 1000 },
-  "。": { r: 1000 },
-  "，": { r: 1000 },
-  "．": { r: 1000 },
+export interface HangingCharacters {
+  /** Marginal at a line START. */
+  readonly start: string;
+  /** Marginal at a line END. */
+  readonly end: string;
+}
+
+/**
+ * The default set as its named parts. Module-private and purely for reading:
+ * `quotes + stops + cjk` says what the default end set IS in a way a Unicode
+ * literal cannot. Deliberately not exported — as a public vocabulary these
+ * names would promise Unicode categories they do not deliver, since `stops`
+ * holds the two marks we chose to hang and not the `!?;:` a reader would
+ * expect. Callers compose from `hangingCharacters` instead.
+ */
+const groups = {
+  quotes: "'\"\u2018\u2019\u201C\u201D\u201A\u201E\u2039\u203A\u00AB\u00BB",
+  stops: ".,",
+  brackets: "([{",
+  cjk: "\u3001\u3002\uFF0C\uFF0E",
+} as const;
+
+export const hangingCharacters: HangingCharacters = {
+  start: groups.quotes,
+  end: groups.quotes + groups.stops + groups.cjk,
 };
+
+/** The full hang depth, in the protrusion model's units. Hanging only ever
+ * speaks in this one value — that is what makes it a classification. */
+const HANG = 1000;
+/** ...and the depth "first-line-and-line-ends" gives a marginal mark on the
+ * lines after the opener, where it is deliberately NOT classified. */
+const FLUSH = 0;
+
+/** Set `chars` to `code` on one side of `base`, preserving the other side. */
+function classify(
+  base: ProtrusionTable,
+  chars: string,
+  side: "l" | "r",
+  code: number,
+): ProtrusionTable {
+  const out: Record<string, ProtrusionCodes> = { ...base };
+  for (const ch of chars) out[ch] = { ...out[ch], [side]: code };
+  return out;
+}
+
+/**
+ * `hangingCharacters` expressed as protrusion codes. Derived, not authored —
+ * the set above is the source of truth. Exported for callers who want the
+ * MAGNITUDE reading of the same characters: passed as `protrusion` it makes
+ * these marks protrude their full advance without classifying them, so the
+ * glyph beside a mark is credited nothing, which is what every other
+ * implementation does.
+ */
+export const hangingPunctuation: ProtrusionTable = classify(
+  classify({}, hangingCharacters.end, "r", HANG),
+  hangingCharacters.start,
+  "l",
+  HANG,
+);
 
 /**
  * Full-hanging policy layered over the selected protrusion model. Each name
@@ -242,28 +285,6 @@ export function normalizeHangingPunctuation(
   }
 }
 
-/** Line-start codes that set the full-hang characters FLUSH — the treatment
- * "first-line-and-line-ends" gives every line after the paragraph's first. */
-const flushStarts: ProtrusionTable = Object.fromEntries(
-  Object.entries(hangingPunctuation)
-    .filter(([, codes]) => codes.l !== undefined)
-    .map(([ch]) => [ch, { l: 0 }]),
-);
-
-/** Overlay one side of `overrides` onto `base`, preserving the other side. */
-function applySide(
-  base: ProtrusionTable,
-  overrides: ProtrusionTable,
-  side: "l" | "r",
-): ProtrusionTable {
-  const out: Record<string, ProtrusionCodes> = { ...base };
-  for (const [ch, codes] of Object.entries(overrides)) {
-    const v = codes[side];
-    if (v !== undefined) out[ch] = { ...out[ch], [side]: v };
-  }
-  return out;
-}
-
 /**
  * Composes the effective protrusion tables from a base table (generic or
  * generic+per-font), the hanging-punctuation mode, and the user's explicit
@@ -271,31 +292,54 @@ function applySide(
  * the first (`rest`) and for the paragraph's first line (`first`); the two
  * are the SAME object when no first-line distinction exists, so callers
  * can cheaply skip duplicate work.
+ *
+ * `credit` is the same composition WITHOUT the hang overlay — the protrusion
+ * model as it would stand with hanging off. It exists for the one glyph a
+ * hung mark leaves at the line's start: that glyph takes the ordinary optical
+ * treatment, never a second full hang, so `“‘Twas` hangs one quote and gives
+ * the second whatever a `‘` is worth at a line start. Only one mark ever
+ * hangs, which is also what every other implementation does.
+ *
+ * It is undefined unless the MODE hangs somewhere, because crediting is
+ * something the hanging POLICY does, not something a number does. "This mark
+ * is not part of the line" and "this mark sticks out 1000‰" are different
+ * claims: only the first says anything about what sits beside it. So a
+ * `protrusion` table containing 1000 protrudes that mark and credits nothing —
+ * the behaviour every other implementation has.
+ *
+ * CREDITING is what does not vary with the number: no table value earns it, so
+ * there is no cliff between 999 and 1000 to fall off. The GEOMETRY does vary
+ * there, deliberately — 999 is a partial hang and takes the ink-exit cap, 1000
+ * means the mark has left the measure and clears its whole contextual advance.
+ * That is the same discontinuity the two features are: a magnitude below, a
+ * classification at. Codes cap at 1000, since there is nothing beyond gone.
  */
 export function composeProtrusion(
   base: ProtrusionTable,
   user: ProtrusionTable | null,
   hang: HangingPunctuationMode,
-): { rest: ProtrusionTable; first: ProtrusionTable } {
+  chars: HangingCharacters = hangingCharacters,
+): { rest: ProtrusionTable; first: ProtrusionTable; credit?: ProtrusionTable } {
   const mode = normalizeHangingPunctuation(hang);
   let rest = base;
   let first = base;
   if (mode !== "none") {
-    rest = applySide(base, hangingPunctuation, "r");
+    rest = classify(base, chars.end, "r", HANG);
     first = rest;
     if (mode !== "line-end-only") {
-      first = applySide(rest, hangingPunctuation, "l");
+      first = classify(rest, chars.start, "l", HANG);
       if (mode === "all-line-edges") rest = first;
-      // "first-line-and-line-ends" hangs the opener, then sets these marks
-      // FLUSH at later line starts. Leaving them at their partial optical
-      // depth would show one mark at two depths (#14).
-      else rest = applySide(rest, flushStarts, "l");
+      // "first-line-and-line-ends" classifies the opener, then sets these
+      // marks FLUSH at later line starts. Leaving them at their partial
+      // optical depth would show one mark at two depths (#14).
+      else rest = classify(rest, chars.start, "l", FLUSH);
     }
   }
+  const credit = mode === "none" ? undefined : user !== null ? { ...base, ...user } : base;
   if (user !== null) {
     const same = first === rest;
     rest = { ...rest, ...user };
     first = same ? rest : { ...first, ...user };
   }
-  return { rest, first };
+  return { rest, first, credit };
 }

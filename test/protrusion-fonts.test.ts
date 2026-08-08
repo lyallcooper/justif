@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { fontProtrusion } from "../src/core/protrusion-fonts.js";
-import { composeProtrusion, latinProtrusion, protrusionCodes } from "../src/core/protrusion.js";
+import {
+  composeProtrusion,
+  hangingCharacters,
+  hangingPunctuation,
+  latinProtrusion,
+  protrusionCodes,
+} from "../src/core/protrusion.js";
 
 describe("fontProtrusion", () => {
   it("matches by the first CSS family name, quote- and case-insensitively", () => {
@@ -90,6 +96,109 @@ describe("composeProtrusion (hanging-punctuation scoping)", () => {
     const off = composeProtrusion(latinProtrusion, null, false);
     expect(off.rest).toBe(latinProtrusion);
     expect(off.first).toBe(latinProtrusion);
+  });
+
+  it("derives the hang table from the character set, and only ever fully", () => {
+    // Hanging is membership, so the set is the source of truth and the table
+    // is derived. Every derived code is the full depth — a half-classified
+    // mark is unrepresentable, which is the point of holding a set.
+    for (const [ch, codes] of Object.entries(hangingPunctuation)) {
+      if (codes.l !== undefined) {
+        expect(codes.l, ch).toBe(1000);
+        expect(hangingCharacters.start, ch).toContain(ch);
+      }
+      if (codes.r !== undefined) {
+        expect(codes.r, ch).toBe(1000);
+        expect(hangingCharacters.end, ch).toContain(ch);
+      }
+    }
+    for (const ch of hangingCharacters.start) expect(hangingPunctuation[ch]!.l).toBe(1000);
+    for (const ch of hangingCharacters.end) expect(hangingPunctuation[ch]!.r).toBe(1000);
+    // The decisions the set encodes: brackets stay out, burasage stays in,
+    // and stops are marginal only at line ends.
+    for (const ch of "([{") {
+      expect(hangingCharacters.start).not.toContain(ch);
+      expect(hangingCharacters.end).not.toContain(ch);
+    }
+    for (const ch of "、。，．") expect(hangingCharacters.end).toContain(ch);
+    expect(hangingCharacters.end).toContain(".");
+    expect(hangingCharacters.start).not.toContain(".");
+  });
+
+  it("takes a caller's character set, replacing the built-in one per side", () => {
+    // Brackets are out of the default set by design; a caller who wants CSS's
+    // whole-Ps behaviour supplies them.
+    const withBrackets = composeProtrusion(latinProtrusion, null, "all-line-edges", {
+      start: hangingCharacters.start + "([{",
+      end: hangingCharacters.end,
+    });
+    expect(withBrackets.rest["("]!.l).toBe(1000);
+    expect(withBrackets.rest["“"]!.l).toBe(1000);
+    // ...and the credit table stays the MODEL, so a bracket behind a hung mark
+    // takes its ordinary depth rather than hanging in turn.
+    expect(withBrackets.credit?.["("]!.l).toBe(latinProtrusion["("]!.l);
+
+    // Quotes but not stops: a real house style with no mode to express it.
+    const quotesOnly = composeProtrusion(latinProtrusion, null, "all-line-edges", {
+      start: "“‘",
+      end: "”’",
+    });
+    expect(quotesOnly.rest["”"]!.r).toBe(1000);
+    expect(quotesOnly.rest["."]!.r).toBe(latinProtrusion["."]!.r);
+    expect(quotesOnly.rest[","]!.r).toBe(latinProtrusion[","]!.r);
+
+    // An empty side hangs nothing there, which is how "line starts only" is
+    // spelled — there is no mode for it either.
+    const startsOnly = composeProtrusion(latinProtrusion, null, "all-line-edges", {
+      start: hangingCharacters.start,
+      end: "",
+    });
+    expect(startsOnly.rest["“"]!.l).toBe(1000);
+    expect(startsOnly.rest["."]!.r).toBe(latinProtrusion["."]!.r);
+
+    // The flush-later-lines overlay follows the caller's set, not the built-in
+    // one: a bracket hung on the opener must be flush on the lines after it.
+    const first = composeProtrusion(latinProtrusion, null, "first-line-and-line-ends", {
+      start: "(",
+      end: hangingCharacters.end,
+    });
+    expect(first.first["("]!.l).toBe(1000);
+    expect(first.rest["("]!.l).toBe(0);
+    // A mark the caller dropped from the set keeps its optical value on every
+    // line rather than being flushed.
+    expect(first.rest["“"]!.l).toBe(latinProtrusion["“"]!.l);
+  });
+
+  it("offers a credit table wherever the POLICY hangs, and never for a table", () => {
+    // Crediting the glyph beside a hung mark is something the policy does, not
+    // something a number does. A `protrusion` table containing 1000 protrudes
+    // that mark and says nothing about its neighbour — so hanging "none" gets
+    // no credit table however deep the table's values are, 1000 stays
+    // continuous with 999, and the magnitude path matches every other
+    // implementation.
+    expect(composeProtrusion(latinProtrusion, null, "none").credit).toBeUndefined();
+    expect(
+      composeProtrusion(latinProtrusion, { "“": { l: 1000 } }, "none").credit,
+    ).toBeUndefined();
+    // "line-end-only" hangs at line ENDS, so it needs one too: the glyph
+    // before a hung mark protrudes on its own account.
+    for (const mode of [
+      "line-end-only",
+      "first-line-and-line-ends",
+      "all-line-edges",
+    ] as const) {
+      const { credit } = composeProtrusion(latinProtrusion, null, mode);
+      // The model as it stands with hanging off: the overlay's 1000 is absent,
+      // so a neighbouring mark takes an ordinary optical depth rather than
+      // hanging in turn.
+      expect(credit?.["“"]!.l).toBe(latinProtrusion["“"]!.l);
+      expect(credit?.["“"]!.l).not.toBe(1000);
+      expect(credit?.["."]!.r).toBe(latinProtrusion["."]!.r);
+      expect(credit?.["."]!.r).not.toBe(1000);
+    }
+    // A user's own overrides still reach the credit table.
+    const { credit } = composeProtrusion(latinProtrusion, { T: { l: 90 } }, "all-line-edges");
+    expect(credit?.T!.l).toBe(90);
   });
 
   it("retains the older spellings as exact aliases and accepts none", () => {

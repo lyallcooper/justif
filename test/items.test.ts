@@ -336,26 +336,164 @@ describe("buildItems", () => {
     if (first.type !== ItemType.Box || last.type !== ItemType.Box) throw new Error("boxes");
     expect(first.lp).toBe(3); // 900‰ × 10px = 9px table hang, capped at the bearing
     expect(last.rp).toBeCloseTo(2.8); // 700‰ × 4px stays under the 3px bearing: uncapped
+
+    // A full hang is clamped too: no ink may leave the measure in such a run,
+    // so the mark keeps its place and the glyph behind it earns nothing.
+    const hung = buildItems(
+      [{ text: "“Times one,", run: 0 }],
+      [mockRun({ protrudeInkOnly: true })],
+      { ...defaultBuildOptions, protrusion: { "“": { l: 1000 }, T: { l: 900 } } },
+      inkMeasure,
+    ).items[0]!;
+    if (hung.type !== ItemType.Box) throw new Error("box");
+    expect(hung.lp).toBe(3);
   });
 
-  it("caps line-start hangs at ink exit; line-end hangs stay full", () => {
+  it("caps a PARTIAL line-start hang at ink exit; a full hang clears the advance", () => {
     const inkMeasure = {
       ...mockMeasure,
       inkBearings: () => ({ l: 1, r: 1.5 }),
     };
-    const para = buildItems(
+    const partial = buildItems(
+      [{ text: "“One two.”", run: 0 }],
+      [mockRun()],
+      { ...defaultBuildOptions, protrusion: { "“": { l: 900 }, "”": { r: 1000 } } },
+      inkMeasure,
+    );
+    const first = partial.items[0]!;
+    const last = partial.items[2]!;
+    if (first.type !== ItemType.Box || last.type !== ItemType.Box) throw new Error("boxes");
+    // “ advance 5, 900‰ hang 4.5 → capped at advance − right bearing, so the
+    // mark's ink stops at the margin instead of drifting past it.
+    expect(first.lp).toBeCloseTo(5 - 1.5);
+    // Right side keeps the full hang: the preceding text anchors the margin.
+    expect(last.rp).toBeCloseTo(charWidth("”"));
+
+    // At 1000‰ the mark is OUT of the measure, so the cap does not apply:
+    // the whole advance hangs and the "O" lands where a bare "One" would.
+    const full = buildItems(
       [{ text: "“One two.”", run: 0 }],
       [mockRun()],
       { ...defaultBuildOptions, protrusion: { "“": { l: 1000 }, "”": { r: 1000 } } },
       inkMeasure,
     );
-    const first = para.items[0]!;
-    const last = para.items[2]!;
-    if (first.type !== ItemType.Box || last.type !== ItemType.Box) throw new Error("boxes");
-    // “ advance 5, full-cell hang 5 → capped at advance − right bearing.
-    expect(first.lp).toBeCloseTo(5 - 1.5);
-    // Right side keeps the full hang: the preceding text anchors the margin.
-    expect(last.rp).toBeCloseTo(charWidth("”"));
+    const fullFirst = full.items[0]!;
+    if (fullFirst.type !== ItemType.Box) throw new Error("box");
+    expect(fullFirst.lp).toBeCloseTo(charWidth("“"));
+  });
+
+  it("a fully hung mark leaves the glyph behind it protruding on its own account", () => {
+    // `protrusion` is the composed table (hang overlay applied);
+    // `protrusionCredit` is the model underneath it, which is what the glyph
+    // behind a hung mark is worth.
+    const opts = {
+      ...defaultBuildOptions,
+      protrusion: { "“": { l: 1000 }, "‘": { l: 1000 }, T: { l: 100 } },
+      protrusionCredit: { "‘": { l: 300 }, T: { l: 100 } },
+    };
+    const box = (text: string) => {
+      const item = buildItems([{ text, run: 0 }], [mockRun()], opts, mockMeasure).items[0]!;
+      if (item.type !== ItemType.Box) throw new Error("box");
+      return item;
+    };
+    const bare = box("Two");
+    expect(bare.lp).toBeCloseTo(0.1 * charWidth("T"));
+    // Adding the quote must not move the T: the hang grows by exactly the
+    // mark's advance, leaving the T at the same distance from the margin.
+    expect(box("“Two").lp).toBeCloseTo(charWidth("“") + bare.lp);
+    // EXACTLY ONE mark hangs. A second one is credited from the model, so it
+    // takes an ordinary optical depth instead of hanging in turn.
+    expect(box("“‘Two").lp).toBeCloseTo(charWidth("“") + 0.3 * charWidth("‘"));
+    // A mark alone in its box has nothing behind it to credit.
+    expect(box("“").lp).toBeCloseTo(charWidth("“"));
+  });
+
+  it("mirrors the rule at the right edge: one mark hangs, its neighbour protrudes", () => {
+    const opts = {
+      ...defaultBuildOptions,
+      protrusion: { "”": { r: 1000 }, ".": { r: 1000 }, t: { r: 80 } },
+      protrusionCredit: { ".": { r: 600 }, t: { r: 80 } },
+    };
+    const rp = (text: string) => {
+      const item = buildItems([{ text, run: 0 }], [mockRun()], opts, mockMeasure).items[0]!;
+      if (item.type !== ItemType.Box) throw new Error("box");
+      return item.rp;
+    };
+    // The period is classified marginal, so the text ends at the t, which
+    // protrudes on its own account.
+    expect(rp("at.")).toBeCloseTo(charWidth(".") + 0.08 * charWidth("t"));
+    // Add a closing quote and the quote is the marginal one. The period is not
+    // reclassified — exactly one mark hangs per edge — so it simply takes its
+    // ordinary optical depth from the model instead of hanging in turn.
+    expect(rp("at.”")).toBeCloseTo(charWidth("”") + 0.6 * charWidth("."));
+    // A mark alone in its box has nothing beside it to credit.
+    expect(rp("”")).toBeCloseTo(charWidth("”"));
+  });
+
+  it("caps codes at 1000 on every path, and honours negatives", () => {
+    const opts = {
+      ...defaultBuildOptions,
+      // 1200 on the boundary glyph, on a hyphen, and inward of a hung mark.
+      protrusion: {
+        W: { l: 1200, r: 1200 },
+        "-": { r: 1200 },
+        "”": { r: 1000 },
+        j: { l: -200 },
+      },
+      protrusionCredit: { W: { l: 1200, r: 1200 }, j: { l: -200 } },
+    };
+    const box = (text: string) => {
+      const item = buildItems([{ text, run: 0 }], [mockRun()], opts, mockMeasure).items[0]!;
+      if (item.type !== ItemType.Box) throw new Error("box");
+      return item;
+    };
+    // A whole advance is as far out as it goes — not 1.2 of one.
+    expect(box("Wow").lp).toBeCloseTo(charWidth("W"));
+    expect(box("owW").rp).toBeCloseTo(charWidth("W"));
+    // Including the glyph credited inward of a classified mark...
+    expect(box("owW”").rp).toBeCloseTo(charWidth("”") + charWidth("W"));
+    // ...and the materialized hyphen, which never reaches classification.
+    const hyphenated = buildItems(
+      [{ text: "hyphenation", run: 0 }],
+      [mockRun()],
+      {
+        ...opts,
+        hyphenate: (w: string) => (w === "hyphenation" ? ["hy", "phen", "ation"] : [w]),
+      },
+      mockMeasure,
+    ).items.find((i) => i.type === ItemType.Penalty && i.width > 0);
+    if (hyphenated?.type !== ItemType.Penalty) throw new Error("hyphen penalty");
+    expect(hyphenated.rp).toBeCloseTo(charWidth("-"));
+    // Negatives are not capped: they pull the glyph in, which the measured
+    // model genuinely asks for on faces that draw a glyph to hang.
+    expect(box("jam").lp).toBeCloseTo(-0.2 * charWidth("j"));
+  });
+
+  it("a table alone never credits: only the hanging POLICY does", () => {
+    // Magnitude and policy are different claims. A user table saying a mark
+    // protrudes 1000‰ says nothing about what follows it, so the glyph behind
+    // gets nothing — which is what every other implementation does. Only the
+    // hang overlay, which also supplies `protrusionCredit`, re-asks.
+    const magnitude = buildItems(
+      [{ text: "“Two", run: 0 }],
+      [mockRun()],
+      { ...defaultBuildOptions, protrusion: { "“": { l: 1000 }, T: { l: 100 } } },
+      mockMeasure,
+    ).items[0]!;
+    if (magnitude.type !== ItemType.Box) throw new Error("box");
+    expect(magnitude.lp).toBeCloseTo(charWidth("“"));
+  });
+
+  it("a fully hung mark takes its kern against the following glyph with it", () => {
+    const opts = { ...defaultBuildOptions, protrusion: { "“": { l: 1000 } } };
+    const built = buildItems([{ text: "“Two", run: 0 }], [mockRun()], opts, kernedMeasure);
+    const item = built.items[0]!;
+    if (item.type !== ItemType.Box) throw new Error("box");
+    // kernedMeasure tightens every pair by 0.5px, so the quote occupies
+    // 0.5px less before a T than it does standing alone. Hanging its
+    // ISOLATED advance would push the whole word 0.5px into the measure.
+    expect(item.lp).toBeCloseTo(charWidth("“") - 0.5);
+    expect(item.width - item.lp).toBeCloseTo(kernedMeasure.width("Two", mockRun()));
   });
 
   it("a run's matched per-font table overrides the paragraph-wide table", () => {
@@ -390,7 +528,9 @@ describe("buildItems", () => {
     const first = para.items[0]!; // “One,
     const last = para.items[2]!; // two.”
     if (first.type !== ItemType.Box || last.type !== ItemType.Box) throw new Error("boxes");
-    expect(first.lp).toBeCloseTo(charWidth("“")); // 1000‰ = the whole quote
+    // Merged by hand and passed as a table, so this is the MAGNITUDE path:
+    // 1000‰ = the whole quote, and the O behind it is credited nothing.
+    expect(first.lp).toBeCloseTo(charWidth("“"));
     expect(first.rp).toBeCloseTo(charWidth(",")); // full comma at a line end
     expect(last.rp).toBeCloseTo(charWidth("”"));
   });

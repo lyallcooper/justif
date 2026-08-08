@@ -13,6 +13,8 @@ import { buildItems } from "./core/items.js";
 import { layoutLines } from "./core/layout.js";
 import {
   composeProtrusion,
+  type HangingCharacters,
+  hangingCharacters,
   type HangingPunctuationMode,
   latinProtrusion,
   normalizeHangingPunctuation,
@@ -78,6 +80,7 @@ export type { ExpansionOptions, Line, ProtrusionTable, TrackingOptions } from ".
 export {
   composeProtrusion,
   type HangingPunctuationMode,
+  hangingCharacters,
   hangingPunctuation,
   latinProtrusion,
 } from "./core/protrusion.js";
@@ -134,7 +137,10 @@ export interface JustifyOptions {
    * An object selects the fixed table-backed model and supplies
    * per-character overrides, in thousandths of the character's own advance.
    * Overrides are merged over the generic Latin table and any matching
-   * hand-tuned per-font table.
+   * hand-tuned per-font table. Values cap at 1000 — a whole advance is as far
+   * out as a glyph goes — while negatives are honoured and pull it inward. A
+   * value here sets how far a character protrudes and never makes it hang;
+   * membership is `hangingPunctuation`'s to decide.
    *
    * Built-in tables (the generic Latin list plus microtype's per-font configs)
    * remain as the FALLBACK, used per font wherever the measurement cannot run
@@ -157,11 +163,14 @@ export interface JustifyOptions {
    * separately: with `protrusion: false` the overlay composes over an empty
    * base, and with `"none"` the protrusion model applies alone.
    *
+   * An object additionally chooses WHICH characters are marginal — see
+   * `HangingPunctuationOptions`.
+   *
    * Compatibility: `true` selects the default; `false` selects `"none"`;
    * `"first-line"` aliases `"first-line-and-line-ends"`; and `"all-lines"`
    * aliases `"all-line-edges"`.
    */
-  hangingPunctuation?: true | HangingPunctuationMode;
+  hangingPunctuation?: true | HangingPunctuationMode | HangingPunctuationOptions;
   /** Glyph expansion limits via the wdth axis; false disables. Fields left out
    * take their default, like `spacing` and `tracking`. */
   expansion?: Partial<ExpansionOptions> | false;
@@ -244,6 +253,37 @@ export interface JustifyOptions {
    * "broken" while integrating; this is the diagnosis channel.
    */
   onSkip?: (paragraph: HTMLElement, reason: string) => void;
+}
+
+/**
+ * Hanging punctuation as its two independent parts: which characters are
+ * marginal, and where that classification applies.
+ *
+ * Membership carries no depth. A character is either outside the measure or
+ * it is not — how far a mark sits from the margin when it is NOT hung is the
+ * `protrusion` model's business, and writing a depth here would merge two
+ * features that answer different questions.
+ */
+export interface HangingPunctuationOptions {
+  /** Which line edges the classification applies to, and on which lines.
+   * Defaults to the same policy the string form selects. */
+  edges?: HangingPunctuationMode;
+  /**
+   * Which characters are marginal. Each side REPLACES the built-in set for
+   * that side; a side left out keeps its default, so naming one edge never
+   * silently empties the other. Compose from the exported `hangingCharacters`
+   * to extend rather than replace:
+   *
+   * ```js
+   * characters: { start: hangingCharacters.start + "([{" }   // + CSS brackets
+   * characters: { end: "" }                                  // starts only
+   * ```
+   *
+   * Replacing `end` wholesale drops the CJK stops that make burasage work, so
+   * mixed Japanese and Latin text wants `hangingCharacters.end + "…"` rather
+   * than a bare list. Nothing is validated: a letter here will hang.
+   */
+  characters?: { start?: string; end?: string };
 }
 
 /**
@@ -724,6 +764,7 @@ interface ResolvedOptions {
     measured: boolean;
     user: ProtrusionTable | null;
     hang: HangingPunctuationMode;
+    characters: HangingCharacters;
   };
   /** Memoized word splitter, or undefined when hyphenation is off. */
   hyphenate: ((word: string) => readonly string[]) | undefined;
@@ -753,10 +794,22 @@ function resolveOptions(options: JustifyOptions): ResolvedOptions {
         )
       : null;
   const requestedHang = options.hangingPunctuation;
+  const isHangObject = typeof requestedHang === "object" && requestedHang !== null;
+  const hangObject = isHangObject ? requestedHang : null;
+  const requestedEdges = isHangObject ? requestedHang.edges : requestedHang;
   const hangMode: HangingPunctuationMode =
-    requestedHang === undefined || requestedHang === true
+    requestedEdges === undefined || requestedEdges === true
       ? DEFAULT_HANGING_PUNCTUATION
-      : normalizeHangingPunctuation(requestedHang);
+      : normalizeHangingPunctuation(requestedEdges);
+  /** Each side REPLACES the built-in set; a side left out keeps its default,
+   * so naming one edge never silently empties the other. */
+  const hangChars: HangingCharacters =
+    hangObject?.characters === undefined
+      ? hangingCharacters
+      : {
+          start: hangObject.characters.start ?? hangingCharacters.start,
+          end: hangObject.characters.end ?? hangingCharacters.end,
+        };
   // The protrusion MODEL and full hanging are independent settings, even
   // though hanging is implemented as a protrusion overlay: `protrusion: false`
   // removes the model's base table, and the hang overlay then composes over an
@@ -771,10 +824,18 @@ function resolveOptions(options: JustifyOptions): ResolvedOptions {
   const composed =
     !protrusionModel && !hanging
       ? null
-      : composeProtrusion(protrusionModel ? latinProtrusion : {}, protrusionUser, hangMode);
+      : composeProtrusion(
+          protrusionModel ? latinProtrusion : {},
+          protrusionUser,
+          hangMode,
+          hangChars,
+        );
   const protrusion: ProtrusionTable | false = composed === null ? false : composed.rest;
   const protrusionFirst =
     composed !== null && composed.first !== composed.rest ? composed.first : undefined;
+  /** The model without the hang overlay: what a glyph left at the line's start
+   * by a fully hung mark is worth. */
+  const protrusionCredit = composed === null ? undefined : composed.credit;
   const expansion =
     options.expansion === false
       ? false
@@ -819,6 +880,7 @@ function resolveOptions(options: JustifyOptions): ResolvedOptions {
       exHyphenPenalty: options.exHyphenPenalty ?? defaultBuildOptions.exHyphenPenalty,
       protrusion,
       protrusionFirst,
+      protrusionCredit,
       expansion,
       tracking,
       boundaryShrink: spacing.boundaryShrink,
@@ -832,6 +894,7 @@ function resolveOptions(options: JustifyOptions): ResolvedOptions {
       measured: measuredProtrusion,
       user: protrusionUser,
       hang: hangMode,
+      characters: hangChars,
     },
     hyphenate,
   };
