@@ -2704,7 +2704,7 @@ test("measured monospace protrusion never indents a grid cell", async ({ page })
   const table = await page.evaluate(async () => {
     const face = new FontFace(
       "IBM Plex Mono",
-      'url("/demo/fonts/IBMPlexMono-Regular.woff2")',
+      'url("/demo/fonts/IBMPlexMonoVar-Roman-1.000.woff2")',
     );
     document.fonts.add(await face.load());
     return window.__justif.opticalProtrusion({ family: '"IBM Plex Mono"' });

@@ -22,8 +22,8 @@
     document.documentElement.classList.remove("fonts-loading");
   }, 3000);
 </script>
-<link rel="preload" href="./fonts/Junicode-Roman.woff2" as="font" type="font/woff2" crossorigin />
-<link rel="preload" href="./fonts/Junicode-Italic.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="./fonts/Junicode-Roman-2.230.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="./fonts/Junicode-Italic-2.230.woff2" as="font" type="font/woff2" crossorigin />
 <link rel="modulepreload" href="../dist/index.js" />
 <link rel="modulepreload" href="../dist/hyphenate/en-us.js" />
 <style>
@@ -31,175 +31,223 @@
      Junicode is preloaded because it also sets the page UI. */
   @font-face {
     font-family: "Junicode";
-    src: url("./fonts/Junicode-Roman.woff2") format("woff2");
+    src: url("./fonts/Junicode-Roman-2.230.woff2") format("woff2");
     font-weight: 300 700;
+    /* Without the descriptor range the browser pins the wdth axis and
+       font-stretch percentages silently no-op — no expansion. */
     font-stretch: 75% 125%;
     font-style: normal;
     font-display: block;
   }
   @font-face {
     font-family: "Junicode";
-    src: url("./fonts/Junicode-Italic.woff2") format("woff2");
+    src: url("./fonts/Junicode-Italic-2.230.woff2") format("woff2");
     font-weight: 300 700;
     font-stretch: 75% 125%;
     font-style: italic;
     font-display: block;
   }
   @font-face {
-    font-family: "Amstelvar";
-    src: url("./fonts/Amstelvar-Roman.woff2") format("woff2");
-    font-weight: 100 900;
-    /* Without the descriptor range the browser pins the wdth axis and
-       font-stretch percentages silently no-op — no expansion. */
-    font-stretch: 50% 125%;
+    font-family: "Source Serif 4";
+    src: url("./fonts/SourceSerif4-Roman-4.004.woff2") format("woff2");
+    font-weight: 200 900;
     font-style: normal;
     font-display: block;
   }
   @font-face {
-    font-family: "Amstelvar";
-    src: url("./fonts/Amstelvar-Italic.woff2") format("woff2");
-    font-weight: 100 900;
-    font-stretch: 50% 125%;
+    font-family: "Source Serif 4";
+    src: url("./fonts/SourceSerif4-Italic-4.004.woff2") format("woff2");
+    font-weight: 200 900;
     font-style: italic;
     font-display: block;
   }
   @font-face {
+    font-family: "Newsreader";
+    src: url("./fonts/Newsreader-Roman-1.003.woff2") format("woff2");
+    font-weight: 200 800;
+    font-style: normal;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "Newsreader";
+    src: url("./fonts/Newsreader-Italic-1.003.woff2") format("woff2");
+    font-weight: 200 800;
+    font-style: italic;
+    font-display: block;
+  }
+  /* Roboto Slab has no italic in any build; the browser slants it. */
+  @font-face {
+    font-family: "Roboto Slab";
+    src: url("./fonts/RobotoSlab-Roman-2.002.woff2") format("woff2");
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: block;
+  }
+  @font-face {
     font-family: "Alegreya";
-    src: url("./fonts/Alegreya-Roman.woff2") format("woff2");
+    src: url("./fonts/Alegreya-Roman-2.009.woff2") format("woff2");
     font-weight: 400 900;
     font-style: normal;
     font-display: block;
   }
   @font-face {
     font-family: "Alegreya";
-    src: url("./fonts/Alegreya-Italic.woff2") format("woff2");
+    src: url("./fonts/Alegreya-Italic-2.009.woff2") format("woff2");
     font-weight: 400 900;
     font-style: italic;
     font-display: block;
   }
   @font-face {
-    font-family: "Alegreya SC";
-    src: url("./fonts/AlegreyaSC-Regular.woff2") format("woff2");
+    font-family: "Coelacanth";
+    src: url("./fonts/Coelacanth-Roman-0.9.0.woff2") format("woff2");
     font-weight: 400;
     font-style: normal;
     font-display: block;
   }
   @font-face {
+    font-family: "Coelacanth";
+    src: url("./fonts/Coelacanth-Italic-0.9.0.woff2") format("woff2");
+    font-weight: 400;
+    font-style: italic;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "Coelacanth";
+    src: url("./fonts/Coelacanth-Bold-0.9.0.woff2") format("woff2");
+    font-weight: 700;
+    font-style: normal;
+    font-display: block;
+  }
+  @font-face {
     font-family: "EB Garamond";
-    src: url("./fonts/EBGaramond-Roman.woff2") format("woff2");
+    src: url("./fonts/EBGaramond-Roman-1.003.woff2") format("woff2");
     font-weight: 400 800;
     font-style: normal;
     font-display: block;
   }
   @font-face {
     font-family: "EB Garamond";
-    src: url("./fonts/EBGaramond-Italic.woff2") format("woff2");
+    src: url("./fonts/EBGaramond-Italic-1.003.woff2") format("woff2");
     font-weight: 400 800;
     font-style: italic;
     font-display: block;
   }
   @font-face {
     font-family: "IM Fell English";
-    src: url("./fonts/IMFellEnglish-Regular.woff2") format("woff2");
+    src: url("./fonts/IMFellEnglish-Regular-3.00.woff2") format("woff2");
     font-weight: 400;
     font-style: normal;
     font-display: block;
   }
   @font-face {
     font-family: "IM Fell English";
-    src: url("./fonts/IMFellEnglish-Italic.woff2") format("woff2");
+    src: url("./fonts/IMFellEnglish-Italic-3.00.woff2") format("woff2");
     font-weight: 400;
     font-style: italic;
     font-display: block;
   }
   @font-face {
     font-family: "IM Fell English SC";
-    src: url("./fonts/IMFellEnglishSC-Regular.woff2") format("woff2");
+    src: url("./fonts/IMFellEnglishSC-Regular-3.00.woff2") format("woff2");
     font-weight: 400;
     font-style: normal;
     font-display: block;
   }
   @font-face {
-    font-family: "Vollkorn";
-    src: url("./fonts/Vollkorn-Roman.woff2") format("woff2");
-    font-weight: 400 900;
+    font-family: "Iosevka";
+    src: url("./fonts/Iosevka-Regular-34.8.0.woff2") format("woff2");
+    font-weight: 400;
     font-style: normal;
     font-display: block;
   }
   @font-face {
-    font-family: "Vollkorn";
-    src: url("./fonts/Vollkorn-Italic.woff2") format("woff2");
-    font-weight: 400 900;
+    font-family: "Iosevka";
+    src: url("./fonts/Iosevka-Italic-34.8.0.woff2") format("woff2");
+    font-weight: 400;
     font-style: italic;
     font-display: block;
   }
   @font-face {
-    font-family: "Vollkorn SC";
-    src: url("./fonts/VollkornSC-Regular.woff2") format("woff2");
-    font-weight: 400;
+    font-family: "Iosevka";
+    src: url("./fonts/Iosevka-Bold-34.8.0.woff2") format("woff2");
+    font-weight: 700;
     font-style: normal;
     font-display: block;
   }
   @font-face {
     font-family: "Roboto Flex";
-    src: url("./fonts/RobotoFlex-Roman.woff2") format("woff2");
+    src: url("./fonts/RobotoFlex-Roman-3.200.woff2") format("woff2");
     font-weight: 100 1000;
     font-stretch: 25% 151%;
     font-style: normal;
     font-display: block;
   }
   @font-face {
+    font-family: "Inter";
+    src: url("./fonts/Inter-Roman-4.1.woff2") format("woff2");
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "Inter";
+    src: url("./fonts/Inter-Italic-4.1.woff2") format("woff2");
+    font-weight: 100 900;
+    font-style: italic;
+    font-display: block;
+  }
+  @font-face {
     font-family: "Courier Prime";
-    src: url("./fonts/CourierPrime-Regular.woff2") format("woff2");
+    src: url("./fonts/CourierPrime-Regular-3.018.woff2") format("woff2");
     font-weight: 400;
     font-style: normal;
     font-display: block;
   }
   @font-face {
     font-family: "Courier Prime";
-    src: url("./fonts/CourierPrime-Italic.woff2") format("woff2");
+    src: url("./fonts/CourierPrime-Italic-3.018.woff2") format("woff2");
     font-weight: 400;
     font-style: italic;
     font-display: block;
   }
   @font-face {
     font-family: "Courier Prime";
-    src: url("./fonts/CourierPrime-Bold.woff2") format("woff2");
+    src: url("./fonts/CourierPrime-Bold-3.018.woff2") format("woff2");
     font-weight: 700;
     font-style: normal;
     font-display: block;
   }
   @font-face {
     font-family: "IBM Plex Mono";
-    src: url("./fonts/IBMPlexMono-Regular.woff2") format("woff2");
-    font-weight: 400;
+    src: url("./fonts/IBMPlexMonoVar-Roman-1.000.woff2") format("woff2");
+    font-weight: 100 700;
     font-style: normal;
     font-display: block;
   }
   @font-face {
     font-family: "IBM Plex Mono";
-    src: url("./fonts/IBMPlexMono-Italic.woff2") format("woff2");
-    font-weight: 400;
+    src: url("./fonts/IBMPlexMonoVar-Italic-1.000.woff2") format("woff2");
+    font-weight: 100 700;
     font-style: italic;
     font-display: block;
   }
   @font-face {
     font-family: "Latin Modern Roman";
-    src: url("./fonts/LatinModernRoman-Regular.woff2") format("woff2");
+    src: url("./fonts/LatinModernRoman-Regular-2.004.woff2") format("woff2");
     font-weight: 400;
     font-style: normal;
     font-display: block;
   }
   @font-face {
     font-family: "Latin Modern Roman";
-    src: url("./fonts/LatinModernRoman-Italic.woff2") format("woff2");
+    src: url("./fonts/LatinModernRoman-Italic-2.004.woff2") format("woff2");
     font-weight: 400;
     font-style: italic;
     font-display: block;
   }
   @font-face {
     font-family: "Latin Modern Roman Caps";
-    src: url("./fonts/LatinModernRomanCaps-Regular.woff2") format("woff2");
+    src: url("./fonts/LatinModernRomanCaps-Regular-2.004.woff2") format("woff2");
     font-weight: 400;
     font-style: normal;
     font-display: block;
@@ -670,14 +718,25 @@
      .article p stays: it also guards against ink-repaint bugs and costs
      nothing. */
   .native.pretty p { text-wrap: pretty; }
-  /* True small caps. Fonts whose smcp lives in a companion "SC" family
-     (IM Fell, Vollkorn) get it via --sc-family; everything else uses
-     font-variant-caps (true smcp when the font has it — Junicode — and
-     honest synthesis when it doesn't). */
+  /* True small caps. font-variant-caps reaches the real smcp in Junicode,
+     Coelacanth, EB Garamond, Alegreya, Source Serif 4 and Roboto Slab, keeping
+     the small caps on the same weight and slope as the text around them; the
+     two faces that draw their caps as a separate font instead come in through
+     --sc-family. The remaining options have no small caps in any build, and
+     synthesise — as does Source Serif's italic, which has none of its own. */
   .article .smcp { font-variant-caps: small-caps; }
   body.sc-family .article .smcp {
     font-family: var(--sc-family), var(--demo-family, "Junicode"), serif;
     font-variant-caps: normal;
+  }
+  /* Figures are left to each face's own default, which for the book serifs
+     here means oldstyle. EB Garamond is the exception: its default set is
+     tabular lining, spaced for columns of numbers rather than for the middle
+     of a sentence, so it is asked for proportional oldstyle instead. Both
+     properties are needed — onum alone would only reach the tabular oldstyle
+     set. Latin Modern keeps its lining default, since it stands in for TeX. */
+  body.oldstyle-figures .article {
+    font-variant-numeric: proportional-nums oldstyle-nums;
   }
   /* Nothing inside the columns is colored: the sample hyperlink inherits. */
   .article a { color: inherit; text-decoration: underline; }
@@ -1020,12 +1079,13 @@
         <optgroup label="Serif">
           <option value="'Junicode'" selected>Junicode</option>
           <option value="'EB Garamond'">EB Garamond</option>
+          <option value="'Coelacanth'">Coelacanth</option>
           <option value="'Alegreya'">Alegreya</option>
           <option value="'IM Fell English'">IM Fell English</option>
-          <option value="'Vollkorn'">Vollkorn</option>
-          <option value="'Amstelvar'">Amstelvar</option>
+          <option value="'Source Serif 4'">Source Serif 4</option>
+          <option value="'Newsreader'">Newsreader</option>
+          <option value="'Roboto Slab'">Roboto Slab</option>
           <option value="'Latin Modern Roman'">Latin Modern (TeX)</option>
-          <option value="Georgia">Georgia</option>
           <!-- ui-serif/ui-monospace are WebKit-only; the stacks behind them
                pick the nearest system face per platform (Chrome/Firefox
                would otherwise skip the keyword and land on the article's
@@ -1034,9 +1094,11 @@
         </optgroup>
         <optgroup label="Sans">
           <option value="'Roboto Flex'">Roboto Flex</option>
+          <option value="'Inter'">Inter</option>
           <option value="system-ui, sans-serif">System sans</option>
         </optgroup>
         <optgroup label="Monospace">
+          <option value="'Iosevka'">Iosevka</option>
           <option value="'Courier Prime'">Courier Prime</option>
           <option value="'IBM Plex Mono'">IBM Plex Mono</option>
           <option value="ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace">System mono</option>
@@ -2975,19 +3037,24 @@ await controller.ready;</code></pre>
   }
 
   const $ = (id) => document.getElementById(id);
+  // Only for the two faces that draw small caps as a separate design and have
+  // no smcp to reach them by: IM Fell, whose every build lacks the feature,
+  // and Latin Modern, which follows TeX in shipping caps as their own font.
+  // Every other webfont here carries its own smcp (see tools/fonts/build.py).
   const SC_FAMILIES = {
-    "'Alegreya'": '"Alegreya SC"',
     "'IM Fell English'": '"IM Fell English SC"',
-    "'Vollkorn'": '"Vollkorn SC"',
     "'Latin Modern Roman'": '"Latin Modern Roman Caps"',
   };
+  // Faces whose own default figures are wrong for prose; see the
+  // .oldstyle-figures rule.
+  const OLDSTYLE_FIGURES = new Set(["'EB Garamond'"]);
   const fontLoads = new Map();
 
   // A font is fetched before it can replace the current article face. This
   // keeps both columns on one set of metrics and prevents a second layout
   // when a local font finishes decoding. Self-hosted webfont options all
-  // start with a quoted family; system options (Georgia and the
-  // ui-*/system-ui stacks) are unquoted and need no fetch.
+  // start with a quoted family; the system options (the ui-*/system-ui
+  // stacks) are unquoted and need no fetch.
   function loadFontFamily(family) {
     if (!family.startsWith("'")) return Promise.resolve();
     let pending = fontLoads.get(family);
@@ -2997,6 +3064,12 @@ await controller.ready;</code></pre>
     const requests = [
       document.fonts.load(`normal 400 16px ${family}`, specimen),
       document.fonts.load(`italic 400 16px ${family}`, specimen),
+      // Bold too: samples set weight on a few words, and families whose bold
+      // is a separate file (Coelacanth, Courier Prime) would otherwise fetch
+      // it after the first paint and reflow the line. Families with one
+      // variable file, or with no bold at all, resolve to a face already
+      // requested above and cost no extra fetch.
+      document.fonts.load(`normal 700 16px ${family}`, specimen),
     ];
     const scFamily = SC_FAMILIES[family];
     if (scFamily !== undefined) {
@@ -3575,7 +3648,7 @@ await controller.ready;</code></pre>
     applyMeasure();
     document.body.style.setProperty("--demo-family", family);
     // Monospace main fonts: inline code has nothing to contrast with — inherit.
-    const MONO_BODY = new Set(["'Courier Prime'", "'IBM Plex Mono'"]);
+    const MONO_BODY = new Set(["'Courier Prime'", "'IBM Plex Mono'", "'Iosevka'"]);
     syncExpansionAvailability();
     document.body.classList.toggle(
       "mono-body",
@@ -3586,6 +3659,7 @@ await controller.ready;</code></pre>
     const scFamily = SC_FAMILIES[family];
     document.body.classList.toggle("sc-family", scFamily !== undefined);
     if (scFamily !== undefined) document.body.style.setProperty("--sc-family", scFamily);
+    document.body.classList.toggle("oldstyle-figures", OLDSTYLE_FIGURES.has(family));
 
     controller?.destroy();
     controller = justify(enhanced.querySelectorAll("p"), {

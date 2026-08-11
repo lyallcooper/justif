@@ -49,7 +49,7 @@ await page.evaluate(async () => {
   const style = document.createElement("style");
   style.textContent = `@font-face {
     font-family: "Junicode";
-    src: url("/demo/fonts/Junicode-Roman.woff2") format("woff2");
+    src: url("/demo/fonts/Junicode-Roman-2.230.woff2") format("woff2");
     font-weight: 300 700;
     font-stretch: 75% 125%;
     font-display: block;

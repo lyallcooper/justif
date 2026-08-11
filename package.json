@@ -135,6 +135,8 @@
     "test:e2e": "playwright test",
     "bench": "vitest bench --run bench/breaker.bench.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.core.json --noEmit",
+    "fonts": "uv run tools/fonts/build.py",
+    "check:fonts": "uv run tools/fonts/build.py --check",
     "compare:tex": "node tools/tex-compare.mjs",
     "check:package": "node tools/check-package.mjs --dry-run",
     "check:release-readme": "node tools/sync-version.mjs --check",
