@@ -32,6 +32,18 @@ export interface FontSpec {
   numeric: string;
   variantPosition: string;
   /**
+   * Computed `text-transform` ("none" default). Part of the cache key, and
+   * enough on its own to force DOM measurement: canvas has no equivalent, but
+   * a probe carrying the property renders exactly what the run will.
+   *
+   * Nothing here ever maps the text itself. The probe is fed SOURCE text and
+   * returns the width of its rendered form, so a mapping that changes length
+   * (`ß`→`SS`, `ﬁ`→`FI`) never reaches the item model, whose offsets stay
+   * source offsets — and locale-sensitive casing (Turkish dotless i, Greek
+   * final sigma) comes out right without reading the run's `lang`.
+   */
+  textTransform: string;
+  /**
    * Computed direction, applied as canvas context state so RTL words are
    * shaped under the same base direction the DOM renders them with.
    * Deliberately NOT part of the cache key: measureText advances are
@@ -90,6 +102,7 @@ export function fontSpecOf(style: CSSStyleDeclaration): FontSpec {
     featureSettings: computed("font-feature-settings"),
     numeric: computed("font-variant-numeric"),
     variantPosition: computed("font-variant-position"),
+    textTransform: computed("text-transform", "none"),
     direction: style.direction === "rtl" ? "rtl" : "ltr",
     key: "",
     needsDomMeasurement: false,
@@ -111,8 +124,10 @@ export function fontSpecOf(style: CSSStyleDeclaration): FontSpec {
     spec.featureSettings,
     spec.numeric,
     spec.variantPosition,
+    spec.textTransform,
   ].join("|");
   spec.needsDomMeasurement =
+    spec.textTransform !== "none" ||
     spec.variantCaps !== "normal" ||
     spec.variantAlternates !== "normal" ||
     spec.variantEastAsian !== "normal" ||
@@ -224,6 +239,9 @@ export function applyFontSpec(el: HTMLElement, spec: FontSpec): void {
   el.style.direction = spec.direction;
   el.style.fontStretch = spec.stretch;
   el.style.fontVariationSettings = spec.variationSettings;
+  // Not a font property: it decides which glyphs get shaped at all, so the
+  // probe renders the run's actual text rather than its source.
+  el.style.setProperty("text-transform", spec.textTransform);
   el.style.setProperty("font-variant-alternates", spec.variantAlternates);
   el.style.setProperty("font-variant-caps", spec.variantCaps);
   el.style.setProperty("font-variant-east-asian", spec.variantEastAsian);
@@ -235,8 +253,10 @@ export function applyFontSpec(el: HTMLElement, spec: FontSpec): void {
 }
 
 /** True when the run needs the DOM shaper rather than canvas measureText.
- * Caps variants ALWAYS take the DOM probe: canvas fontVariantCaps support
- * is port-dependent — absent in Mac WebKit, present-but-divergent from DOM
+ * A `text-transform` always takes the DOM probe: canvas measures the string it
+ * is handed, and the run renders a different one. Caps variants always do too,
+ * because canvas fontVariantCaps support is port-dependent — absent in Mac
+ * WebKit, present-but-divergent from DOM
  * shaping in GTK WebKit (Playwright's Linux build measured all-small-caps
  * ~11px/line apart), and Firefox's OffscreenCanvas has desynced its caps
  * state before. A styled DOM probe shapes with exactly the engine that
@@ -440,6 +460,23 @@ export function measureWidth(text: string, spec: FontSpec): number {
 const bearingCache = new Map<string, Map<string, { l: number; r: number }>>();
 
 /**
+ * Source text → what `spec` renders for it. Only the context-free case
+ * mappings are ever set on a spec that reaches here (see
+ * `supportedTextTransform` in read.ts), so this is the complete mapping.
+ *
+ * Callers never need this for WIDTH — the probe carries the property and
+ * measures source text directly. It exists for the two questions the rendered
+ * string does answer: which glyph a protrusion code should be looked up under,
+ * and whether the mapping changes LENGTH, which decides whether source offsets
+ * still index the glyph run.
+ */
+export function transformedText(text: string, spec: FontSpec): string {
+  if (spec.textTransform === "uppercase") return text.toUpperCase();
+  if (spec.textTransform === "lowercase") return text.toLowerCase();
+  return text;
+}
+
+/**
  * Side bearings of `ch`: distance from each edge of the advance box to the
  * glyph's ink (clamped ≥ 0 when ink spills past the box, as with italics).
  * Used to stop protrusion at the ink edge for monospace runs.
@@ -455,7 +492,11 @@ export function measureInkBearings(ch: string, spec: FontSpec): { l: number; r: 
 
   const ctx = getCtx();
   setFont(ctx, spec);
-  const m = ctx.measureText(ch);
+  // Bearings belong to the glyph that RENDERS, and canvas has no
+  // text-transform to apply — so map the character before measuring it.
+  // Cached under the source character, which is safe because the transform
+  // is part of `spec.key` and so of this cache's per-font bucket.
+  const m = ctx.measureText(transformedText(ch, spec));
   // actualBoundingBoxLeft is positive when ink extends LEFT of the origin,
   // so the left bearing (origin → ink) is its negation.
   const bearings = {

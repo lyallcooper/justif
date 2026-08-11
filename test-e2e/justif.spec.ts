@@ -1537,8 +1537,11 @@ test("onSkip reports one reason per declined paragraph", async ({ page }) => {
       [
         "transform",
         () => {
+          // `capitalize` is the one text-transform still out of scope: what it
+          // renders depends on where a word starts, and words are measured in
+          // isolation. uppercase/lowercase are measured, not skipped.
           const p = document.createElement("p");
-          p.style.textTransform = "uppercase";
+          p.style.textTransform = "capitalize";
           p.textContent = "Transformed paragraph text renders different glyphs.";
           return p;
         },
@@ -3884,8 +3887,9 @@ test("rescan() picks up author CSS changes and leaves the rest alone", async ({ 
     };
     const subject = make("rescan-subject");
     const bystander = make("rescan-bystander");
-    // Declined at scan time: text-transform renders glyphs canvas never measured.
-    const declined = make("rescan-declined", "text-transform: uppercase;");
+    // Declined at scan time: `capitalize` renders by word position, which
+    // words measured in isolation cannot reproduce.
+    const declined = make("rescan-declined", "text-transform: capitalize;");
     const skips: string[] = [];
     const relayouts: string[] = [];
     const controller = window.__justif.justify([subject, bystander, declined], {
@@ -4137,7 +4141,7 @@ test("rescan() gives an adopted paragraph the wrap guarantee", async ({ page }) 
     const control = make("wrap-control");
     // Declined at first scan, so it is not among the paragraphs the observers
     // were given.
-    const adopted = make("wrap-adopted", "text-transform: uppercase;");
+    const adopted = make("wrap-adopted", "text-transform: capitalize;");
     const controller = window.__justif.justify([control, adopted], {
       hyphenate: window.__justif.hyphenateEnUS,
       expansion: false,
@@ -5202,7 +5206,7 @@ test("text autosizing is disabled before scanning and author styles are restored
 
     const skipped = document.createElement("p");
     skipped.style.cssText =
-      "width:340px;font:17px/1.45 Georgia,serif;text-align:justify;text-transform:uppercase";
+      "width:340px;font:17px/1.45 Georgia,serif;text-align:justify;text-transform:capitalize";
     skipped.textContent = "This unsupported paragraph must remain byte-identical.";
     host.append(p, skipped);
 
@@ -6911,4 +6915,321 @@ test("carries dash breaks into the DOM and keeps dashes off line starts", async 
     // The numeric range never splits.
     expect.soft(texts.some((t) => t.includes("1914–1918"))).toBe(true);
   }
+});
+
+/**
+ * A `text-transform` run is measured, not skipped. The proof is a control:
+ * the same paragraph reached by transform and reached literally must break in
+ * the same places, because the measurer is handed SOURCE text and has to
+ * return the width of the RENDERED form.
+ *
+ * The lowercase pair is the reported idiom — `font-variant-caps: small-caps`
+ * with `text-transform: lowercase`, the standard way to set an acronym as true
+ * small caps — which used to fail the whole paragraph to native.
+ */
+test("text-transform runs set identically to the same text written literally", async ({
+  page,
+}) => {
+  const result = await page.evaluate(async () => {
+    const host = document.createElement("div");
+    host.id = "transform-host";
+    document.body.append(host);
+    const source =
+      "Die Strasse war gross und die Gruesse waren heiss, und dieser Satz " +
+      "braucht genug Text damit mehrere Zeilen gesetzt werden und es zaehlt.";
+    const make = (id: string, text: string, extra = "") => {
+      const p = document.createElement("p");
+      p.id = id;
+      p.setAttribute(
+        "style",
+        "width: 300px; text-align: justify; font: 17px/1.5 Georgia, serif;" +
+          ` hyphens: auto; margin: 0 0 1em; ${extra}`,
+      );
+      p.textContent = text;
+      host.append(p);
+      return p;
+    };
+    const upper = make("tt-upper", source, "text-transform: uppercase;");
+    const upperLiteral = make("tt-upper-literal", source.toUpperCase());
+    const lower = make("tt-lower", source.toUpperCase(), "text-transform: lowercase;");
+    const lowerLiteral = make("tt-lower-literal", source.toLowerCase());
+
+    const controller = window.__justif.justify(
+      [upper, upperLiteral, lower, lowerLiteral],
+      { hyphenate: window.__justif.hyphenateEnUS } as object,
+    );
+    await controller.ready;
+
+    /**
+     * Line right edges read from SEGMENT ELEMENT rects rather than the
+     * fixture's Range-based line reader: WebKit's Range rects are unreliable
+     * inside a `text-transform`, and the thing under test must not be
+     * measured with an instrument the transform disturbs.
+     */
+    const shape = (p: HTMLElement) => {
+      const cs = getComputedStyle(p);
+      const contentRight =
+        p.getBoundingClientRect().right -
+        parseFloat(cs.paddingRight) -
+        parseFloat(cs.borderRightWidth);
+      const rows: Array<{ top: number; right: number; text: string }> = [];
+      for (const seg of [...host.querySelectorAll<HTMLElement>(`#${p.id} .justif-seg`)]
+        .map((s) => ({ r: s.getBoundingClientRect(), t: s.textContent ?? "" }))
+        .sort((a, b) => a.r.top - b.r.top || a.r.left - b.r.left)) {
+        const last = rows[rows.length - 1];
+        if (last !== undefined && seg.r.top - last.top < 10) {
+          last.right = Math.max(last.right, seg.r.right);
+          last.text += seg.t;
+        } else rows.push({ top: seg.r.top, right: seg.r.right, text: seg.t });
+      }
+      return {
+        enhanced: p.hasAttribute("data-justif"),
+        // Source text, so both members of a pair compare case-insensitively.
+        breaks: rows.map((r) => r.text.trim().toLowerCase()),
+        edges: rows.map((r) => +(r.right - contentRight).toFixed(2)),
+        text: p.textContent,
+      };
+    };
+    const out = {
+      upper: shape(upper),
+      upperLiteral: shape(upperLiteral),
+      lower: shape(lower),
+      lowerLiteral: shape(lowerLiteral),
+    };
+    controller.destroy();
+    host.remove();
+    return { ...out, source };
+  });
+
+  for (const key of ["upper", "lower"] as const) {
+    const transformed = result[key];
+    const literal = result[`${key}Literal` as const];
+    expect(transformed.enhanced, `${key} enhanced`).toBe(true);
+    expect(literal.enhanced).toBe(true);
+    expect(transformed.breaks.length).toBeGreaterThan(2);
+    // The whole claim: transformed text breaks where the rendered text does.
+    expect(transformed.breaks, `${key} breaks`).toEqual(literal.breaks);
+    // Every justified line still ends flush against the measure.
+    for (const edge of transformed.edges.slice(0, -1)) {
+      expect(Math.abs(edge), `${key} line edge ${edge}`).toBeLessThan(1);
+    }
+  }
+  // The enhancement never rewrites the source: the case on the page is the
+  // cascade's, and the DOM still holds what the author wrote.
+  expect(result.upper.text).toBe(result.source);
+});
+
+/**
+ * A `text-transform` that maps one source character to SEVERAL rendered ones
+ * (`ß`→`SS`) is measured like any other. Widths were never the problem — the
+ * probe is handed source text and returns the rendered advance — but the wrap
+ * guarantee reads a line's painted end by source offset, and WebKit resolves
+ * those against the untransformed glyph count. It reported this very sentence
+ * 26px short, and the correction pass spent the difference as word spacing,
+ * pushing the line 25.7px PAST the measure.
+ *
+ * The corrective reads now take element rects wherever a Range would have
+ * spanned a whole text node, which is every emitted segment in practice, so
+ * source offsets never index a glyph run at all.
+ */
+test("a length-changing text-transform is measured, not skipped", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const host = document.createElement("div");
+    host.id = "transform-length-host";
+    document.body.append(host);
+    const source =
+      "Die Straße war groß und die Grüße waren heiß, und dieser Satz braucht " +
+      "genug Text damit mehrere Zeilen gesetzt werden und die Messung zählt.";
+    const make = (id: string, text: string, extra = "") => {
+      const p = document.createElement("p");
+      p.id = id;
+      p.setAttribute(
+        "style",
+        "width: 300px; text-align: justify; font: 17px/1.5 Georgia, serif;" +
+          ` hyphens: auto; margin: 0 0 1em; ${extra}`,
+      );
+      p.textContent = text;
+      host.append(p);
+      return p;
+    };
+    const sharp = make("tt-sharp", source, "text-transform: uppercase;");
+    // The same RENDERING, written out: ß already spelled SS, no transform.
+    const literal = make("tt-literal", source.toUpperCase());
+
+    const skips: Record<string, string> = {};
+    const controller = window.__justif.justify([sharp, literal], {
+      hyphenate: window.__justif.hyphenateEnUS,
+      onSkip: (el: HTMLElement, reason: string) => (skips[el.id] = reason),
+    } as object);
+    await controller.ready;
+
+    // Segment ELEMENT rects: a Range-based reader is exactly the instrument
+    // this case breaks, so it cannot be the one used to check it.
+    const shape = (p: HTMLElement) => {
+      const cs = getComputedStyle(p);
+      const contentRight =
+        p.getBoundingClientRect().right -
+        parseFloat(cs.paddingRight) -
+        parseFloat(cs.borderRightWidth);
+      const rows: Array<{ top: number; right: number; text: string }> = [];
+      for (const seg of [...p.querySelectorAll<HTMLElement>(".justif-seg")]
+        .map((s) => ({ r: s.getBoundingClientRect(), t: s.textContent ?? "" }))
+        .sort((a, b) => a.r.top - b.r.top || a.r.left - b.r.left)) {
+        const last = rows[rows.length - 1];
+        if (last !== undefined && seg.r.top - last.top < 10) {
+          last.right = Math.max(last.right, seg.r.right);
+          last.text += seg.t;
+        } else rows.push({ top: seg.r.top, right: seg.r.right, text: seg.t });
+      }
+      return {
+        enhanced: p.hasAttribute("data-justif"),
+        // ß folded to ss so the transformed source can be compared with the
+        // literal spelling at all.
+        breaks: rows.map((r) => r.text.trim().toLowerCase().replace(/\u00df/g, "ss")),
+        edges: rows.map((r) => +(r.right - contentRight).toFixed(2)),
+      };
+    };
+    const out = {
+      skips,
+      sharp: shape(sharp),
+      literal: shape(literal),
+      // Read while enhanced: the source ß must survive in the DOM, with only
+      // the RENDERING uppercased.
+      liveText: sharp.textContent,
+    };
+    controller.destroy();
+    const restored = sharp.innerHTML;
+    host.remove();
+    return { ...out, restored, source };
+  });
+
+  expect(result.skips).toEqual({});
+  expect(result.sharp.enhanced).toBe(true);
+  expect(result.sharp.breaks.length).toBeGreaterThan(2);
+  // Breaks where the RENDERED text breaks, and lines that end where the
+  // literal spelling's do. The regression this guards produced a line 25.7px
+  // past the measure in WebKit while breaking in all the right places, so the
+  // edges are the assertion that matters.
+  expect(result.sharp.breaks).toEqual(result.literal.breaks);
+  for (const [i, edge] of result.sharp.edges.entries()) {
+    expect(Math.abs(edge - result.literal.edges[i]!), `line ${i}: ${edge}`).toBeLessThan(0.5);
+  }
+  for (const edge of result.sharp.edges.slice(0, -1)) {
+    expect(edge, `line overflows by ${edge}`).toBeLessThan(1);
+  }
+  // The source keeps its ß; only the rendering is uppercase.
+  expect(result.liveText).toBe(result.source);
+  expect(result.restored).toBe(result.source);
+});
+
+/**
+ * The reported shape itself: the transform on an inline DESCENDANT rather than
+ * on the paragraph, combined with `font-variant-caps: small-caps`. Lowercasing
+ * an acronym so the font can set it as true small caps is the standard way to
+ * keep it from shouting, and it used to fail the whole paragraph to native —
+ * so a paragraph with one such acronym set with visibly different spacing from
+ * its neighbors.
+ *
+ * Both properties independently force the DOM measurement path, so this also
+ * covers them combining on one run.
+ */
+test("a small-caps acronym lowercased by text-transform is enhanced", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const host = document.createElement("div");
+    host.id = "smallcaps-host";
+    document.body.append(host);
+    const sheet = document.createElement("style");
+    sheet.textContent =
+      "#smallcaps-host .sc { font-variant-caps: small-caps; text-transform: lowercase; }" +
+      "#smallcaps-host .scl { font-variant-caps: small-caps; }";
+    document.head.append(sheet);
+    const body =
+      "This paragraph contains an <span class=sc>LLM</span> abbreviation and " +
+      "enough further prose that the justifier has several lines to set against " +
+      "a narrow measure, which is where any spacing drift would show itself.";
+    const make = (id: string, html: string) => {
+      const p = document.createElement("p");
+      p.id = id;
+      p.setAttribute(
+        "style",
+        "width: 300px; text-align: justify; font: 17px/1.5 Georgia, serif;" +
+          " hyphens: auto; margin: 0 0 1em;",
+      );
+      p.innerHTML = html;
+      host.append(p);
+      return p;
+    };
+    const acronym = make("sc-acronym", body);
+    // The SAME rendering reached without a transform: small caps applied to
+    // source text that is already lowercase. Whatever the transform costs in
+    // measurement accuracy shows up as a difference against this.
+    const literal = make(
+      "sc-literal",
+      body.replace("class=sc>LLM<", "class=scl>llm<"),
+    );
+
+    // The serialized baseline, taken from the DOM rather than the source
+    // string above, so attribute quoting is the parser's and not the test's.
+    const before = acronym.innerHTML;
+    const skips: Record<string, string> = {};
+    const controller = window.__justif.justify([acronym, literal], {
+      hyphenate: window.__justif.hyphenateEnUS,
+      onSkip: (el: HTMLElement, reason: string) => (skips[el.id] = reason),
+    } as object);
+    await controller.ready;
+
+    // Segment ELEMENT rects: WebKit's Range rects are unreliable inside a
+    // text-transform, so the fixture's Range-based line reader cannot be the
+    // instrument here.
+    const edges = (p: HTMLElement) => {
+      const cs = getComputedStyle(p);
+      const contentRight =
+        p.getBoundingClientRect().right -
+        parseFloat(cs.paddingRight) -
+        parseFloat(cs.borderRightWidth);
+      const rows: Array<{ top: number; right: number }> = [];
+      for (const r of [...p.querySelectorAll<HTMLElement>(".justif-seg")]
+        .map((s) => s.getBoundingClientRect())
+        .sort((a, b) => a.top - b.top || a.left - b.left)) {
+        const last = rows[rows.length - 1];
+        if (last !== undefined && r.top - last.top < 10) last.right = Math.max(last.right, r.right);
+        else rows.push({ top: r.top, right: r.right });
+      }
+      return rows.map((r) => +(r.right - contentRight).toFixed(2));
+    };
+    const out = {
+      skips,
+      enhanced: acronym.hasAttribute("data-justif"),
+      literalEnhanced: literal.hasAttribute("data-justif"),
+      edges: edges(acronym),
+      literalEdges: edges(literal),
+      // The clone must still carry the class, or the acronym stops rendering
+      // as small caps the moment justif takes the paragraph over.
+      styledSpans: acronym.querySelectorAll(".sc").length,
+      caps: getComputedStyle(acronym.querySelector<HTMLElement>(".sc")!).fontVariantCaps,
+      text: acronym.textContent,
+    };
+    controller.destroy();
+    const restored = acronym.innerHTML;
+    host.remove();
+    sheet.remove();
+    return { ...out, restored, before };
+  });
+
+  expect(result.skips).toEqual({});
+  expect(result.enhanced).toBe(true);
+  expect(result.literalEnhanced).toBe(true);
+  // The point of the report: reaching small caps through a transform sets the
+  // paragraph exactly as writing the lowercase text outright would. Compared
+  // line for line rather than against the measure, because this text's first
+  // line is legitimately a little short in BOTH paragraphs.
+  expect(result.edges.length).toBe(result.literalEdges.length);
+  for (const [i, edge] of result.edges.entries()) {
+    expect(Math.abs(edge - result.literalEdges[i]!), `line ${i}: ${edge}`).toBeLessThan(0.5);
+  }
+  // Still small caps, and the DOM still holds the acronym as it was written.
+  expect(result.styledSpans).toBeGreaterThan(0);
+  expect(result.caps).toBe("small-caps");
+  expect(result.text).toContain("LLM");
+  expect(result.restored).toBe(result.before);
 });

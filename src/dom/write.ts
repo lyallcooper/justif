@@ -104,6 +104,16 @@ export interface RenderSegment {
   /** Edge spaces excluded from corrective measurement (position-dependent
    * rendering) and re-added as exact model widths. */
   edgeTrim: { lead: number; trail: number; modelPx: number };
+  /**
+   * This segment's `text-transform` renders a different NUMBER of characters
+   * than the source holds (`ß`→`SS`), so source offsets no longer index the
+   * glyph run. Widths are unaffected — those come from a probe carrying the
+   * property — but a Range measured by source offset is: WebKit resolves such
+   * offsets against the untransformed glyph count and reports a line short by
+   * the extra glyphs. Corrective reads therefore avoid Range on these
+   * segments, and skip the line outright where they cannot.
+   */
+  transformChangesLength?: boolean;
   /** Inline padding/border px of cloned ancestors that open/close at this
    * segment. Layout width the text rects can't see (it sits on the clone,
    * outside the segment span) — added to the corrective model like the
@@ -621,6 +631,10 @@ interface LineExtent {
   ownMargins: number;
   /** First entry's rect, identifying the line's fragment and line box. */
   lineRect: DOMRect | null;
+  /** A read this line depends on had to index a glyph run by source offset
+   * on a segment whose transform changes the text's length. No correction can
+   * be derived; the line keeps its provisional pad, as for a re-wrapped one. */
+  unmeasurable: boolean;
 }
 
 /** Reads one line's true painted extent. Rect reads only for the glyph runs;
@@ -632,6 +646,7 @@ function measureLineExtent(entries: readonly LineEntry[], range: Range): LineExt
   let modelPx = 0;
   let ownMargins = 0;
   let lineRect: DOMRect | null = null;
+  let unmeasurable = false;
   for (const { el, seg, marginEndEl } of entries) {
     let elRect: DOMRect | undefined;
     if (lineRect === null) {
@@ -641,6 +656,12 @@ function measureLineExtent(entries: readonly LineEntry[], range: Range): LineExt
     if (seg === null || (seg.edgeTrim.lead === 0 && seg.edgeTrim.trail === 0)) {
       rectPx += (elRect ?? el.getBoundingClientRect()).width;
     } else {
+      // Only edge spaces force this branch, and only a Range can exclude them
+      // (the element rect above includes them). A transform that changes the
+      // text's length puts source offsets out of step with the glyph run, so
+      // this particular read cannot be trusted — give up on the line rather
+      // than correct it by a wrong amount.
+      if (seg.transformChangesLength === true) unmeasurable = true;
       const node = el.firstChild as Text;
       range.setStart(node, seg.edgeTrim.lead);
       range.setEnd(node, seg.text.length - seg.edgeTrim.trail);
@@ -656,7 +677,7 @@ function measureLineExtent(entries: readonly LineEntry[], range: Range): LineExt
     modelPx += me;
     ownMargins += me;
   }
-  return { rectPx, modelPx, ownMargins, lineRect };
+  return { rectPx, modelPx, ownMargins, lineRect, unmeasurable };
 }
 
 /** Coordinate of a fragment's content-box end edge (its line-end side). */
@@ -703,9 +724,20 @@ function paintedEndOf(
     const node = endText?.el.firstChild;
     const end = endText === undefined ? 0 : endWithoutCollapsibleSpaces(endText.seg.text);
     if (node?.nodeType === 3 && end > 0) {
-      range.setStart(node, 0);
-      range.setEnd(node, end);
-      paintRect = range.getBoundingClientRect();
+      if (end === (node as Text).length && node === endText!.el.lastChild) {
+        // Nothing to strip, and the text node is the element's only child: the
+        // Range would span exactly the element's content box, so read the
+        // ELEMENT instead. Same coordinate, one less Range — and the only read
+        // of the two that stays correct when a `text-transform` changes the
+        // text's length (see RenderSegment.transformChangesLength). Measured:
+        // no emitted segment in 181 justified lines carried a trailing
+        // collapsible space, so this is the path lines actually take.
+        paintRect = endText!.el.getBoundingClientRect();
+      } else {
+        range.setStart(node, 0);
+        range.setEnd(node, end);
+        paintRect = range.getBoundingClientRect();
+      }
     } else paintRect = paintEndEntry.el.getBoundingClientRect();
   }
   let value = rtl ? -paintRect.left : paintRect.right;
@@ -831,11 +863,17 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
         continue;
       }
       const availableWidth = lineWidths[li] ?? lineWidths[lineWidths.length - 1] ?? 0;
-      const { rectPx, modelPx, ownMargins, lineRect } = measureLineExtent(entries, range);
+      const { rectPx, modelPx, ownMargins, lineRect, unmeasurable } = measureLineExtent(
+        entries,
+        range,
+      );
       // Skipped content (content-visibility: auto off-screen) measures
       // zero rects; model widths and margins still parse, so the "is this
       // paragraph actually rendered" test uses rect reads only.
       if (rectPx !== 0) sawInk = true;
+      // Recorded as ink first: the paragraph is rendered, it is only this
+      // line's correction that cannot be derived.
+      if (unmeasurable) continue;
       const layout = rectPx + modelPx;
       const overflow = layout - availableWidth;
       if (overflow > CORRECTION_WINDOW_PX) {

@@ -31,6 +31,7 @@ import {
   measureInkBearings,
   measureWidth,
   requiresDomMeasurement,
+  transformedText,
 } from "./measure.js";
 import type { ParagraphScan } from "./read.js";
 import {
@@ -353,6 +354,12 @@ export function buildRunMetrics(
       // other font (full cells hang under a hanging-punctuation mode — the
       // typewriter-tradition grid behavior).
       protrudeInkOnly: isMonospace(spec) && spec.key !== baseSpec.key,
+      // Glyph identity for protrusion lookups only; every width this run
+      // carries was already measured with the property applied.
+      textTransform:
+        spec.textTransform === "uppercase" || spec.textTransform === "lowercase"
+          ? spec.textTransform
+          : undefined,
       protrusion: perFont,
       protrusionFirst: perFontFirst,
       protrusionCredit: perFontCredit,
@@ -541,6 +548,7 @@ export function buildRenderSegments(
         marginStartPx: (first ? -line.leftHang : 0) - nbspExcessPx,
         marginEndPx: 0, // the line's last segment is patched after the loop
         edgeTrim: { lead, trail, modelPx: (lead + trail) * spacePx },
+        transformChangesLength: transformedText(flowText, spec).length !== flowText.length,
         decorPx,
         cjk: hasCJK,
         joint,

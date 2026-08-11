@@ -53,6 +53,17 @@ export interface RunMetrics {
    */
   protrudeInkOnly?: boolean;
   /**
+   * Case mapping this run RENDERS under (CSS `text-transform`); absent when
+   * it renders its source text. Box text stays source text throughout — only
+   * per-character glyph identity needs this, because protrusion codes
+   * describe glyphs and `A` and `a` carry different ones. Widths never do:
+   * the measurer already probes with the property applied.
+   *
+   * Only the two context-free mappings appear here. `capitalize` depends on
+   * where a word starts, which a per-character lookup cannot answer.
+   */
+  textTransform?: "uppercase" | "lowercase";
+  /**
    * Hand-tuned protrusion table matched to this run's font (microtype's
    * per-font configs). Overrides BuildOptions.protrusion for this run;
    * absent → the paragraph-wide table applies.

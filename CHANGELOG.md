@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- A `text-transform` no longer sends a paragraph back to browser
+  justification. Text transformed to upper or lower case is now measured as it
+  actually renders, so it is justified like the paragraphs around it instead of
+  standing out with looser or tighter spacing. This includes the common
+  small-caps idiom, where an acronym is lowercased so the font can set it as
+  true small caps, and German text uppercased so `ß` sets as `SS`.
+  `text-transform: capitalize` still falls back to the browser.
 - Fixed-width Unicode spaces — en space, em space, thin space and the rest of
   the Unicode space separators — now survive justification. They used to be
   replaced with ordinary spaces, so copying justified text gave back different

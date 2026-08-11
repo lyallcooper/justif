@@ -431,6 +431,7 @@ reliably. This includes:
 - images, form controls, SVG, MathML, floats, or block descendants;
 - inline descendants with horizontal margins, `box-decoration-break: clone`,
   or preserved-whitespace `white-space` values;
+- `text-transform: capitalize` (other `text-transform` values are supported);
 - `contenteditable` paragraphs.
 
 Use padding rather than horizontal margins for chip insets.

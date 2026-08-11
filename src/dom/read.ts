@@ -337,6 +337,31 @@ function inlineInsets(
 }
 
 /**
+ * `text-transform` values the measurer can reproduce, on the paragraph or on
+ * anything inside it. The mapping is never justif's to compute: a DOM probe
+ * carrying the property renders exactly what the run will, so source text in
+ * gives transformed width out — length-changing mappings (`ß`→`SS`) and
+ * locale-sensitive casing (Turkish dotless i) come out right without the item
+ * model ever holding anything but source text.
+ *
+ * `capitalize` is the one value whose rendering depends on POSITION rather
+ * than on the character. Engines capitalize the first letter of each word and
+ * honor text before the element — measured across chromium/firefox/webkit,
+ * `un<span>friendly</span>` renders `unfriendly`, the fragment untouched —
+ * whereas justif measures words and hyphenation fragments in isolation, where
+ * a probe would capitalize a fragment the page does not. Supporting it needs
+ * a word-initial flag threaded to every measurement, not a property on a
+ * probe.
+ *
+ * `full-width` and `full-size-kana` are excluded for a smaller reason: they
+ * substitute glyphs whose protrusion the table would still be answering for
+ * the ASCII source characters.
+ */
+function supportedTextTransform(value: string): boolean {
+  return value === "none" || value === "uppercase" || value === "lowercase";
+}
+
+/**
  * Why the model cannot place this inline element's content, or null when it
  * can. `padded` says whether the element has horizontal insets, which decides
  * whether `box-decoration-break` has any decoration to repeat.
@@ -369,7 +394,7 @@ function inlineBailReason(
   if (padded && decorationBreak === "clone") {
     return `box-decoration-break: clone on padded <${name}>`;
   }
-  if (elStyle.textTransform !== "none") {
+  if (!supportedTextTransform(elStyle.textTransform)) {
     return `text-transform: ${elStyle.textTransform} on <${name}>`;
   }
   // A nested direction change or any non-default unicode-bidi (<bdo>'s
@@ -1099,9 +1124,7 @@ export function readParagraph(p: HTMLElement, batch?: ScanBatch): ParagraphScan 
 
   if (cs.display === "none") return "display: none";
   if (cs.whiteSpace !== "normal") return `white-space: ${cs.whiteSpace} on the paragraph`;
-  // Canvas measures the RAW text; transformed text renders different
-  // glyphs entirely (uppercase widths etc.) — bail to native rendering.
-  if (cs.textTransform !== "none") return `text-transform: ${cs.textTransform}`;
+  if (!supportedTextTransform(cs.textTransform)) return `text-transform: ${cs.textTransform}`;
   if (cs.writingMode !== "horizontal-tb") return `writing-mode: ${cs.writingMode}`;
   // RTL is supported for PURE-RTL paragraphs only (checked against the
   // collected text below); mixed-direction content bails to native.

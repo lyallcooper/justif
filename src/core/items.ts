@@ -395,6 +395,22 @@ function protrusionTable(
 }
 
 /**
+ * The character the run RENDERS for `ch`. Protrusion codes describe glyphs,
+ * and under a `text-transform` the glyph on the page is not the one in the
+ * source: `A` protrudes on both sides where `a` protrudes on neither. Only
+ * the table lookup needs this — advances and side bearings are asked for by
+ * SOURCE character and transformed by the measurer, so callers must keep
+ * passing the source one to those.
+ *
+ * A mapping that changes length (`ß`→`SS`) matches no entry and so protrudes
+ * nothing, which is the right answer for a two-glyph rendering anyway.
+ */
+function renderedChar(ch: string, run: RunMetrics): string {
+  if (run.textTransform === undefined) return ch;
+  return run.textTransform === "uppercase" ? ch.toUpperCase() : ch.toLowerCase();
+}
+
+/**
  * Protrusion hang for `ch` at a line edge, in px: code/1000 × advance
  * (pdfTeX semantics), from the run's own hand-tuned table when one matched
  * its font, else the paragraph-wide table. Monospace runs inside another
@@ -425,7 +441,7 @@ function protrusionHang(
   // real thing the measured model asks for. The cap matters most on the paths
   // that never reach classification — `hyphenRp`'s materialized hyphen and
   // `protrudeInkOnly` runs — so that one rule holds everywhere.
-  const advCode = Math.min(1000, protrusionCodes(table, ch)?.[side] ?? 0);
+  const advCode = Math.min(1000, protrusionCodes(table, renderedChar(ch, run))?.[side] ?? 0);
   if (advCode === 0) return 0;
   const advance = advanceOrLazy < 0 ? measure.charAdvance(ch, run) : advanceOrLazy;
   const advHang = (advCode / 1000) * advance;
@@ -491,7 +507,7 @@ function leadingProtrusion(
   if (table === false) return 0;
   const mark = firstCodePoint(text);
   const inkOnly = run.protrudeInkOnly === true && measure.inkBearings !== undefined;
-  if (inkOnly || (protrusionCodes(table, mark)?.l ?? 0) < 1000) {
+  if (inkOnly || (protrusionCodes(table, renderedChar(mark, run))?.l ?? 0) < 1000) {
     return protrusionHang(table, measure, mark, run, LAZY_ADVANCE, "l");
   }
   const tail = text.slice(mark.length);
@@ -534,7 +550,7 @@ function trailingProtrusion(
   if (table === false) return 0;
   const mark = lastCodePoint(text);
   const inkOnly = run.protrudeInkOnly === true && measure.inkBearings !== undefined;
-  if (inkOnly || (protrusionCodes(table, mark)?.r ?? 0) < 1000) {
+  if (inkOnly || (protrusionCodes(table, renderedChar(mark, run))?.r ?? 0) < 1000) {
     return protrusionHang(table, measure, mark, run, LAZY_ADVANCE, "r");
   }
   const head = text.slice(0, text.length - mark.length);

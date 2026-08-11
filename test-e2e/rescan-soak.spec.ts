@@ -38,7 +38,7 @@ const CHANGES = [
   ["word-spacing", ["normal", "1px"]],
   // Ineligible while set: the paragraph must go back to native rendering and
   // come back when it is lifted.
-  ["text-transform", ["none", "none", "uppercase"]],
+  ["text-transform", ["none", "none", "capitalize"]],
   ["white-space", ["normal", "normal", "pre-line"]],
 ] as const;
 
@@ -271,7 +271,7 @@ test("the drop-in survives randomised author CSS churn", async ({ page }) => {
     ".col p { line-height: 1.8 }",
     ".col p { text-indent: 22px }",
     ".col p { word-spacing: 1px }",
-    "#plain { text-transform: uppercase }",
+    "#plain { text-transform: capitalize }",
     "#plain { white-space: pre-line }",
     ".col { width: 240px }",
     "",
