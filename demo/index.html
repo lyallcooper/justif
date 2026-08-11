@@ -729,6 +729,28 @@
     font-family: var(--sc-family), var(--demo-family, "Junicode"), serif;
     font-variant-caps: normal;
   }
+  /* Synthesised small caps are capitals scaled to 0.7 of cap height (0.8 in
+     Firefox), so their stems land ~25% lighter than the lowercase beside them
+     and they carry none of the tracking drawn small caps always have. Weight
+     goes back on the wght axis rather than through font-weight: variable faces
+     respond, static ones ignore it, and nothing can promote Courier Prime to
+     its real bold. 460 is the value with the smallest worst-case error over
+     both engines and every variable face here, measured by comparing small-cap
+     stems against the lowercase beside them: it lands them within 12%, against
+     a 21–25% deficit uncompensated, and never more than 7% heavy. Height is
+     left alone, because the engines disagree about it (Firefox's 0.8 is close
+     to right, Chromium's 0.7 is not) and a correction tuned for one would
+     overshoot in the other. */
+  body.synth-smcp .article .smcp {
+    font-variation-settings: "wght" 460;
+  }
+  /* Tracking, but never in a monospace article: letterspacing part of a line
+     would break the fixed advance the face exists for. Iosevka and Courier
+     Prime are also static, so nothing compensates them at all — their
+     synthesis stands as the browser drew it. */
+  body.synth-smcp:not(.mono-body) .article .smcp {
+    letter-spacing: 0.05em;
+  }
   /* Figures are left to each face's own default, which for the book serifs
      here means oldstyle. EB Garamond is the exception: its default set is
      tabular lining, spaced for columns of numbers rather than for the middle
@@ -3048,6 +3070,43 @@ await controller.ready;</code></pre>
   // Faces whose own default figures are wrong for prose; see the
   // .oldstyle-figures rule.
   const OLDSTYLE_FIGURES = new Set(["'EB Garamond'"]);
+  // Faces that draw their own small caps. Everything else falls to the
+  // browser's synthesis and gets the .synth-smcp compensation. Kept in step
+  // with tools/fonts/build.py, which decides which subsets keep smcp. Source
+  // Serif's italic has none of its own, so italic small caps there synthesise
+  // uncompensated; no sample sets one.
+  const SMCP_FAMILIES = new Set([
+    "'Junicode'", "'Coelacanth'", "'EB Garamond'", "'Alegreya'",
+    "'Source Serif 4'", "'Roboto Slab'",
+  ]);
+  // The system stacks are whatever the platform has — macOS resolves
+  // system-ui to a face with real small caps, most others do not — so they are
+  // probed instead of listed. font-feature-settings applies smcp without ever
+  // synthesising it, so a width change means the feature is really there. That
+  // test cannot work for a monospace face, whose advances are all equal by
+  // construction, which is why the fonts we ship are listed above instead.
+  const realSmallCaps = new Map();
+  function hasRealSmallCaps(family) {
+    if (SMCP_FAMILIES.has(family)) return true;
+    if (family.startsWith("'")) return false;
+    let known = realSmallCaps.get(family);
+    if (known === undefined) {
+      const widthWith = (features) => {
+        const probe = document.createElement("span");
+        probe.style.cssText =
+          `position:absolute;visibility:hidden;white-space:pre;font:400 40px ${family};` +
+          `font-feature-settings:${features}`;
+        probe.textContent = "nasa";
+        document.body.append(probe);
+        const width = probe.getBoundingClientRect().width;
+        probe.remove();
+        return width;
+      };
+      known = Math.abs(widthWith("normal") - widthWith('"smcp" 1')) > 0.5;
+      realSmallCaps.set(family, known);
+    }
+    return known;
+  }
   const fontLoads = new Map();
 
   // A font is fetched before it can replace the current article face. This
@@ -3660,6 +3719,11 @@ await controller.ready;</code></pre>
     document.body.classList.toggle("sc-family", scFamily !== undefined);
     if (scFamily !== undefined) document.body.style.setProperty("--sc-family", scFamily);
     document.body.classList.toggle("oldstyle-figures", OLDSTYLE_FIGURES.has(family));
+    // A companion caps family is a real design and needs no compensation.
+    document.body.classList.toggle(
+      "synth-smcp",
+      scFamily === undefined && !hasRealSmallCaps(family),
+    );
 
     controller?.destroy();
     controller = justify(enhanced.querySelectorAll("p"), {
