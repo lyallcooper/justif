@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Fixed-width Unicode spaces — en space, em space, thin space and the rest of
+  the Unicode space separators — now survive justification. They used to be
+  replaced with ordinary spaces, so copying justified text gave back different
+  characters than the page showed, and the spacing an author chose was lost.
+  They now keep their character and their width, a line never begins with one,
+  and a run of them stays together when a line wraps.
+- Paragraphs containing U+2028 or U+2029 are now left to the browser. Safari
+  treats them as forced line breaks, which could split a line apart after
+  justification had already finished.
 - Hanging punctuation no longer shifts the text it sits beside. A hung mark now
   clears the margin completely, and the character next to it keeps the optical
   alignment it would have had on its own.

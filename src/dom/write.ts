@@ -42,10 +42,13 @@ export interface RenderSegment {
    * Includes synthetic NBSP used to keep run-boundary glue unbreakable;
    * excludes author U+00A0/U+202F, which remain fixed box content. */
   adjustableSpaceCount: number;
-  /** False for an own-segment author no-break-space box. A correction to
-   * the segment's inherited letter-spacing would move those fixed spaces,
+  /** False for an own-segment fixed-space box. A correction to the segment's
+   * inherited letter-spacing would change the separator's authored advance,
    * so drift must be absorbed by other segments on the line. */
   allowLetterCorrection: boolean;
+  /** Prevent the browser inventing a wrap after a fixed-space segment when
+   * the line model kept the following box on this same line. */
+  weldEnd?: boolean;
   /** Absolute letter-spacing (author's + letterfit tracking), or null to
    * inherit the author's value untouched (tracking inactive on this line). */
   letterSpacingPx: number | null;
@@ -189,8 +192,12 @@ const SHEET_TEXT =
   // place: Firefox follows UAX14 in refusing to break a hyphen-digit
   // pair, so the ZWSP stays load-bearing.
   '.justif-break::after{content:"\u200B"}' +
+  // A generated WORD JOINER preserves source text while suppressing the
+  // fixed separator's native break at an unchosen same-line boundary.
+  '.justif-weld-end::after{content:"\u2060"}' +
   '@supports (content:"-" / ""){.justif-hyphen::after{content:"-" / ""}' +
-  '.justif-break::after{content:"\u200B" / ""}}';
+  '.justif-break::after{content:"\u200B" / ""}' +
+  '.justif-weld-end::after{content:"\u2060" / ""}}';
 
 /**
  * Pin rendered text to the CSS font size. iOS Safari's automatic text
@@ -446,7 +453,8 @@ export function writeParagraph(
       continue;
     }
     const el = doc.createElement("span");
-    el.className = "justif-seg";
+    el.className =
+      segment.weldEnd === true ? "justif-seg justif-weld-end" : "justif-seg";
     disableTextAutosizing(el);
     // Always written (even "0px"): an inherited word-spacing from ancestor
     // CSS must not leak into a segment whose computed adjustment is zero.
@@ -480,7 +488,10 @@ export function writeParagraph(
     if (segment.physicalEndHangPx !== undefined && segment.physicalEndHangPx > 0) {
       const clusters = graphemes(segment.text);
       let end = clusters.length - 1;
-      while (end >= 0 && /^\s+$/u.test(clusters[end]!)) end--;
+      // Only collapsible source spaces are layout glue. Fixed-width Unicode
+      // separators are real box glyphs and can themselves be the character
+      // whose full advance hangs at the line end.
+      while (end >= 0 && clusters[end] === " ") end--;
       const hanging = clusters[end];
       if (hanging === undefined) el.textContent = segment.text;
       else {

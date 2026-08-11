@@ -18,6 +18,9 @@ set("wFLTZS", 9);
 set("ABCDEGHKNPRUVXY", 10);
 set("mMOQW", 12);
 set("0123456789", 8);
+set("\u2002", 8);
+set("\u2003", 16);
+set("\u2007", 8);
 
 export function charWidth(ch: string): number {
   return WIDTHS[ch] ?? 8;

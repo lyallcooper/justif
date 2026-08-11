@@ -8,8 +8,9 @@ import {
   INF_PENALTY,
   maxEndingStretch,
 } from "./badness.js";
-import { breakRp, endingFloorRatio } from "./items.js";
+import { breakEndBox, endingFloorRatio, rpAt } from "./items.js";
 import {
+  type Box,
   type BreakOptions,
   type BreakResult,
   ItemType,
@@ -300,11 +301,15 @@ function renderedEndingWidth(
   if (startItem !== undefined && startItem.type === ItemType.Box) {
     L -= line === 0 ? startItem.lpFirst : startItem.lp;
   }
-  L -= breakRp(items, b);
+  const endBox = breakEndBox(para, b);
+  L -= rpAt(items[b]!, endBox);
   const need = minWidth * lineWidthAt(widths, line) - L;
   if (need <= 0) return L;
   const trackY = cumTrackY[b]! - cumTrackY[start]!;
-  const glueOnly = Math.max(0, cumY[b]! - cumY[start]! - trackY);
+  const glueOnly = Math.max(
+    0,
+    cumY[b]! - cumY[start]! - trackY - (endBox?.hangStretch ?? 0),
+  );
   const flexY = trackY + (cumExpY[b]! - cumExpY[start]!);
   return endingFloorRatio(need, glueOnly, flexY, maxEndingStretch(minWidth)) !== null
     ? L + need
@@ -346,6 +351,7 @@ function attempt(
 ): Node | null {
   const { tolerance, hyphens: allowHyphens, extraStretch, rescue, strictEnding } = mode;
   const { items, cumW, cumY, cumYfil, cumZ, cumExpY, cumExpZ, cumTrackY, firstBoxAfter } = para;
+  const { lastBoxBefore } = para;
   const n = items.length;
 
   /** lineWidthAt + the box-at-start protrusion credit, resolved once per
@@ -426,7 +432,16 @@ function attempt(
     } else {
       continue;
     }
-    const rp = breakRp(items, b);
+    // One resolution of the line-ending box serves all three of its
+    // break-dependent credits; walking back separately for each measured 3–7%
+    // of breaker throughput on text with no fixed-width separators at all.
+    const lastBox = lastBoxBefore[b]!;
+    // `lastBoxBefore` indexes boxes by construction (see withSums); the cast
+    // keeps a per-breakpoint type test out of the loop.
+    const endBox = lastBox < 0 ? undefined : (items[lastBox] as Box);
+    const rp = rpAt(it, endBox);
+    const hangStretch = endBox?.hangStretch ?? 0;
+    const hangShrink = endBox?.hangShrink ?? 0;
 
     const forced = it.type === ItemType.Penalty && it.penalty <= -INF_PENALTY;
 
@@ -440,9 +455,9 @@ function attempt(
     // widths × thresholds found ~3% of paragraphs choosing different breaks
     // from exactly that re-association, with the whole test suite still green.
     const wB = cumW[b]!;
-    const yB = cumY[b]!;
+    const yB = cumY[b]! - hangStretch;
     const yFilB = cumYfil[b]!;
-    const zB = cumZ[b]!;
+    const zB = cumZ[b]! - hangShrink;
     const eyB = cumExpY[b]!;
     const ezB = cumExpZ[b]!;
     const tyB = cumTrackY[b]!;

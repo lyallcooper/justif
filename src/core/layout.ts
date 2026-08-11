@@ -1,5 +1,5 @@
 import { maxEndingStretch } from "./badness.js";
-import { breakRp, endingFloorRatio } from "./items.js";
+import { breakEndBox, endingFloorRatio, rpAt } from "./items.js";
 import {
   type Box,
   type BreakResult,
@@ -111,14 +111,17 @@ export function layoutLines(
       leftHang = i === 0 ? startItem.lpFirst : startItem.lp;
     }
 
-    const rightHang = breakRp(items, b);
+    const endBox = breakEndBox(para, b);
+    const rightHang = rpAt(it, endBox);
+    const hangStretch = endBox?.hangStretch ?? 0;
+    const hangShrink = endBox?.hangShrink ?? 0;
     const penWidth = isPenalty ? it.width : 0;
 
     const L = cumW[b]! - cumW[start]! + penWidth - leftHang - rightHang;
     const W = lineWidthAt(widths, i);
-    const Yg = cumY[b]! - cumY[start]!;
+    const Yg = cumY[b]! - cumY[start]! - hangStretch;
     const Yfil = cumYfil[b]! - cumYfil[start]!;
-    const Zg = cumZ[b]! - cumZ[start]!;
+    const Zg = cumZ[b]! - cumZ[start]! - hangShrink;
     const Ye = cumExpY[b]! - cumExpY[start]!;
     const Ze = cumExpZ[b]! - cumExpZ[start]!;
     const Yt = cumTrackY[b]! - cumTrackY[start]!;
@@ -241,7 +244,7 @@ export function layoutLines(
         } else if (fitTarget < 0) {
           // The floor also binds a fit-shrunk ending: negative ratios
           // render against the SHRINK pool, so the bound converts there.
-          const Zfil = cumZ[b]! - cumZ[start]!;
+          const Zfil = cumZ[b]! - cumZ[start]! - hangShrink;
           if (Zfil > 0) fitTarget = Math.max(fitTarget, need / Zfil);
         }
       }

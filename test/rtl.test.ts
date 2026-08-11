@@ -64,6 +64,13 @@ describe("textSupported (RTL scope decisions)", () => {
     }
   });
 
+  it("bails on Unicode line and paragraph separators", () => {
+    expect(textSupported("one\u2028two", "ltr")).toBe(false);
+    expect(textSupported("one\u2029two", "ltr")).toBe(false);
+    expect(textSupported(`שלום\u2028עולם`, "rtl")).toBe(false);
+    expect(textSupported(`שלום\u2029עולם`, "rtl")).toBe(false);
+  });
+
   it("accepts CJK in LTR (supported) but bails on CJK inside RTL", () => {
     expect(textSupported("漢字テキスト", "ltr")).toBe(true);
     expect(textSupported("שלום 漢字", "rtl")).toBe(false);

@@ -143,6 +143,13 @@ export interface Box {
   lpFirst: number;
   /** Protrusion credit (px) if this box ends a line. */
   rp: number;
+  /** Stretch/shrink belonging to collapsible spaces included in a trailing
+   * whitespace run. Excluded only when this box actually ends the line.
+   * Always written (zero for the overwhelming majority of boxes) so the whole
+   * box stream keeps one hidden class: the breaker reads both at every
+   * breakpoint, and an absent field there costs more than the field does. */
+  hangStretch: number;
+  hangShrink: number;
   /** This is the actual final box of a painted inline. Renderers use the
    * marker (independent of rp, which may legitimately be zero) to keep
    * wrap-safety margins outside the decoration instead of pinching it. */
@@ -155,6 +162,12 @@ export interface Box {
    * ratio as glue. Rendered as per-segment letter-spacing. */
   trackStretch: number;
   trackShrink: number;
+  /** A fixed-width CSS "other space separator" emitted as its own box. It
+   * remains real source text rather than becoming inter-word glue. If a
+   * following penalty is chosen, the renderer already owns the character at
+   * the end of this box and must emit a zero-width joint rather than inserting
+   * an ordinary space. */
+  otherSpace?: boolean;
   /** Inline padding/border px folded into `width` (RunText extras). The
    * glyph run's own advance is width − padPx: expansion gain must scale
    * only the glyphs, never the box decorations. */
@@ -185,6 +198,9 @@ export interface Glue {
    * segment — with fully shrinkable interior spaces.
    */
   rigid?: boolean;
+  /** This collapsible space is immediately followed by a fixed-width space.
+   * If that separator run ends the line, CSS hangs this glue with it. */
+  fixedSpaceInitial?: boolean;
 }
 
 export interface Penalty {
@@ -208,6 +224,8 @@ export interface Penalty {
    * rendering the space they consumed.
    */
   cjk?: boolean;
+  /** Soft-wrap boundary after a complete fixed-width separator run. */
+  fixedSpace?: boolean;
 }
 
 export type Item = Box | Glue | Penalty;
@@ -382,6 +400,11 @@ export interface ParagraphItems {
   cumTrackY: Float64Array;
   /** Index of the first box at or after item i (items.length if none). */
   firstBoxAfter: Int32Array;
+  /** Index of the last box STRICTLY BEFORE item i (−1 if none). A break at i
+   * inherits that box's protrusion and hang flex, so the breaker resolves it
+   * at every breakpoint; precomputing turns the walk back over penalties and
+   * glue into one array read. */
+  lastBoxBefore: Int32Array;
 }
 
 /** Target width per line index (constant, or varying e.g. for text-indent). */

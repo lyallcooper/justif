@@ -90,12 +90,15 @@ const DIGIT = /\p{Nd}/u;
  */
 const NEAR_PROHIBITIVE_PENALTY = 9999;
 
-/**
- * Breakable whitespace: everything \s matches EXCEPT no-break spaces
- * (U+00A0, U+202F), which stay inside boxes — unbreakable and unstretchable,
- * as the author intended.
- */
-const BREAKABLE_SPLIT = /([^\S\u00A0\u202F]+)/;
+/** A normal soft-wrap opportunity after a fixed-width separator run. */
+const FIXED_SPACE_BREAK_PENALTY = 0;
+
+/** Fixed-width Unicode Zs characters CSS calls "other space separators".
+ * These retain their source character and intrinsic advance. U+202F NARROW
+ * NO-BREAK SPACE deliberately remains inside its surrounding no-break box,
+ * alongside U+00A0, to preserve shaping and run-boundary protection. */
+const TEXT_SEPARATOR_SPLIT =
+  /([\u0009\u000A\u000D\u0020]+|[\u1680\u2000-\u200A\u205F\u3000])/;
 
 /**
  * A necessary condition for CJK_CHAR.test, decided by one charCodeAt scan.
@@ -117,11 +120,11 @@ function mayBeCJK(text: string): boolean {
 /**
  * Whether `text` can produce at least one Box under this module's tokenizer.
  * Shared with the DOM reader so padded/painted edge ownership cannot drift
- * on no-break spaces (JS `\s` includes U+00A0 and U+202F; we intentionally
- * keep both inside boxes).
+ * on fixed and no-break spaces. Only CSS document whitespace and soft hyphens
+ * fail to make a box here.
  */
 export function textMakesBox(text: string): boolean {
-  return /[^\s\u00AD]|[\u00A0\u202F]/u.test(text);
+  return /[^\u0009\u000A\u000D\u0020\u00AD]/u.test(text);
 }
 
 /**
@@ -129,17 +132,46 @@ export function textMakesBox(text: string): boolean {
  * hyphen's for width-carrying penalties, otherwise the line's LAST BOX —
  * found by walking back over unbroken penalties and glue, so the paragraph-
  * final box protrudes past the parfillskip tail too (a full last line's
- * period must hang like any other line's). Shared by the breaker and
- * layoutLines so the two can never drift.
+ * period must hang like any other line's).
+ *
+ * This is the walking form, for callers holding a bare item array. The
+ * breaker and layoutLines hold a ParagraphItems and take `breakEndBox` +
+ * `rpAt` instead, which is the same rule without the walk.
  */
 export function breakRp(items: readonly Item[], b: number): number {
-  const it = items[b]!;
-  if (it.type === ItemType.Penalty && it.width > 0) return it.rp;
+  let endBox: Box | undefined;
   for (let i = b - 1; i >= 0; i--) {
     const prev = items[i]!;
-    if (prev.type === ItemType.Box) return prev.rp;
+    if (prev.type === ItemType.Box) {
+      endBox = prev;
+      break;
+    }
   }
-  return 0;
+  return rpAt(items[b]!, endBox);
+}
+
+/**
+ * The box a break at `b` inherits from — its right protrusion, and the hang
+ * flex of any trailing whitespace sequence it absorbed. Undefined only ahead
+ * of the paragraph's first box. O(1) through `lastBoxBefore`, which is why
+ * the breaker's inner loop resolves the box once and reads all three values
+ * off it rather than walking back three times.
+ */
+export function breakEndBox(para: ParagraphItems, b: number): Box | undefined {
+  const i = para.lastBoxBefore[b]!;
+  if (i < 0) return undefined;
+  const box = para.items[i]!;
+  return box.type === ItemType.Box ? box : undefined;
+}
+
+/**
+ * breakRp's rule, split out so the O(1) and walking forms cannot drift: a
+ * width-carrying penalty hangs its own materialized hyphen, everything else
+ * hangs the line's last box.
+ */
+export function rpAt(it: Item, endBox: Box | undefined): number {
+  if (it.type === ItemType.Penalty && it.width > 0) return it.rp;
+  return endBox === undefined ? 0 : endBox.rp;
 }
 
 /**
@@ -644,6 +676,8 @@ export function buildItems(
       lp,
       lpFirst,
       rp,
+      hangStretch: 0,
+      hangShrink: 0,
       expStretch,
       expShrink,
       trackStretch,
@@ -768,17 +802,27 @@ export function buildItems(
    *
    * `dashInitial` says the box about to follow this space opens with a dash,
    * which earns the space a steep but finite penalty instead
-   * (NEAR_PROHIBITIVE_PENALTY). All three prohibitions work the same way: a
-   * penalty item in FRONT of the glue, which retires the glue's own break
-   * point (the breaker requires a preceding box) and substitutes its own
-   * price. Breaking at that penalty discards the glue, so the rare line that
-   * pays the price still renders its space — segments.ts gives a break at a
-   * hand-built pre-glue penalty the "space" joint for exactly this reason.
+   * (NEAR_PROHIBITIVE_PENALTY). `fixedSpaceInitial` absolutely forbids a
+   * break that would put a fixed-width space at the start of a line. All
+   * three prohibitions work the same way: a penalty item in FRONT of the
+   * glue, which retires the glue's own break point (the breaker requires a
+   * preceding box) and substitutes its own price. Breaking at that penalty
+   * discards the glue, so the rare line that pays the dash price still
+   * renders its space — segments.ts gives a break at a hand-built pre-glue
+   * penalty the "space" joint for exactly this reason.
    */
-  const flushPendingSpace = (nextRun: number, dashInitial = false): void => {
+  const flushPendingSpace = (
+    nextRun: number,
+    dashInitial = false,
+    fixedSpaceInitial = false,
+  ): void => {
     if (pendingSpaceRun >= 0 && hasBox) {
       const space = runs[pendingSpaceRun]!.space;
-      if (pendingLeadingSpace || (pieceKey !== undefined && pieceKey === lastBoxKey)) {
+      if (
+        pendingLeadingSpace ||
+        fixedSpaceInitial ||
+        (pieceKey !== undefined && pieceKey === lastBoxKey)
+      ) {
         pushPenalty(INF_PENALTY, 0, false, false, 0, pendingSpaceRun);
       } else if (dashInitial) {
         pushPenalty(NEAR_PROHIBITIVE_PENALTY, 0, false, false, 0, pendingSpaceRun);
@@ -798,6 +842,7 @@ export function buildItems(
         run: pendingSpaceRun,
         rigid:
           !pendingLeadingSpace && boundary && opts.boundaryShrink < 1 ? true : undefined,
+        fixedSpaceInitial: fixedSpaceInitial || undefined,
       } satisfies Glue);
     }
     pendingSpaceRun = -1;
@@ -903,6 +948,71 @@ export function buildItems(
           runIndex,
         );
       }
+    }
+  };
+
+  /** Emit one fixed-width CSS other-space separator as source-preserving box
+   * text. Under white-space: normal, a trailing run hangs: its characters and
+   * advances remain measurable, but the complete run is excluded from line
+   * fitting and justification. Unicode forbids a break before a fixed-width
+   * separator, so adjacent separators expose one opportunity after the run.
+   */
+  const pushOtherSpace = (
+    separator: string,
+    runIndex: number,
+    exclusion: Exclusion | null,
+  ): void => {
+    const run = runs[runIndex]!;
+    flushPendingSpace(runIndex, false, true);
+    const precedingItem = items[items.length - 1];
+    const leadingGlue =
+      precedingItem?.type === ItemType.Glue && precedingItem.fixedSpaceInitial === true
+        ? precedingItem
+        : undefined;
+    const precedingBox =
+      precedingItem?.type === ItemType.Penalty && precedingItem.fixedSpace === true
+        ? items[items.length - 2]
+        : precedingItem;
+    // Discovering another fixed separator removes the provisional boundary.
+    // The new last box inherits the complete run's hang width.
+    if (
+      precedingItem?.type === ItemType.Penalty &&
+      precedingItem.fixedSpace === true &&
+      precedingBox?.type === ItemType.Box &&
+      precedingBox.otherSpace === true
+    ) {
+      items.pop();
+    }
+    const { flowText, flowExclusion } = excludeFlow(separator, 0, exclusion);
+    const width = measure.width(flowText, run);
+    const box = makeBox(separator, runIndex, width, flowText, flowExclusion);
+    box.otherSpace = true;
+    box.rp =
+      width +
+      (precedingBox?.type === ItemType.Box && precedingBox.otherSpace === true
+        ? precedingBox.rp
+        : 0) +
+      (leadingGlue?.width ?? 0);
+    box.hangStretch =
+      (precedingBox?.type === ItemType.Box && precedingBox.otherSpace === true
+        ? precedingBox.hangStretch
+        : 0) + (leadingGlue?.stretch ?? 0);
+    box.hangShrink =
+      (precedingBox?.type === ItemType.Box && precedingBox.otherSpace === true
+        ? precedingBox.hangShrink
+        : 0) + (leadingGlue?.shrink ?? 0);
+    emitBox(box, runIndex);
+    if (pieceKey === undefined && separator !== "\u2007") {
+      items.push({
+        type: ItemType.Penalty,
+        penalty: FIXED_SPACE_BREAK_PENALTY,
+        width: 0,
+        flagged: false,
+        hyphen: false,
+        rp: 0,
+        run: runIndex,
+        fixedSpace: true,
+      } satisfies Penalty);
     }
   };
 
@@ -1041,13 +1151,11 @@ export function buildItems(
       pendingPaintedStart = true;
       pendingBoxStartProtrusion += piece.boxStartProtrusionPx;
     }
-    // BREAKABLE_SPLIT's sole capture group IS its whole pattern, so `split`
-    // emits strictly alternating non-separator / separator entries — text,
-    // whitespace run, text, … — beginning and ending with a (possibly empty)
-    // non-separator. ODD indices are therefore exactly the whitespace runs,
-    // which is a total classification, not a heuristic: an even entry cannot
-    // contain breakable whitespace, because `+` makes each separator maximal.
-    const parts = text.split(BREAKABLE_SPLIT);
+    // Capturing split groups alternate with text. Separator entries are
+    // classified from their first code unit: fixed-width separators are
+    // single characters, while document-whitespace runs begin with one of
+    // the four characters CSS collapses under white-space: normal.
+    const parts = text.split(TEXT_SEPARATOR_SPLIT);
     let pieceOffset = 0;
     for (let pi = 0; pi < parts.length; pi++) {
       const part = parts[pi]!;
@@ -1055,9 +1163,24 @@ export function buildItems(
       const partStart = pieceOffset;
       pieceOffset = partStart + part.length;
       if ((pi & 1) === 1) {
-        if (hasBox) {
-          pendingSpaceRun = run;
-          pendingLeadingSpace = !hasFlowBox;
+        const separator = part.charCodeAt(0);
+        if (
+          separator === 0x09 ||
+          separator === 0x0a ||
+          separator === 0x0d ||
+          separator === 0x20
+        ) {
+          if (hasBox) {
+            pendingSpaceRun = run;
+            pendingLeadingSpace = !hasFlowBox;
+          }
+        } else {
+          const overlap = clipExclusion(
+            piece.flowExclusion,
+            partStart,
+            part.length,
+          );
+          pushOtherSpace(part, run, overlap);
         }
         continue;
       }
@@ -1130,9 +1253,12 @@ export function withSums(items: Item[], runs: readonly RunMetrics[]): ParagraphI
   const cumExpZ = new Float64Array(n + 1);
   const cumTrackY = new Float64Array(n + 1);
   const firstBoxAfter = new Int32Array(n + 1);
+  const lastBoxBefore = new Int32Array(n + 1);
+  lastBoxBefore[0] = -1;
 
   for (let i = 0; i < n; i++) {
     const it = items[i]!;
+    lastBoxBefore[i + 1] = it.type === ItemType.Box ? i : lastBoxBefore[i]!;
     let w = 0, y = 0, yFil = 0, z = 0, ey = 0, ez = 0, ty = 0;
     if (it.type === ItemType.Box) {
       w = it.width;
@@ -1175,5 +1301,6 @@ export function withSums(items: Item[], runs: readonly RunMetrics[]): ParagraphI
     cumExpZ,
     cumTrackY,
     firstBoxAfter,
+    lastBoxBefore,
   };
 }

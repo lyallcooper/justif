@@ -54,6 +54,74 @@ describe("buildItems", () => {
     expect(shape(para.items)).toBe("box(one) glue box(two) pen(10000) fil pen(-10000)");
   });
 
+  it("preserves fixed-width space separators as measured boxes", () => {
+    const para = build("one\u2002two\u2003three", { protrusion: {} });
+    expect(shape(para.items)).toBe(
+      "box(one) box(\u2002) pen(0) box(two) box(\u2003) pen(0) box(three) pen(10000) fil pen(-10000)",
+    );
+    const spaces = para.items.filter(
+      (item) => item.type === ItemType.Box && item.otherSpace === true,
+    );
+    expect(spaces).toHaveLength(2);
+    expect(spaces[0]).toMatchObject({ text: "\u2002", width: 8, rp: 8 });
+    expect(spaces[1]).toMatchObject({ text: "\u2003", width: 16, rp: 16 });
+    const breaks = para.items.filter(
+      (item) => item.type === ItemType.Penalty && item.fixedSpace === true,
+    );
+    expect(breaks).toHaveLength(2);
+  });
+
+  it("hangs fixed-width spaces independently of optical protrusion", () => {
+    const para = build("one\u2003two", { protrusion: false });
+    const space = para.items.find(
+      (item) => item.type === ItemType.Box && item.otherSpace === true,
+    );
+    expect(space).toMatchObject({ text: "\u2003", width: 16, rp: 16 });
+  });
+
+  it("guards an ordinary-space break before a fixed-width separator", () => {
+    const para = build("AAAA \u2003BBBB");
+    expect(shape(para.items)).toBe(
+      "box(AAAA) pen(10000) glue box(\u2003) pen(0) box(BBBB) pen(10000) fil pen(-10000)",
+    );
+    const glue = para.items.find(
+      (item) => item.type === ItemType.Glue && item.fixedSpaceInitial === true,
+    );
+    const space = para.items.find(
+      (item) => item.type === ItemType.Box && item.otherSpace === true,
+    );
+    expect(glue).toMatchObject({ width: 4, stretch: 2, shrink: 4 / 3 });
+    expect(space).toMatchObject({ rp: 20, hangStretch: 2, hangShrink: 4 / 3 });
+  });
+
+  it("hangs an adjacent fixed-width separator run at its final boundary", () => {
+    const para = build("one\u2003\u2003two");
+    expect(shape(para.items)).toContain("box(\u2003) box(\u2003) pen(0)");
+    const spaces = para.items.filter(
+      (item) => item.type === ItemType.Box && item.otherSpace === true,
+    );
+    expect(spaces[0]).toMatchObject({ width: 16, rp: 16 });
+    expect(spaces[1]).toMatchObject({ width: 16, rp: 32 });
+  });
+
+  it("keeps figure and narrow no-break spaces unbreakable", () => {
+    const para = build("one\u2007two\u202Fthree");
+    expect(shape(para.items)).toBe(
+      "box(one) box(\u2007) box(two\u202Fthree) pen(10000) fil pen(-10000)",
+    );
+    const spaces = para.items.filter(
+      (item) => item.type === ItemType.Box && item.otherSpace === true,
+    );
+    expect(spaces).toHaveLength(1);
+  });
+
+  it("keeps engine-divergent control whitespace inside measured boxes", () => {
+    const para = build("one\u000Btwo\u000Cthree");
+    expect(shape(para.items)).toBe(
+      "box(one\u000Btwo\u000Cthree) pen(10000) fil pen(-10000)",
+    );
+  });
+
   it("joins words split across runs without glue", () => {
     const para = buildItems(
       [
@@ -647,6 +715,7 @@ describe("inline box extras (padding/border)", () => {
   it("shares box-worthiness with the tokenizer for no-break spaces", () => {
     expect(textMakesBox(" \t\n\u00AD")).toBe(false);
     expect(textMakesBox("\u00A0")).toBe(true);
+    expect(textMakesBox("\u2003")).toBe(true);
     expect(textMakesBox("\u202F")).toBe(true);
   });
 

@@ -4,6 +4,7 @@
  * No lifecycle, no state — index.ts stays plumbing.
  */
 import { CJK_CHAR } from "../core/cjk.js";
+import { breakEndBox } from "../core/items.js";
 import { opticalCandidates, opticalFontKey, opticalProtrusion } from "./optical.js";
 import {
   composeProtrusion,
@@ -432,9 +433,11 @@ export function buildRenderSegments(
     let hasCJK = false;
     let boxChars = 0;
     let adjustableSpaceCount = 0;
-    /** True only while flushing one Box that contains author U+00A0/U+202F.
-     * Such a box owns a segment so line glue never leaks into its spaces. */
-    let fixedNoBreakBox = false;
+    /** True only while flushing authored whitespace excluded from this line's
+     * adjustable glue. It owns a segment so correction cannot alter it. */
+    let fixedSpaceBox = false;
+    /** The current fixed segment ends in a breakable other-space separator. */
+    let weldFixedSeparator = false;
     /** This segment opens with a SYNTHETIC boundary NBSP — glue the model
      * prices as an ordinary space — rather than with author no-break text,
      * whose real advance the box measurement already sees. */
@@ -494,7 +497,7 @@ export function buildRenderSegments(
       // word-spacing and has no glue adjustment. Do not subtract `ls`: its
       // NBSPs are box characters, so inherited tracking legitimately
       // reaches them just like the model's boxChars/track flex.
-      const wordSpacing = fixedNoBreakBox
+      const wordSpacing = fixedSpaceBox
         ? spec.wordSpacingPx
         : desired(run, rigidFlex ?? undefined);
       const spacePx = spaceWidthIn(spec, () => scan.runs[run]!.text) * ratio + wordSpacing;
@@ -526,9 +529,10 @@ export function buildRenderSegments(
         floatedInnerStyle:
           floatedPrefix !== undefined ? srcRun.floatInnerStyle : undefined,
         ancestors: srcRun.ancestors,
-        wordSpacingPx: fixedNoBreakBox ? wordSpacing : wordSpacing - ls,
+        wordSpacingPx: fixedSpaceBox ? wordSpacing : wordSpacing - ls,
         adjustableSpaceCount,
-        allowLetterCorrection: !fixedNoBreakBox,
+        allowLetterCorrection: !fixedSpaceBox,
+        weldEnd: weldFixedSeparator,
         letterSpacingPx: ls !== 0 ? spec.letterSpacingPx + ls : null,
         resolvedLetterSpacingPx: spec.letterSpacingPx + ls,
         fontFeatureSettings: trackingFeatureSettings(spec, ls !== 0),
@@ -562,15 +566,42 @@ export function buildRenderSegments(
       hasCJK = false;
       boxChars = 0;
       adjustableSpaceCount = 0;
-      fixedNoBreakBox = false;
+      fixedSpaceBox = false;
+      weldFixedSeparator = false;
       leadingSyntheticNbsp = false;
       flowExclusion = undefined;
     };
 
+    let trailingHangGlue = -1;
+    const lineEndBox = breakEndBox(para, line.end);
+    if (
+      lineEndBox !== undefined &&
+      (lineEndBox.hangStretch > 0 || lineEndBox.hangShrink > 0)
+    ) {
+      let i = line.end - 1;
+      let candidate = para.items[i];
+      while (
+        i >= line.start &&
+        candidate?.type === ItemType.Box &&
+        candidate.otherSpace === true
+      ) {
+        i--;
+        candidate = para.items[i];
+      }
+      if (
+        i >= line.start &&
+        candidate?.type === ItemType.Glue &&
+        candidate.fixedSpaceInitial === true
+      ) {
+        trailingHangGlue = i;
+      }
+    }
+
     for (let i = line.start; i < line.end; i++) {
       const it = para.items[i]!;
       if (it.type === ItemType.Box) {
-        const ownFixedSegment = AUTHOR_NO_BREAK_SPACE.test(it.text);
+        const ownFixedSegment =
+          it.otherSpace === true || AUTHOR_NO_BREAK_SPACE.test(it.text);
         const firstChar = it.text[0] ?? "";
         if (fixedBoundary !== undefined) {
           const junction = fixedBoundary.lastChar + firstChar;
@@ -614,12 +645,25 @@ export function buildRenderSegments(
         if (!hasCJK && CJK_CHAR.test(it.text)) hasCJK = true;
         if (ownFixedSegment) {
           const boundary = { lastChar: it.text.slice(-1), run: it.run };
-          fixedNoBreakBox = true;
+          fixedSpaceBox = true;
+          weldFixedSeparator = it.otherSpace === true;
           flush();
           fixedBoundary = boundary;
         }
       } else if (it.type === ItemType.Glue) {
         fixedBoundary = undefined;
+        if (i === trailingHangGlue) {
+          // A collapsible space immediately before the trailing fixed run
+          // shares that run's hang when this boundary is selected.
+          // Render it at its authored width in a correction-proof segment;
+          // rightHang removes the complete sequence from line fitting.
+          flush();
+          run = it.run;
+          text = " ";
+          fixedSpaceBox = true;
+          flush();
+          continue;
+        }
         if (it.cjk === true) {
           // CJK inter-character glue: no source character to emit — its
           // flex is pooled and rendered as this segment's letter-spacing
@@ -692,6 +736,9 @@ export function buildRenderSegments(
     // component with physical spacing correction. The pad keeps the line
     // from re-wrapping before its (possibly deferred/parked) correction.
     if (last !== undefined) {
+      // The line's chosen break remains available. Only fixed separators
+      // followed by another box on this same modeled line need welding.
+      last.weldEnd = false;
       let endBox: Box | undefined;
       for (let i = line.end - 1; i >= line.start; i--) {
         const candidate = para.items[i]!;
@@ -767,7 +814,7 @@ export function buildRenderSegments(
       // copies (and render a visible gap), so they get the bare zero-width
       // joint. Explicit-hyphen breaks are flagged and keep the zero-width
       // joint below.
-      pendingJoint = brk.cjk === true ? "wbr" : "space";
+      pendingJoint = brk.cjk === true || brk.fixedSpace === true ? "wbr" : "space";
     } else pendingJoint = "wbr"; // zero-width flagged penalty (dash break)
   }
 

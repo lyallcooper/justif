@@ -336,6 +336,55 @@ describe("three-pass behavior", () => {
     );
   });
 
+  it("uses the normal soft-wrap boundary after a fixed-width space", () => {
+    const para = build("AAAA\u2003\u2002BBBB");
+    const wide = breakParagraph(para, 120, defaultBreakOptions);
+    expect(
+      wide.breakpoints.some((b) => {
+        const item = para.items[b];
+        return item?.type === ItemType.Penalty && item.fixedSpace === true;
+      }),
+    ).toBe(false);
+
+    const narrow = breakParagraph(para, 50, defaultBreakOptions);
+    expect(
+      narrow.breakpoints.some((b) => {
+        const item = para.items[b];
+        return item?.type === ItemType.Penalty && item.fixedSpace === true;
+      }),
+    ).toBe(true);
+    const lines = layoutLines(para, narrow, 50, defaultBuildOptions);
+    expect(lines.map((line) => lineText(para, line))).toEqual([
+      "AAAA\u2003\u2002",
+      "BBBB",
+    ]);
+    expect(lines[0]!.rightHang).toBe(24);
+  });
+
+  it("hangs collapsible whitespace immediately before a trailing fixed run", () => {
+    const para = build("AAAA \u2003BBBB");
+    const result = breakParagraph(para, 50, defaultBreakOptions);
+    const lines = layoutLines(para, result, 50, defaultBuildOptions);
+
+    expect(lines.map((line) => lineText(para, line))).toEqual([
+      "AAAA \u2003",
+      "BBBB",
+    ]);
+    expect(lines[0]).toMatchObject({ rightHang: 20, glueRatio: 0 });
+  });
+
+  it("prices hang flex consistently at a later glue break", () => {
+    const para = build("charlie delta \u2007 BBBB");
+    const result = breakParagraph(para, 75, defaultBreakOptions);
+    const lines = layoutLines(para, result, 75, defaultBuildOptions);
+
+    expect(lines.some((line) => lineText(para, line).includes("\u2007"))).toBe(true);
+    for (let i = 0; i < lines.length; i++) {
+      expect(lines[i]!.overfull).toBe(result.overfull[i]);
+      if (!result.overfull[i]) expect(lines[i]!.overflowPx).toBe(0);
+    }
+  });
+
   it("sets an unbreakable over-measure word on its own line, not with its neighbors", () => {
     // "Wwwwwwwwwwwwwwww" = 12 + 15·9 = 147 > W = 100; everything around it
     // fits. The rescue seeding must originate at the break nearest the
@@ -970,6 +1019,8 @@ describe("degenerate inputs and option edge cases", () => {
 
 describe("layout algebra", () => {
   it("sets each justified line flush: boxes + adjusted glue == target width", () => {
+    // This fixture has no hung fixed-width separators. Their excluded flex
+    // must be subtracted from this raw item sum before comparing widths.
     const para = build(frogKing);
     const result = breakParagraph(para, 300, defaultBreakOptions);
     const lines = layoutLines(para, result, 300, defaultBuildOptions);

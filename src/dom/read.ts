@@ -188,6 +188,10 @@ const NON_RTL_LETTER = /(?![\p{Script=Hebrew}\p{Script=Arabic}])\p{L}/u;
  * neutrals/digits has no anchor for its direction; leave it native. */
 const RTL_LETTER = /[\p{Script=Hebrew}\p{Script=Arabic}]/u;
 
+/** WebKit renders these as forced breaks even inside white-space: nowrap,
+ * which can split a segment after line breaking has already completed. */
+const FORCED_LINE_SEPARATORS = /[\u2028\u2029]/;
+
 /**
  * Pure text-level support decision for a paragraph of the given computed
  * direction (exported for unit tests). RTL scope is deliberately narrow:
@@ -201,6 +205,7 @@ const RTL_LETTER = /[\p{Script=Hebrew}\p{Script=Arabic}]/u;
  */
 export function textSupported(text: string, direction: "ltr" | "rtl"): boolean {
   if (BIDI_CONTROLS.test(text)) return false;
+  if (FORCED_LINE_SEPARATORS.test(text)) return false;
   if (UNSUPPORTED_SCRIPTS.test(text)) return false;
   if (direction === "rtl") {
     if (NON_RTL_LETTER.test(text)) return false;
@@ -1288,7 +1293,7 @@ export function readParagraph(p: HTMLElement, batch?: ScanBatch): ParagraphScan 
   if (runs.length === 0 && hardBreaks.length === 0) return "no text content";
   const text = runs.map((r) => r.text).join("");
   if (text.length > 0 && !textSupported(text, direction)) {
-    return "unsupported text (bidi controls, mixed direction, or a script without break support)";
+    return "unsupported text (forced separators, bidi controls, mixed direction, or a script without break support)";
   }
 
   const fragments = fragmentBoxesOf(p, cs);

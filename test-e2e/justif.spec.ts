@@ -4758,6 +4758,408 @@ test("author NBSPs survive copy cleanup", async ({ page }) => {
   expect(r.plain).not.toContain("\u2060");
 });
 
+test("fixed-width Unicode spaces retain their text and native advances", async ({
+  page,
+}) => {
+  const source =
+    "Alpha\u2002beta marks an en space while gamma\u2003delta marks an em space " +
+    "inside a paragraph long enough to require several carefully justified lines. " +
+    "Two adjacent marks remain visible here:\u2003\u2003and figure\u2007space plus " +
+    "narrow\u202Fspace retain their source characters through rendering and copying.";
+  const native = await page.evaluate((text) => {
+    const host = document.createElement("div");
+    host.id = "fixed-space-host";
+    host.style.width = "420px";
+    const p = document.createElement("p");
+    p.id = "fixed-space-paragraph";
+    p.style.cssText =
+      "font:20px/1.5 Georgia,serif;text-align:justify;word-spacing:11px;margin:0";
+    p.textContent = text;
+    host.append(p);
+    document.body.append(host);
+
+    const probe = document.createElement("span");
+    probe.style.cssText =
+      "position:absolute;visibility:hidden;white-space:pre;font:20px/1.5 Georgia,serif;" +
+      "word-spacing:11px";
+    document.body.append(probe);
+    const widths: Array<{ char: string; width: number }> = [];
+    for (const char of text) {
+      if (char !== "\u2002" && char !== "\u2003") continue;
+      probe.textContent = char;
+      widths.push({ char, width: probe.getBoundingClientRect().width });
+    }
+    probe.remove();
+    return widths;
+  }, source);
+
+  await enhance(page, { expansion: false }, "#fixed-space-host p");
+  await waitForQuiescence(page, "#fixed-space-host");
+
+  const enhanced = await page.evaluate(() => {
+    const p = document.getElementById("fixed-space-paragraph")!;
+    const range = document.createRange();
+    const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+    const widths: Array<{ char: string; width: number }> = [];
+    for (
+      let node = walker.nextNode() as Text | null;
+      node !== null;
+      node = walker.nextNode() as Text | null
+    ) {
+      for (let i = 0; i < node.length; i++) {
+        const char = node.data[i]!;
+        if (char !== "\u2002" && char !== "\u2003") continue;
+        range.setStart(node, i);
+        range.setEnd(node, i + 1);
+        const tracking = parseFloat(getComputedStyle(node.parentElement!).letterSpacing) || 0;
+        widths.push({
+          char,
+          width: range.getBoundingClientRect().width - tracking,
+        });
+      }
+    }
+
+    const selection = getSelection()!;
+    range.selectNodeContents(p);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    const copy = new ClipboardEvent("copy", {
+      clipboardData: new DataTransfer(),
+      cancelable: true,
+    });
+    document.dispatchEvent(copy);
+    selection.removeAllRanges();
+
+    return {
+      enhanced: p.hasAttribute("data-justif"),
+      text: p.textContent,
+      copied: copy.clipboardData!.getData("text/plain"),
+      widths,
+    };
+  });
+
+  expect(enhanced.enhanced).toBe(true);
+  expect(enhanced.text).toBe(source);
+  expect(enhanced.copied).toBe(source);
+  expect(enhanced.widths.map(({ char }) => char)).toEqual(native.map(({ char }) => char));
+  for (let i = 0; i < native.length; i++) {
+    expect(enhanced.widths[i]!.width).toBeCloseTo(native[i]!.width, 0);
+  }
+  expect(enhanced.widths.filter(({ char }) => char === "\u2003")).toHaveLength(3);
+});
+
+test("figure-space breaks preserve adjacent source spaces and fit", async ({ page }) => {
+  const source = "Charlie delta \u2007 —BBBB echo foxtrot golf hotel.";
+  await page.evaluate((text) => {
+    const host = document.createElement("div");
+    host.id = "figure-space-break-host";
+    for (let width = 70; width <= 180; width += 5) {
+      const p = document.createElement("p");
+      p.style.cssText =
+        `width:${width}px;font:16px/1.5 Georgia,serif;text-align:justify;margin:0`;
+      p.textContent = text;
+      host.append(p);
+    }
+    document.body.append(host);
+  }, source);
+
+  await enhance(page, { expansion: false }, "#figure-space-break-host p");
+
+  const result = await page.evaluate((text) => {
+    let sawDashOnNextLine = false;
+    let sawNaturalHangGlue = false;
+    let mismatch = "";
+    for (const p of document.querySelectorAll<HTMLElement>("#figure-space-break-host p")) {
+      if (p.textContent !== text) {
+        mismatch = p.textContent ?? "";
+        break;
+      }
+      const segments = [...p.querySelectorAll<HTMLElement>(":scope > .justif-seg")];
+      const figureIndex = segments.findIndex((segment) => segment.textContent?.includes("\u2007"));
+      const figure = segments[figureIndex];
+      const dash = segments.find((segment) => segment.textContent?.includes("—"));
+      if (
+        figure !== undefined &&
+        dash !== undefined &&
+        dash.getBoundingClientRect().top > figure.getBoundingClientRect().top + 1
+      ) {
+        sawDashOnNextLine = true;
+        const preceding = segments[figureIndex - 1];
+        if (
+          preceding?.textContent === " " &&
+          Math.abs(Number.parseFloat(getComputedStyle(preceding).wordSpacing) || 0) < 0.01
+        ) {
+          sawNaturalHangGlue = true;
+        }
+      }
+    }
+    return { mismatch, sawDashOnNextLine, sawNaturalHangGlue };
+  }, source);
+
+  expect(result.mismatch).toBe("");
+  expect(result.sawDashOnNextLine).toBe(true);
+  expect(result.sawNaturalHangGlue).toBe(true);
+});
+
+test("fixed-width spaces never open a soft-wrapped line", async ({ page }) => {
+  const source =
+    "AAAA \u2003BBBB CCCC\u2003\u2003DDDD EEEE \u2002FFFF GGGG\u2002\u2003HHHH " +
+    "IIII \u2003JJJJ KKKK\u2003\u2003LLLL.";
+  await page.evaluate((text) => {
+    const host = document.createElement("div");
+    host.id = "fixed-space-wrap-host";
+    host.style.width = "150px";
+    const p = document.createElement("p");
+    p.style.cssText = "font:20px/1.5 Georgia,serif;text-align:justify;margin:0";
+    p.textContent = text;
+    host.append(p);
+    document.body.append(host);
+  }, source);
+
+  await enhance(page, { expansion: false }, "#fixed-space-wrap-host p");
+
+  const result = await page.evaluate(() => {
+    const p = document.querySelector<HTMLElement>("#fixed-space-wrap-host p")!;
+    const firstByLine = new Map<number, string>();
+    for (const segment of p.querySelectorAll<HTMLElement>(":scope > .justif-seg")) {
+      const top = Math.round(segment.getBoundingClientRect().top);
+      if (!firstByLine.has(top)) firstByLine.set(top, segment.textContent ?? "");
+    }
+    return {
+      enhanced: p.hasAttribute("data-justif"),
+      text: p.textContent,
+      firstSegments: [...firstByLine.values()],
+    };
+  });
+
+  expect(result.enhanced).toBe(true);
+  expect(result.text).toBe(source);
+  expect(result.firstSegments.length).toBeGreaterThan(2);
+  for (const text of result.firstSegments.slice(1)) {
+    expect(text).not.toMatch(/^[\u1680\u2000-\u200A\u205F\u3000]/);
+  }
+});
+
+test("fixed-width spaces introduce no artificial body-line slack", async ({
+  page,
+}) => {
+  const source =
+    "AAAA \u2003BBBB begins the first example. CCCC \u2003DDDD follows it, then " +
+    "EEEE \u2002FFFF and GGGG \u2003HHHH make the wrapping choice visible as " +
+    "the measure changes.";
+  await page.evaluate((text) => {
+    const host = document.createElement("div");
+    host.id = "fixed-space-quality-host";
+    host.style.width = "334px";
+    const p = document.createElement("p");
+    p.style.cssText = "font:20px/1.5 Georgia,serif;text-align:justify;margin:0";
+    p.textContent = text;
+    host.append(p);
+    document.body.append(host);
+  }, source);
+
+  await enhance(page, { expansion: false }, "#fixed-space-quality-host p");
+
+  const result = await page.evaluate(() => {
+    const p = document.querySelector<HTMLElement>("#fixed-space-quality-host p")!;
+    const paragraphRect = p.getBoundingClientRect();
+    const lines = new Map<number, { first: string; last: string; inkEnd: number }>();
+    for (const segment of p.querySelectorAll<HTMLElement>(":scope > .justif-seg")) {
+      const rect = segment.getBoundingClientRect();
+      const top = Math.round(rect.top);
+      const text = segment.textContent ?? "";
+      const line = lines.get(top) ?? {
+        first: text,
+        last: text,
+        inkEnd: paragraphRect.left,
+      };
+      line.last = text;
+      if (!/^[\u1680\u2000-\u200A\u205F\u3000]+$/u.test(text)) {
+        const trailing = text.match(/\s+$/u)?.[0].length ?? 0;
+        const node = segment.firstChild;
+        if (trailing > 0 && node instanceof Text && node.length > trailing) {
+          const range = document.createRange();
+          range.setStart(node, 0);
+          range.setEnd(node, node.length - trailing);
+          line.inkEnd = Math.max(line.inkEnd, range.getBoundingClientRect().right);
+        } else {
+          line.inkEnd = Math.max(line.inkEnd, rect.right);
+        }
+      }
+      lines.set(top, line);
+    }
+    return {
+      enhanced: p.hasAttribute("data-justif"),
+      text: p.textContent,
+      lines: [...lines.values()].map((line) => ({
+        first: line.first,
+        last: line.last,
+        fill: (line.inkEnd - paragraphRect.left) / paragraphRect.width,
+      })),
+    };
+  });
+
+  expect(result.enhanced).toBe(true);
+  expect(result.text).toBe(source);
+  for (const line of result.lines.slice(0, -1)) {
+    expect(line.first).not.toMatch(/^[\u1680\u2000-\u200A\u205F\u3000]/);
+    expect(line.fill).toBeGreaterThan(0.9);
+  }
+});
+
+test("adjacent fixed-space runs wrap only after the complete run", async ({
+  page,
+}) => {
+  const source =
+    "Adjacent spaces stay intact: AAAA\u2003\u2003BBBB, CCCC\u2002\u2003DDDD, " +
+    "and EEEE\u2003\u2002\u2003FFFF all remain complete fixed-space runs when a line wraps.";
+  await page.evaluate((text) => {
+    const host = document.createElement("div");
+    host.id = "adjacent-fixed-space-quality-host";
+    host.style.width = "240px";
+    const p = document.createElement("p");
+    p.style.cssText = "font:18px/1.5 Georgia,serif;text-align:justify;margin:0";
+    p.textContent = text;
+    host.append(p);
+    document.body.append(host);
+  }, source);
+
+  await enhance(page, { expansion: false }, "#adjacent-fixed-space-quality-host p");
+
+  const result = await page.evaluate(() => {
+    const p = document.querySelector<HTMLElement>("#adjacent-fixed-space-quality-host p")!;
+    const segments = [
+      ...p.querySelectorAll<HTMLElement>(":scope > .justif-seg"),
+    ];
+    const lines = new Map<number, { first: string; last: string }>();
+    let adjacentPairs = 0;
+    let adjacentPairsShareLine = true;
+    for (let i = 0; i < segments.length; i++) {
+      const segment = segments[i]!;
+      const top = Math.round(segment.getBoundingClientRect().top);
+      const text = segment.textContent ?? "";
+      const line = lines.get(top) ?? { first: text, last: text };
+      line.last = text;
+      lines.set(top, line);
+      const next = segments[i + 1];
+      if (
+        next !== undefined &&
+        /^[\u1680\u2000-\u200A\u205F\u3000]$/u.test(text) &&
+        /^[\u1680\u2000-\u200A\u205F\u3000]$/u.test(next.textContent ?? "")
+      ) {
+        adjacentPairs++;
+        if (Math.round(next.getBoundingClientRect().top) !== top) {
+          adjacentPairsShareLine = false;
+        }
+      }
+    }
+    return {
+      text: p.textContent,
+      adjacentPairs,
+      adjacentPairsShareLine,
+      lines: [...lines.values()],
+    };
+  });
+
+  expect(result.text).toBe(source);
+  expect(result.adjacentPairs).toBeGreaterThan(0);
+  expect(result.adjacentPairsShareLine).toBe(true);
+  for (const line of result.lines.slice(0, -1)) {
+    expect(line.first).not.toMatch(/^[\u1680\u2000-\u200A\u205F\u3000]/);
+  }
+});
+
+test("fixed-space paragraphs remain stable with tracking and expansion", async ({
+  page,
+}) => {
+  const source =
+    "Variable-width letters surround AAAA\u2003BBBB and CCCC\u2002\u2003DDDD " +
+    "while ordinary spaces retain enough flexibility for several balanced lines.";
+  await page.evaluate(async (text) => {
+    await document.fonts.load('18px "Junicode"');
+    const host = document.createElement("div");
+    host.id = "fixed-space-expansion-host";
+    host.style.width = "280px";
+    const p = document.createElement("p");
+    p.style.cssText =
+      'font:18px/1.5 "Junicode",Georgia,serif;text-align:justify;margin:0';
+    p.textContent = text;
+    host.append(p);
+    document.body.append(host);
+  }, source);
+
+  // Expansion and tracking both use their public defaults.
+  await enhance(page, {}, "#fixed-space-expansion-host p");
+
+  const result = await page.evaluate(() => {
+    const p = document.querySelector<HTMLElement>("#fixed-space-expansion-host p")!;
+    const lines = new Map<number, { first: string; maxWordSpacing: number }>();
+    let stretched = 0;
+    for (const segment of p.querySelectorAll<HTMLElement>(":scope > .justif-seg")) {
+      const top = Math.round(segment.getBoundingClientRect().top);
+      const text = segment.textContent ?? "";
+      const line = lines.get(top) ?? { first: text, maxWordSpacing: 0 };
+      line.maxWordSpacing = Math.max(
+        line.maxWordSpacing,
+        Number.parseFloat(getComputedStyle(segment).wordSpacing) || 0,
+      );
+      lines.set(top, line);
+      if (segment.style.fontStretch !== "") stretched++;
+    }
+    return {
+      enhanced: p.hasAttribute("data-justif"),
+      text: p.textContent,
+      stretched,
+      lines: [...lines.values()],
+    };
+  });
+
+  expect(result.enhanced).toBe(true);
+  expect(result.text).toBe(source);
+  expect(result.stretched).toBeGreaterThan(0);
+  expect(result.lines.length).toBeGreaterThan(2);
+  for (const line of result.lines.slice(0, -1)) {
+    expect(line.first).not.toMatch(/^[\u1680\u2000-\u200A\u205F\u3000]/);
+    expect(line.maxWordSpacing).toBeLessThan(18);
+  }
+});
+
+test("Unicode line and paragraph separators leave paragraphs native", async ({
+  page,
+}) => {
+  const sources = [
+    "A line separator\u2028must remain under native browser layout.",
+    "A paragraph separator\u2029must remain under native browser layout.",
+  ];
+  await page.evaluate((texts) => {
+    const host = document.createElement("div");
+    host.id = "forced-separator-host";
+    host.style.width = "340px";
+    for (const text of texts) {
+      const p = document.createElement("p");
+      p.style.cssText = "font:20px/1.5 Georgia,serif;text-align:justify;margin:0";
+      p.textContent = text;
+      host.append(p);
+    }
+    document.body.append(host);
+  }, sources);
+
+  await enhance(page, {}, "#forced-separator-host p");
+
+  const result = await page
+    .locator("#forced-separator-host p")
+    .evaluateAll((paragraphs) =>
+      paragraphs.map((p) => ({
+        enhanced: p.hasAttribute("data-justif"),
+        text: p.textContent,
+        segments: p.querySelectorAll(".justif-seg").length,
+      })),
+    );
+  expect(result).toEqual(
+    sources.map((text) => ({ enhanced: false, text, segments: 0 })),
+  );
+});
+
 test("cleanClipboard: false leaves copies untouched", async ({ page }) => {
   await enhance(page, { hyphenate: true, cleanClipboard: false });
   const r = await page.evaluate(() => {
