@@ -38,15 +38,29 @@ export interface StyledRun {
   floatInnerStyle?: readonly (readonly [property: string, value: string])[];
 }
 
-export interface FloatIntrusion {
+interface FloatGeometry {
   /** Physical inline width removed from each overlapping line. */
   inlineSize: number;
   /** Consecutive line boxes, from the paragraph start, that overlap it. */
   lines: number;
+}
+
+export interface FirstLetterFloatIntrusion extends FloatGeometry {
+  kind: "first-letter";
   /** Computed ::first-letter presentation copied onto the real float used
    * by the enhanced DOM. */
   style: readonly (readonly [property: string, value: string])[];
 }
+
+export interface ElementFloatIntrusion extends FloatGeometry {
+  kind: "element";
+  /** Author node retained in the saved DOM and deep-cloned while enhanced. */
+  source: Element;
+  /** Collapsible whitespace and comments preceding the source in DOM order. */
+  leadingTrivia: readonly Node[];
+}
+
+export type FloatIntrusion = FirstLetterFloatIntrusion | ElementFloatIntrusion;
 
 /** A visible forced line break in source order. `afterRun` partitions the
  * scanned text without putting a non-optional break into the core item
@@ -87,6 +101,9 @@ export interface ParagraphScan {
   direction: "ltr" | "rtl";
   /** A floated `::first-letter` (drop cap), measured in its native layout. */
   floatIntrusion: FloatIntrusion | null;
+  /** Whether any author text, including an opaque floated subtree, contains
+   * a no-break space that clipboard cleanup must preserve. */
+  authorHasNbsp: boolean;
 }
 
 /**
@@ -193,6 +210,25 @@ const RTL_LETTER = /[\p{Script=Hebrew}\p{Script=Arabic}]/u;
 const FORCED_LINE_SEPARATORS = /[\u2028\u2029]/;
 
 /**
+ * FORM FEED (U+000C) and LINE TABULATION (U+000B), which no two engines
+ * render alike. Measured between two letters at 16px monospace, where one
+ * cell is 9.6px and "ab" is 19.20px (U+000B matches U+000C everywhere):
+ *
+ * - Chromium paints a ~5.3px glyph and offers NO break there (24.53px, and
+ *   one line in a 1px measure);
+ * - Firefox drops the character entirely but DOES break there (19.27px,
+ *   over two lines);
+ * - WebKit gives it a full space's advance and no break (28.81px, one
+ *   line), and does not collapse it against an adjacent space: a space plus
+ *   a form feed measures two full cells.
+ *
+ * No single item model can be right in all three, so a paragraph containing
+ * one stays native. CSS Text 3 does not list either character as white
+ * space, which is why the engines were free to diverge here.
+ */
+const DIVERGENT_CONTROLS = /[\u000B\u000C]/;
+
+/**
  * Pure text-level support decision for a paragraph of the given computed
  * direction (exported for unit tests). RTL scope is deliberately narrow:
  * pure-RTL paragraphs only — Hebrew/Arabic letters, digits and neutral
@@ -206,6 +242,7 @@ const FORCED_LINE_SEPARATORS = /[\u2028\u2029]/;
 export function textSupported(text: string, direction: "ltr" | "rtl"): boolean {
   if (BIDI_CONTROLS.test(text)) return false;
   if (FORCED_LINE_SEPARATORS.test(text)) return false;
+  if (DIVERGENT_CONTROLS.test(text)) return false;
   if (UNSUPPORTED_SCRIPTS.test(text)) return false;
   if (direction === "rtl") {
     if (NON_RTL_LETTER.test(text)) return false;
@@ -373,9 +410,9 @@ function inlineBailReason(
   padded: boolean,
 ): string | null {
   const name = el.tagName.toLowerCase();
+  if (elStyle.float !== "none") return "floated element is not a leading direct child";
   if (
     elStyle.display !== "inline" ||
-    elStyle.float !== "none" ||
     (elStyle.position !== "static" && elStyle.position !== "relative")
   ) {
     return `non-inline-flow <${name}> (display/float/position)`;
@@ -582,7 +619,7 @@ const FIRST_LETTER_INNER_PROPERTIES = [
   "-webkit-text-stroke-width",
 ] as const;
 
-function firstLetterStyle(style: CSSStyleDeclaration): FloatIntrusion["style"] {
+function firstLetterStyle(style: CSSStyleDeclaration): FirstLetterFloatIntrusion["style"] {
   return FIRST_LETTER_PROPERTIES.map((property) => [
     property,
     style.getPropertyValue(property),
@@ -592,7 +629,7 @@ function firstLetterStyle(style: CSSStyleDeclaration): FloatIntrusion["style"] {
 function firstLetterInnerStyle(
   style: CSSStyleDeclaration,
   paragraph: CSSStyleDeclaration,
-): FloatIntrusion["style"] {
+): FirstLetterFloatIntrusion["style"] {
   return FIRST_LETTER_INNER_PROPERTIES.map((property) => [
     property,
     style.getPropertyValue(property),
@@ -838,7 +875,150 @@ function floatedFirstLetter(
   );
   affected = Math.max(affected, geometricLines);
 
-  return { inlineSize, lines: affected, style: firstLetterStyle(style) };
+  return { kind: "first-letter", inlineSize, lines: affected, style: firstLetterStyle(style) };
+}
+
+const LEADING_TRIVIA = /^[\t\n\f\r ]*$/;
+const UNSAFE_FLOAT_CONTENT = [
+  "iframe",
+  "object",
+  "embed",
+  "audio",
+  "video",
+  "canvas",
+  "input",
+  "button",
+  "select",
+  "textarea",
+  "script",
+  "style",
+].join(",");
+
+function borderBoxSize(
+  style: CSSStyleDeclaration,
+  axis: "inline" | "block",
+): number | null {
+  const size = parseFloat(axis === "inline" ? style.width : style.height);
+  if (!Number.isFinite(size)) return null;
+  if (style.boxSizing === "border-box") return Math.max(0, size);
+  const extras =
+    axis === "inline"
+      ? pxValue(style.paddingLeft) +
+        pxValue(style.paddingRight) +
+        pxValue(style.borderLeftWidth) +
+        pxValue(style.borderRightWidth)
+      : pxValue(style.paddingTop) +
+        pxValue(style.paddingBottom) +
+        pxValue(style.borderTopWidth) +
+        pxValue(style.borderBottomWidth);
+  return Math.max(0, size + extras);
+}
+
+function unsafeFloatSubtree(source: Element): string | null {
+  const unsafe = source.matches(UNSAFE_FLOAT_CONTENT)
+    ? source
+    : source.querySelector(UNSAFE_FLOAT_CONTENT);
+  if (unsafe !== null) return `<${unsafe.tagName.toLowerCase()}> in floated element`;
+  for (const el of [source, ...source.querySelectorAll("*")]) {
+    if (el.shadowRoot !== null) return "shadow root in floated element";
+  }
+  return null;
+}
+
+function elementFloatGeometry(
+  p: HTMLElement,
+  source: Element,
+  paragraphStyle: CSSStyleDeclaration,
+  style: CSSStyleDeclaration,
+  floatSide: "left" | "right",
+): FloatGeometry | null {
+  const borderInline = borderBoxSize(style, "inline");
+  const borderBlock = borderBoxSize(style, "block");
+  if (borderInline === null || borderBlock === null) return null;
+  const inlineSize =
+    borderInline + pxValue(style.marginLeft) + pxValue(style.marginRight);
+  const blockSize =
+    borderBlock + pxValue(style.marginTop) + pxValue(style.marginBottom);
+  if (inlineSize <= 0 || blockSize <= 0) return null;
+
+  const paragraphRect = p.getBoundingClientRect();
+  const contentLeft =
+    paragraphRect.left + pxValue(paragraphStyle.borderLeftWidth) + pxValue(paragraphStyle.paddingLeft);
+  const contentRight =
+    paragraphRect.right - pxValue(paragraphStyle.borderRightWidth) - pxValue(paragraphStyle.paddingRight);
+  const contentTop =
+    paragraphRect.top + pxValue(paragraphStyle.borderTopWidth) + pxValue(paragraphStyle.paddingTop);
+  const paragraphLineHeight =
+    parseFloat(paragraphStyle.lineHeight) || pxValue(paragraphStyle.fontSize) * 1.2;
+
+  const tail = p.ownerDocument.createRange();
+  tail.selectNodeContents(p);
+  tail.setStartAfter(source);
+  const lines = visualLines([...tail.getClientRects()], paragraphLineHeight);
+  let affected = 0;
+  for (const line of lines) {
+    const observed =
+      floatSide === "left" ? line.left - contentLeft : contentRight - line.right;
+    if (observed > inlineSize * 0.5) affected++;
+    else break;
+  }
+
+  const firstTextTop = lines[0]?.top ?? contentTop;
+  const floatBottom = contentTop + blockSize;
+  const geometricLines = Math.max(
+    1,
+    Math.ceil((floatBottom - firstTextTop) / paragraphLineHeight - 1e-6),
+  );
+  return { inlineSize, lines: Math.max(affected, geometricLines) };
+}
+
+function leadingElementFloatOf(
+  p: HTMLElement,
+  paragraphStyle: CSSStyleDeclaration,
+  fragmentCount: number,
+): ElementFloatIntrusion | string | null {
+  const view = p.ownerDocument.defaultView;
+  if (view === null) return null;
+  const leadingTrivia: Node[] = [];
+  let source: Element | null = null;
+  for (let child = p.firstChild; child !== null; child = child.nextSibling) {
+    if (child.nodeType === Node.COMMENT_NODE) {
+      leadingTrivia.push(child);
+      continue;
+    }
+    if (child.nodeType === Node.TEXT_NODE && LEADING_TRIVIA.test(child.nodeValue ?? "")) {
+      leadingTrivia.push(child);
+      continue;
+    }
+    if (child.nodeType === Node.ELEMENT_NODE) {
+      const el = child as Element;
+      if (view.getComputedStyle(el).float !== "none") source = el;
+    }
+    break;
+  }
+
+  if (source === null) return null;
+
+  const outsideFloats: Element[] = [];
+  for (const el of p.querySelectorAll("*")) {
+    if (el === source || source.contains(el)) continue;
+    if (view.getComputedStyle(el).float !== "none") outsideFloats.push(el);
+  }
+  if (outsideFloats.length > 0) return "multiple floated elements";
+  if (fragmentCount > 1) return "fragmented paragraph with leading floated element";
+
+  const unsafe = unsafeFloatSubtree(source);
+  if (unsafe !== null) return `unsafe ${unsafe}`;
+  const style = view.getComputedStyle(source);
+  if (style.clear !== "none") return `clear: ${style.clear} on leading floated element`;
+  const shapeOutside = style.getPropertyValue("shape-outside") || "none";
+  if (shapeOutside !== "none") return "shape-outside on leading floated element";
+  const direction: "ltr" | "rtl" = paragraphStyle.direction === "rtl" ? "rtl" : "ltr";
+  const side = physicalFloatSide(style.float, direction);
+  if (side === null) return `unsupported element float: ${style.float}`;
+  const geometry = elementFloatGeometry(p, source, paragraphStyle, style, side);
+  if (geometry === null) return "could not measure leading floated element";
+  return { kind: "element", source, leadingTrivia, ...geometry };
 }
 
 /**
@@ -1082,14 +1262,41 @@ function floatDetailsOf(
   return intrusion === null ? "could not measure floated ::first-letter" : { intrusion, span };
 }
 
-/** Re-read a live paragraph's floated first-letter geometry. Exported for
+/** Re-read a live paragraph's supported float geometry. Exported for
  * font-driven remeasurement after the original DOM has been enhanced. */
 export function floatIntrusionOf(
   p: HTMLElement,
   text = p.textContent ?? "",
+  previous?: FloatIntrusion,
 ): FloatIntrusion | null {
+  if (previous?.kind === "element") {
+    const view = p.ownerDocument.defaultView;
+    if (view === null) return null;
+    const fragments = fragmentBoxesOf(p);
+    if (!fragments.ok) return null;
+    const next = leadingElementFloatOf(p, view.getComputedStyle(p), fragments.rects.length);
+    return typeof next === "object" ? next : null;
+  }
   const details = floatDetailsOf(p, text);
   return typeof details === "object" && details !== null ? details.intrusion : null;
+}
+
+/** Re-measure a live clone of a supported leading floated element without
+ * inspecting or walking its opaque subtree. */
+export function renderedElementFloatIntrusionOf(
+  p: HTMLElement,
+  source: Element,
+  previous: ElementFloatIntrusion,
+): ElementFloatIntrusion | null {
+  const view = p.ownerDocument.defaultView;
+  if (view === null) return null;
+  const paragraphStyle = view.getComputedStyle(p);
+  const style = view.getComputedStyle(source);
+  const direction: "ltr" | "rtl" = paragraphStyle.direction === "rtl" ? "rtl" : "ltr";
+  const side = physicalFloatSide(style.float, direction);
+  if (side === null) return null;
+  const geometry = elementFloatGeometry(p, source, paragraphStyle, style, side);
+  return geometry === null ? null : { ...previous, ...geometry };
 }
 
 /** Live inline size of either the real enhanced float or a native
@@ -1131,6 +1338,13 @@ export function readParagraph(p: HTMLElement, batch?: ScanBatch): ParagraphScan 
   const direction: "ltr" | "rtl" = cs.direction === "rtl" ? "rtl" : "ltr";
   if (p.isContentEditable) return "content-editable";
   if (p.shadowRoot !== null) return "element hosts a shadow root";
+
+  const fragments = fragmentBoxesOf(p, cs);
+  if (!fragments.ok) return fragments.reason;
+  const elementFloat = leadingElementFloatOf(p, cs, fragments.rects.length);
+  if (typeof elementFloat === "string") return elementFloat;
+  const omittedNodes = new Set<Node>(elementFloat?.leadingTrivia ?? []);
+  if (elementFloat !== null) omittedNodes.add(elementFloat.source);
 
   const specs: FontSpec[] = [];
   const keyToIndex = new Map<string, number>();
@@ -1237,7 +1451,7 @@ export function readParagraph(p: HTMLElement, batch?: ScanBatch): ParagraphScan 
     chain: readonly Element[],
     spec: number,
     atomicKey: number | undefined,
-    floatInnerStyle: FloatIntrusion["style"],
+    floatInnerStyle: FirstLetterFloatIntrusion["style"],
   ): void => {
     // JSX expressions such as {" "} can produce a text node separate from
     // the prose beside it; server renderers may also put empty comments
@@ -1249,6 +1463,7 @@ export function readParagraph(p: HTMLElement, batch?: ScanBatch): ParagraphScan 
     let adjacentTextRun: StyledRun | null = null;
     for (let child = node.firstChild; child !== null; child = child.nextSibling) {
       if (skip !== null) return;
+      if (node === p && omittedNodes.has(child)) continue;
       if (child.nodeType === 3 /* TEXT_NODE */) {
         const text = child.nodeValue ?? "";
         if (text.length > 0) {
@@ -1319,13 +1534,22 @@ export function readParagraph(p: HTMLElement, batch?: ScanBatch): ParagraphScan 
     return "unsupported text (forced separators, bidi controls, mixed direction, or a script without break support)";
   }
 
-  const fragments = fragmentBoxesOf(p, cs);
-  if (!fragments.ok) return fragments.reason;
-
-  const floatDetails = floatDetailsOf(p, text, cs, fragments.rects.length, batch);
+  const floatDetails = floatDetailsOf(
+    p,
+    elementFloat === null ? text : (p.textContent ?? ""),
+    cs,
+    fragments.rects.length,
+    batch,
+  );
+  // The measurement failure comes first: a `floatDetailsOf` string is a
+  // reason of its own, and reporting it as a conflict with the element float
+  // would send the author after a ::first-letter that never measured.
   if (typeof floatDetails === "string") return floatDetails;
-  const floatIntrusion = floatDetails?.intrusion ?? null;
-  if (floatDetails !== null) {
+  if (elementFloat !== null && floatDetails !== null) {
+    return "leading floated element conflicts with ::first-letter";
+  }
+  const floatIntrusion = elementFloat ?? floatDetails?.intrusion ?? null;
+  if (floatDetails !== null && elementFloat === null) {
     const firstSpan = floatDetails.span;
     let offset = 0;
     for (const run of runs) {
@@ -1368,6 +1592,7 @@ export function readParagraph(p: HTMLElement, batch?: ScanBatch): ParagraphScan 
     justifyAll: cs.textAlign === "justify-all" || cs.textAlignLast === "justify",
     direction,
     floatIntrusion,
+    authorHasNbsp: /[\u00A0\u202F]/.test(p.textContent ?? ""),
   };
 }
 

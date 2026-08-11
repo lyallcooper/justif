@@ -716,6 +716,347 @@ test("floated ::first-letter drop caps use the remaining width on every intruded
   expect(restored).toEqual(original.html);
 });
 
+test("one leading floated element is cloned opaquely and narrows overlapping lines", async ({
+  page,
+}) => {
+  const original = await page.evaluate(() => {
+    const style = document.createElement("style");
+    style.textContent = `
+      #leading-element-float {
+        --float-height: 76px;
+        width: 356px;
+        margin: 0;
+        font: 17.6px/24px Georgia, serif;
+        text-align: justify;
+      }
+      #leading-element-float > .marker {
+        float: left;
+        box-sizing: border-box;
+        width: 25%;
+        height: var(--float-height);
+        margin-right: 8px;
+        padding: 4px;
+        background: #ddd;
+      }
+    `;
+    document.head.append(style);
+    const p = document.createElement("p");
+    p.id = "leading-element-float";
+    p.innerHTML = ` \n<!--leading--><span class="marker" id="opaque-marker"><strong>Art&nbsp;</strong><svg width="12" height="12" aria-label="ornament"><circle cx="6" cy="6" r="5"></circle></svg></span>Among the numerous advantages promised by a well constructed Union, none deserves to be more accurately developed than its tendency to break and control the violence of faction. The careful setting of every line makes the relationship visible.`;
+    document.getElementById("host")!.replaceChildren(p);
+    const source = p.querySelector(".marker")!;
+    (window as unknown as { __leadingFloatSource: Element }).__leadingFloatSource = source;
+    const html = p.innerHTML;
+    const text = p.textContent;
+    window.__justif.controller = window.__justif.justify([p], {
+      onSkip: (_paragraph: HTMLElement, reason: string) => {
+        p.dataset.skipReason = reason;
+      },
+    });
+    return { html, text, sourceWasConnected: source.isConnected };
+  });
+  await page.evaluate(() => window.__justif.controller!.ready);
+  await waitForQuiescence(page, "#leading-element-float");
+
+  const before = await page.evaluate(() => {
+    const p = document.getElementById("leading-element-float")!;
+    const marker = p.querySelector<HTMLElement>(":scope > .marker")!;
+    const box = p.getBoundingClientRect();
+    const lines = [...p.querySelectorAll<HTMLElement>(":scope > .justif-seg")].map((el) => {
+      const rect = el.getBoundingClientRect();
+      return { left: rect.left, right: rect.right };
+    });
+    return {
+      enhanced: p.hasAttribute("data-justif"),
+      skipReason: p.dataset.skipReason,
+      dropcap: p.hasAttribute("data-justif-dropcap"),
+      text: p.textContent,
+      firstNodeText: p.firstChild?.nodeValue,
+      comment: p.childNodes[1]?.nodeType,
+      markerWidth: marker.getBoundingClientRect().width,
+      markerHtml: marker.innerHTML,
+      left: box.left,
+      right: box.right,
+      lines,
+    };
+  });
+  expect(original.sourceWasConnected).toBe(false);
+  expect(before.skipReason).toBeUndefined();
+  expect(before.enhanced).toBe(true);
+  expect(before.dropcap).toBe(false);
+  expect(before.text).toBe(original.text);
+  expect(before.firstNodeText).toBe(" \n");
+  expect(before.comment).toBe(8);
+  expect(before.markerHtml).toContain("<strong>Art&nbsp;</strong>");
+  expect(before.markerHtml).toContain("<svg");
+  expect(before.lines.length).toBeGreaterThan(4);
+  expect(before.lines[0]!.left).toBeGreaterThan(before.left + before.markerWidth * 0.8);
+  expect(before.lines[1]!.left).toBeGreaterThan(before.left + before.markerWidth * 0.8);
+  expect(before.lines[4]!.left).toBeLessThan(before.left + 1);
+  for (const line of before.lines.slice(0, -1)) {
+    expect(line.right).toBeLessThanOrEqual(before.right + 1);
+  }
+  const copied = await page.evaluate(() => {
+    const p = document.getElementById("leading-element-float")!;
+    const range = document.createRange();
+    range.selectNodeContents(p);
+    const selection = getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    const event = new ClipboardEvent("copy", {
+      clipboardData: new DataTransfer(),
+      cancelable: true,
+    });
+    document.dispatchEvent(event);
+    selection.removeAllRanges();
+    return event.clipboardData!.getData("text/plain");
+  });
+  expect(copied).toContain("Art\u00A0");
+  expect(copied).toContain("Among the numerous advantages");
+
+  await page.evaluate(() => {
+    const p = document.getElementById("leading-element-float")!;
+    p.style.setProperty("--float-height", "124px");
+    p.style.width = "300px";
+  });
+  await waitForQuiescence(page, "#leading-element-float");
+  const resized = await page.evaluate(() => {
+    const p = document.getElementById("leading-element-float")!;
+    const marker = p.querySelector<HTMLElement>(":scope > .marker")!;
+    const left = p.getBoundingClientRect().left;
+    return {
+      markerWidth: marker.getBoundingClientRect().width,
+      intruded: [...p.querySelectorAll<HTMLElement>(":scope > .justif-seg")].filter(
+        (el) => el.getBoundingClientRect().left > left + 20,
+      ).length,
+    };
+  });
+  expect(resized.markerWidth).toBeLessThan(before.markerWidth);
+  expect(resized.intruded).toBeGreaterThanOrEqual(5);
+
+  const rescanned = await page.evaluate(() => {
+    const p = document.getElementById("leading-element-float")!;
+    const source = (window as unknown as { __leadingFloatSource: Element }).__leadingFloatSource;
+    source.setAttribute("data-author-state", "updated");
+    const changed = window.__justif.controller!.rescan([p]);
+    const clonedState = p
+      .querySelector(":scope > .marker")
+      ?.getAttribute("data-author-state");
+    source.removeAttribute("data-author-state");
+    const reverted = window.__justif.controller!.rescan([p]);
+    return {
+      changed: changed.length,
+      clonedState,
+      reverted: reverted.length,
+    };
+  });
+  expect(rescanned).toEqual({ changed: 1, clonedState: "updated", reverted: 1 });
+
+  const restored = await page.evaluate(() => {
+    const p = document.getElementById("leading-element-float")!;
+    window.__justif.controller!.destroy();
+    return p.innerHTML;
+  });
+  expect(restored).toBe(original.html);
+});
+
+test("a hidden and re-shown leading float keeps its justified rendering", async ({ page }) => {
+  await page.evaluate(() => {
+    const style = document.createElement("style");
+    style.textContent = `
+      #hidden-float-panel { width: 340px; }
+      #hidden-float {
+        margin: 0;
+        font: 17px/24px Georgia, serif;
+        text-align: justify;
+      }
+      #hidden-float > .marker { float: left; width: 76px; height: 72px; margin-right: 8px; }
+    `;
+    document.head.append(style);
+    const panel = document.createElement("div");
+    panel.id = "hidden-float-panel";
+    const p = document.createElement("p");
+    p.id = "hidden-float";
+    // No width or height on the <img> itself: its computed values go back to
+    // `auto` the moment the panel stops being rendered, which is what the
+    // resize notification would otherwise try to measure a float from.
+    p.innerHTML = `<img class="marker" alt="" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='76' height='72'%3E%3C/svg%3E">Among the numerous advantages promised by a well constructed Union, none deserves to be more accurately developed than its tendency to break and control the violence of faction. The careful setting of every line makes the relationship visible.`;
+    panel.append(p);
+    document.getElementById("host")!.replaceChildren(panel);
+    window.__justif.controller = window.__justif.justify([p], {
+      onSkip: (_paragraph: HTMLElement, reason: string) => {
+        p.dataset.skipReason = reason;
+      },
+    });
+  });
+  await page.evaluate(() => window.__justif.controller!.ready);
+  await waitForQuiescence(page, "#hidden-float");
+
+  const read = () =>
+    page.evaluate(() => {
+      const p = document.getElementById("hidden-float")!;
+      const left = p.getBoundingClientRect().left;
+      return {
+        enhanced: p.hasAttribute("data-justif"),
+        skipReason: p.dataset.skipReason,
+        segments: p.querySelectorAll(":scope > .justif-seg").length,
+        intruded: [...p.querySelectorAll<HTMLElement>(":scope > .justif-seg")].filter(
+          (el) => el.getBoundingClientRect().left > left + 20,
+        ).length,
+      };
+    });
+
+  const before = await read();
+  expect(before.skipReason).toBeUndefined();
+  expect(before.enhanced).toBe(true);
+  expect(before.segments).toBeGreaterThan(4);
+  expect(before.intruded).toBeGreaterThanOrEqual(2);
+
+  // Hiding an ancestor gives the float no box at all: the observer must sit
+  // that notification out rather than tear the enhancement down, or showing
+  // the panel again would leave the paragraph natively rendered for good
+  // (the recovery notification carries the geometry already on record, so
+  // nothing would re-queue it).
+  await page.evaluate(async () => {
+    document.getElementById("hidden-float-panel")!.style.display = "none";
+    await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+    await new Promise((r) => setTimeout(r, 120));
+    document.getElementById("hidden-float-panel")!.style.display = "";
+  });
+  await waitForQuiescence(page, "#hidden-float");
+
+  const after = await read();
+  expect(after.skipReason).toBeUndefined();
+  expect(after.enhanced).toBe(true);
+  expect(after.segments).toBe(before.segments);
+  expect(after.intruded).toBe(before.intruded);
+});
+
+test("right and logical leading floats exclude the correct physical edge", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const style = document.createElement("style");
+    style.textContent = `
+      .sided-element-float { width: 340px; margin: 0; font: 17px/24px Georgia, serif; text-align: justify; }
+      .sided-element-float > .marker { box-sizing: border-box; width: 72px; height: 68px; padding: 4px; }
+      #right-element-float > .marker { float: right; margin-left: 7px; }
+      #logical-element-float > .marker { float: inline-end; margin-inline-start: 7px; }
+    `;
+    document.head.append(style);
+    const right = document.createElement("p");
+    right.id = "right-element-float";
+    right.className = "sided-element-float";
+    right.innerHTML = `<span class="marker">R</span>Among the numerous advantages promised by careful typography, none deserves more attention than consistent spacing across every line of prose. A longer passage also proves that ordinary full-width lines resume beneath the floated ornament without retaining its exclusion.`;
+    const logical = document.createElement("p");
+    logical.id = "logical-element-float";
+    logical.className = "sided-element-float";
+    logical.dir = "rtl";
+    logical.innerHTML = `<span class="marker">ز</span>في قديم الزمان كانت الكلمات المرتبة بعناية تتدفق حول الحرف المزخرف وتحافظ على مسافات متوازنة في كل سطر من الفقرة العربية الطويلة. وكانت الحكاية تستمر بكلمات واضحة موزعة بهدوء حتى نهاية الفقرة. ثم عادت الشخصيات إلى الطريق القديم وهي تتحدث عن جمال الحروف وانتظام السطور في الكتاب. وظلت القصة تتقدم على مهل حتى اكتملت الصفحة الأخيرة.`;
+    document.getElementById("host")!.replaceChildren(right, logical);
+    const ctl = window.__justif.justify([right, logical]);
+    await ctl.ready;
+    const geometry = (p: HTMLElement) => {
+      const box = p.getBoundingClientRect();
+      const float = p.querySelector<HTMLElement>(":scope > .marker")!.getBoundingClientRect();
+      const lines = [...p.querySelectorAll<HTMLElement>(":scope > .justif-seg")].map((el) => {
+        const rect = el.getBoundingClientRect();
+        return { left: rect.left, right: rect.right };
+      });
+      return {
+        enhanced: p.hasAttribute("data-justif"),
+        box: { left: box.left, right: box.right },
+        float: { left: float.left, width: float.width },
+        lines,
+      };
+    };
+    const output = { right: geometry(right), logical: geometry(logical) };
+    ctl.destroy();
+    return output;
+  });
+  expect(result.right.enhanced).toBe(true);
+  expect(result.right.lines[0]!.right).toBeLessThan(
+    result.right.box.right - result.right.float.width * 0.8,
+  );
+  expect(
+    result.right.lines.slice(3, -1).some((line) => line.right > result.right.box.right - 1),
+  ).toBe(true);
+  expect(result.logical.enhanced).toBe(true);
+  expect(result.logical.float.left).toBeLessThan(result.logical.box.left + 1);
+  expect(result.logical.lines[0]!.left).toBeGreaterThan(
+    result.logical.box.left + result.logical.float.width * 0.8,
+  );
+  expect(result.logical.lines.length).toBeGreaterThan(6);
+  expect(
+    result.logical.lines.slice(4, -1).some((line) => line.left < result.logical.box.left + 1),
+  ).toBe(true);
+});
+
+test("unsupported leading-element float arrangements stay native with specific reasons", async ({
+  page,
+}) => {
+  const result = await page.evaluate(async () => {
+    const style = document.createElement("style");
+    style.textContent = `
+      .float-rejection { width: 340px; font: 17px/24px Georgia, serif; text-align: justify; }
+      .float-rejection .floated { float: left; width: 64px; height: 72px; }
+      #float-shaped .floated { shape-outside: circle(50%); }
+      #float-cleared .floated { clear: both; }
+      #float-conflict::first-letter { float: left; font-size: 50px; }
+    `;
+    document.head.append(style);
+    const prose = "Among the numerous advantages promised by careful typography, none deserves more attention.";
+    const fixtures = new Map<string, string>([
+      ["float-mid", `<span>Before </span><span class="floated">F</span>${prose}`],
+      ["float-multiple", `<span class="floated">F</span><span class="floated">G</span>${prose}`],
+      ["float-shaped", `<span class="floated">F</span>${prose}`],
+      ["float-cleared", `<span class="floated">F</span>${prose}`],
+      ["float-unsafe", `<span class="floated"><input value="F"></span>${prose}`],
+      ["float-conflict", `<span class="floated">F</span>${prose}`],
+    ]);
+    const reasons = new Map<string, string>();
+    const originals = new Map<string, string>();
+    const paragraphs = [...fixtures].map(([id, html]) => {
+      const p = document.createElement("p");
+      p.id = id;
+      p.className = "float-rejection";
+      p.innerHTML = html;
+      originals.set(id, p.innerHTML);
+      return p;
+    });
+    document.getElementById("host")!.replaceChildren(...paragraphs);
+    const ctl = window.__justif.justify(paragraphs, {
+      onSkip: (p: HTMLElement, reason: string) => reasons.set(p.id, reason),
+    });
+    await ctl.ready;
+    const output = Object.fromEntries(
+      paragraphs.map((p) => [
+        p.id,
+        {
+          enhanced: p.hasAttribute("data-justif"),
+          unchanged: p.innerHTML === originals.get(p.id),
+          reason: reasons.get(p.id),
+        },
+      ]),
+    );
+    ctl.destroy();
+    return output;
+  });
+
+  expect(result["float-mid"]).toMatchObject({
+    enhanced: false,
+    unchanged: true,
+    reason: "floated element is not a leading direct child",
+  });
+  expect(result["float-multiple"]?.reason).toContain("multiple floated elements");
+  expect(result["float-shaped"]?.reason).toContain("shape-outside");
+  expect(result["float-cleared"]?.reason).toContain("clear:");
+  expect(result["float-unsafe"]?.reason).toContain("unsafe <input>");
+  expect(result["float-conflict"]?.reason).toContain("conflicts with ::first-letter");
+  for (const value of Object.values(result)) {
+    expect(value.enhanced).toBe(false);
+    expect(value.unchanged).toBe(true);
+  }
+});
+
 test("a drop cap wider than its column stays native and recovers after resize", async ({ page }) => {
   const originalText = await page.evaluate(() => {
     const style = document.createElement("style");

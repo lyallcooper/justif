@@ -428,7 +428,8 @@ reliably. This includes:
 
 - mixed LTR and RTL text;
 - vertical writing, Thai, and Lao;
-- images, form controls, SVG, MathML, floats, or block descendants;
+- images, form controls, SVG, MathML, or block descendants in the text flow;
+- floats, except a single one as the paragraph's first child;
 - inline descendants with horizontal margins, `box-decoration-break: clone`,
   or preserved-whitespace `white-space` values;
 - `text-transform: capitalize` (other `text-transform` values are supported);

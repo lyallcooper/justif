@@ -2,27 +2,22 @@
 
 ## Unreleased
 
-- A `text-transform` no longer sends a paragraph back to browser
-  justification. Text transformed to upper or lower case is now measured as it
-  actually renders, so it is justified like the paragraphs around it instead of
-  standing out with looser or tighter spacing. This includes the common
-  small-caps idiom, where an acronym is lowercased so the font can set it as
-  true small caps, and German text uppercased so `ß` sets as `SS`.
-  `text-transform: capitalize` still falls back to the browser.
-- Fixed-width Unicode spaces — en space, em space, thin space and the rest of
-  the Unicode space separators — now survive justification. They used to be
-  replaced with ordinary spaces, so copying justified text gave back different
-  characters than the page showed, and the spacing an author chose was lost.
-  They now keep their character and their width, a line never begins with one,
-  and a run of them stays together when a line wraps.
-- Paragraphs containing U+2028 or U+2029 are now left to the browser. Safari
-  treats them as forced line breaks, which could split a line apart after
-  justification had already finished.
-- Hanging punctuation no longer shifts the text it sits beside. A hung mark now
-  clears the margin completely, and the character next to it keeps the optical
-  alignment it would have had on its own.
-- Which characters hang for hanging punctuation is now configurable. See the
-  [README
+- Paragraphs may now begin with a floated element, with the lines beside it
+  justified to the remaining width. Other floats still use native browser
+  justification.
+- `text-transform: uppercase` and `lowercase` no longer send a paragraph back
+  to browser justification. Transformed text is measured as it renders, so the
+  small-caps and `ß`-to-`SS` idioms are justified like ordinary prose.
+  `capitalize` still falls back to the browser.
+- Fixed-width Unicode spaces — en space, em space, thin space and the rest —
+  now keep their character and their width. They used to be replaced with
+  ordinary spaces, so copied text differed from what the page showed.
+- Paragraphs containing U+2028, U+2029, form feed, or vertical tab are now left
+  to the browser. Engines disagree on how wide these are and whether they break
+  a line, and Safari could split a line apart after justification had finished.
+- Hanging punctuation no longer shifts the text it sits beside. The character
+  next to a hung mark keeps the alignment it would have had on its own.
+- Which characters hang is now configurable. See the [README
   section](https://github.com/lyallcooper/justif#protrusion-and-hanging-punctuation)
   for more details.
 

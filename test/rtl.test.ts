@@ -71,6 +71,18 @@ describe("textSupported (RTL scope decisions)", () => {
     expect(textSupported(`שלום\u2029עולם`, "rtl")).toBe(false);
   });
 
+  it("bails on form feed and line tabulation", () => {
+    // Chromium paints a glyph and does not break, Firefox drops the
+    // character and does break, WebKit gives it a space's advance and does
+    // not break: no item model matches all three.
+    expect(textSupported("one\u000Ctwo", "ltr")).toBe(false);
+    expect(textSupported("one\u000Btwo", "ltr")).toBe(false);
+    expect(textSupported("one \u000C two", "ltr")).toBe(false);
+    expect(textSupported(`שלום\u000Cעולם`, "rtl")).toBe(false);
+    // Ordinary document white space is unaffected.
+    expect(textSupported("one\ttwo\nthree\r\nfour", "ltr")).toBe(true);
+  });
+
   it("accepts CJK in LTR (supported) but bails on CJK inside RTL", () => {
     expect(textSupported("漢字テキスト", "ltr")).toBe(true);
     expect(textSupported("שלום 漢字", "rtl")).toBe(false);

@@ -56,6 +56,7 @@ import {
   type ParagraphScan,
   paragraphStyleKey,
   readParagraph,
+  renderedElementFloatIntrusionOf,
   type ScanBatch,
 } from "./dom/read.js";
 import {
@@ -419,6 +420,8 @@ interface ParaState {
   /** Fingerprint of the last patch, to skip no-op re-renders. */
   lastPatch: string;
   enhanced: boolean;
+  /** Live clone of an authored leading float while enhanced. */
+  renderedFloat: Element | null;
   /** The `text-indent` px value written while this paragraph sets natively on
    * one line (author indent minus its line-start hang); null when none is
    * applied. Stored as WRITTEN, so a percentage indent re-resolving across a
@@ -676,6 +679,7 @@ function restoreManagedOutput(
   p.removeAttribute("data-justif-dropcap");
   state.lastPatch = "";
   state.enhanced = false;
+  state.renderedFloat = null;
   return true;
 }
 
@@ -910,7 +914,9 @@ function beginEnhancement(p: HTMLElement, state: ParaState): void {
   state.original.append(...p.childNodes);
   state.enhanced = true;
   p.setAttribute("data-justif", "");
-  if (state.scan.floatIntrusion !== null) p.setAttribute("data-justif-dropcap", "");
+  if (state.scan.floatIntrusion?.kind === "first-letter") {
+    p.setAttribute("data-justif-dropcap", "");
+  }
   // Recorded, since the enhancement is answerable for every declaration it leaves
   // on the author's element — as one group, because these two are one property.
   maskAuthorStyles(p, state, TEXT_AUTOSIZING_DECLARATIONS, "important");
@@ -1229,7 +1235,7 @@ const onDocumentCopy = (e: ClipboardEvent): void => {
     for (const [p, scan] of participant.enhanced()) {
       if (!sel.containsNode(p, true)) continue;
       touches = true;
-      if (scan.runs.some((r) => /[\u00A0\u202F]/.test(r.text))) authorNbsp = true;
+      if (scan.authorHasNbsp) authorNbsp = true;
     }
   }
   if (!touches) return;
@@ -1288,6 +1294,9 @@ export function justify(
   /** Per-controller, so a destroy() + justify() retry gets a fresh chance
    * after content that previously caused a bail has been fixed. */
   const bailed = new WeakSet<HTMLElement>();
+  /** Float decisions depend on descendant CSS, which the paragraph-only
+   * style key cannot see. An explicit rescan always re-reads these targets. */
+  const floatDecisions = new WeakSet<HTMLElement>();
   /**
    * The author styling behind this controller's current decision about each
    * paragraph — the scan it kept, or the styling it declined. `rescan()` compares
@@ -1316,6 +1325,7 @@ export function justify(
    */
   const carriedStyleAttr = new WeakMap<HTMLElement, string | null>();
   let destroyed = false;
+  let rebindFloatObservation: (p: HTMLElement, state?: ParaState) => void = () => {};
 
   const initialResolution = resolveOptions(options);
   /** Fixed for this controller's lifetime: `hyphenate` is outside the
@@ -1349,6 +1359,7 @@ export function justify(
     try {
       scan = readParagraph(p, batch);
       if (typeof scan !== "string") {
+        if (scan.floatIntrusion?.kind === "element") floatDecisions.add(p);
         const bad = scan.specs.find((sp) => !supportsSpec(sp));
         if (bad !== undefined) {
           scan =
@@ -1365,6 +1376,7 @@ export function justify(
     // exactly what the key has to describe.
     decidedStyleKey.set(p, styleKeyNow(p));
     if (typeof scan === "string") {
+      if (/float|shape-outside/i.test(scan)) floatDecisions.add(p);
       bailed.add(p);
       // The batch's temporary autosizing declarations are still present;
       // notify user code only after the finally block has restored them.
@@ -1551,6 +1563,7 @@ export function justify(
         width: scan.contentWidth,
         lastPatch: "",
         enhanced: false,
+        renderedFloat: null,
         nativeIndent: null,
         masked: [],
       });
@@ -1587,12 +1600,16 @@ export function justify(
 
   const safePatch = (p: HTMLElement): PatchOutcome => {
     try {
-      return patchOne(p);
+      const outcome = patchOne(p);
+      rebindFloatObservation(p, ownedState(p));
+      return outcome;
     } catch (error) {
-      return {
+      const outcome = {
         changed: bailToNative(p, `threw while rendering: ${describeError(error)}`),
         pending: null,
       };
+      rebindFloatObservation(p, ownedState(p));
+      return outcome;
     }
   };
 
@@ -1627,6 +1644,7 @@ export function justify(
    * declared below; every call happens long after initialization.) */
   const dropQueued = (p: HTMLElement): void => {
     pendingWidths.delete(p);
+    pendingFloatRelayout.delete(p);
     pendingCorrections.delete(p);
     hiddenCorrections.delete(p);
   };
@@ -1879,14 +1897,20 @@ export function justify(
     hiddenCorrections.delete(p);
     // Per-line target widths: an indented first line has its own measure,
     // and the wrap-guarantee corrections must compare against it.
+    const elementFloat =
+      state.scan.floatIntrusion?.kind === "element" ? state.scan.floatIntrusion : undefined;
+    const pending = writeParagraph(
+      p,
+      layout.rendered,
+      layout.lineWidths,
+      state.scan.floatIntrusion?.lines ?? 0,
+      elementFloat,
+      state.renderedFloat,
+    );
+    state.renderedFloat = pending.renderedFloat;
     return {
       changed: true,
-      pending: writeParagraph(
-        p,
-        layout.rendered,
-        layout.lineWidths,
-        state.scan.floatIntrusion?.lines ?? 0,
-      ),
+      pending,
     };
   };
 
@@ -1937,6 +1961,60 @@ export function justify(
         if (bailToNative(e.p, reason)) emitRelayout(e.p);
       }
     }
+    verifyElementFloats(measure);
+  };
+
+  /**
+   * Second look at an element float's intrusion, from the layout the patch
+   * just produced. The first reading after a width change is taken while the
+   * paragraph still holds the PREVIOUS break's segments; when those no longer
+   * fit beside the float the engine pushes them under it, and the tail rects
+   * then say the float overlaps a single line — an answer that would stick,
+   * since re-breaking to it changes the float's own box not at all.
+   *
+   * Measuring again here breaks that: this layout was built from the geometry
+   * it is being measured against, so a differing answer means the first
+   * reading was the stale one. The pair converges (the corrected break puts
+   * text beside the float, which measures back the same), and the equality
+   * test is what ends it.
+   */
+  const verifyElementFloats = (batch: readonly PatchEntry[]): void => {
+    let queued = false;
+    for (const { p } of batch) {
+      const state = ownedState(p);
+      const intrusion = state?.scan.floatIntrusion;
+      if (state === undefined || intrusion?.kind !== "element") continue;
+      const next = renderedElementFloatIntrusionOf(
+        p,
+        state.renderedFloat ?? intrusion.source,
+        intrusion,
+      );
+      // Unmeasurable is not a verdict: the paragraph keeps the geometry it
+      // has, exactly as the resize observer leaves an unrendered float alone.
+      if (next === null) continue;
+      if (
+        Math.abs(next.inlineSize - intrusion.inlineSize) <= 0.05 &&
+        next.lines === intrusion.lines
+      ) {
+        continue;
+      }
+      state.scan.floatIntrusion = next;
+      state.lastPatch = "";
+      pendingFloatRelayout.add(p);
+      queued = true;
+    }
+    if (queued) restartPendingOrder();
+  };
+
+  /** Re-order the drain queue around a newly queued paragraph and run it.
+   * Entries already dealt with delete their own queue slots, so replaying the
+   * order from the start costs a skipped lookup each and nothing more. */
+  const restartPendingOrder = (): void => {
+    pendingOrder = visibleFirst([
+      ...new Set([...pendingWidths.keys(), ...pendingFloatRelayout]),
+    ]);
+    pendingCursor = 0;
+    scheduleSlice();
   };
 
   /**
@@ -1996,6 +2074,20 @@ export function justify(
     for (const p of paragraphs) {
       const state = ownedState(p);
       if (state === undefined || state.scan.floatIntrusion === null) continue;
+      if (state.scan.floatIntrusion.kind === "element") {
+        const source = state.renderedFloat ?? state.scan.floatIntrusion.source;
+        const next = renderedElementFloatIntrusionOf(p, source, state.scan.floatIntrusion);
+        if (next === null) continue;
+        if (
+          Math.abs(next.inlineSize - state.scan.floatIntrusion.inlineSize) > 0.05 ||
+          next.lines !== state.scan.floatIntrusion.lines
+        ) {
+          state.scan.floatIntrusion = next;
+          state.lastPatch = "";
+          changed = true;
+        }
+        continue;
+      }
       const nextInlineSize = floatInlineSizeOf(p);
       if (nextInlineSize === null) continue;
       // With unchanged font probes, only the live inline size needs this
@@ -2006,6 +2098,7 @@ export function justify(
       // restoration path below and re-read both dimensions instead.
       if (Math.abs(nextInlineSize - state.scan.floatIntrusion.inlineSize) > 0.05) {
         state.scan.floatIntrusion = {
+          kind: "first-letter",
           inlineSize: nextInlineSize,
           lines: state.scan.floatIntrusion.lines,
           style: state.scan.floatIntrusion.style,
@@ -2036,11 +2129,13 @@ export function justify(
       const next = floatIntrusionOf(
         p,
         state.scan.runs.map((run) => run.text).join(""),
+        state.scan.floatIntrusion ?? undefined,
       );
       if (next === null) {
         states.delete(p);
+        rebindFloatObservation(p);
         bailed.add(p);
-        emitSkip(p, "could not remeasure floated ::first-letter after font change");
+        emitSkip(p, "could not remeasure paragraph float after font change");
         emitRelayout(p);
         continue;
       }
@@ -2118,6 +2213,7 @@ export function justify(
   // safety pad, so nothing can re-wrap while its correction is queued, and
   // during a continuous drag superseded corrections are simply dropped.
   const pendingWidths = new Map<HTMLElement, number>();
+  const pendingFloatRelayout = new Set<HTMLElement>();
   const pendingCorrections = new Map<HTMLElement, PendingParagraph>();
   /** Corrections that could not be measured because the paragraph's
    * content was layout-skipped (`content-visibility: auto` off-screen);
@@ -2289,14 +2385,18 @@ export function justify(
       if (wrote && performance.now() - start > SLICE_BUDGET_MS) break;
       const el = pendingOrder[pendingCursor++]!;
       const width = pendingWidths.get(el);
+      const floatRelayout = pendingFloatRelayout.delete(el);
       // Reachable: the observer callback deletes entries superseded by a
       // revert to the current width while the stale order still lists them.
-      if (width === undefined) continue;
-      pendingWidths.delete(el);
+      if (width === undefined && !floatRelayout) continue;
+      if (width !== undefined) pendingWidths.delete(el);
       const state = ownedState(el);
       if (state === undefined) continue;
-      if (Math.abs(width - state.width) < 0.05) continue;
-      state.width = width;
+      if (width !== undefined) {
+        if (Math.abs(width - state.width) < 0.05 && !floatRelayout) continue;
+        state.width = width;
+      }
+      if (floatRelayout) state.lastPatch = "";
       const outcome = safePatch(el);
       if (outcome.changed) {
         if (outcome.pending !== null) pendingCorrections.set(el, outcome.pending);
@@ -2325,7 +2425,13 @@ export function justify(
       }
       flushPatches(batch);
     }
-    if (pendingCorrections.size > 0 || pendingWidths.size > 0) scheduleSlice();
+    if (
+      pendingCorrections.size > 0 ||
+      pendingWidths.size > 0 ||
+      pendingFloatRelayout.size > 0
+    ) {
+      scheduleSlice();
+    }
   };
 
   /** This controller's contribution to the shared copy handler. */
@@ -2342,6 +2448,9 @@ export function justify(
         });
 
   let observer: WidthObserver | null = null;
+  let floatObserver: ResizeObserver | null = null;
+  const observedFloat = new Map<HTMLElement, Element>();
+  const floatParagraph = new WeakMap<Element, HTMLElement>();
   /** Late font loads only matter if they change what canvas measures: a
    * loadingdone fired moments after a commit that already measured those
    * faces (the async path's own loads, a page-driven re-justify) would
@@ -2391,6 +2500,77 @@ export function justify(
       }
     }
     if (options.observeResize !== false) {
+      if (typeof ResizeObserver !== "undefined") {
+        floatObserver = new ResizeObserver((entries) => {
+          let queued = false;
+          for (const entry of entries) {
+            const p = floatParagraph.get(entry.target);
+            if (p === undefined || observedFloat.get(p) !== entry.target) continue;
+            const state = ownedState(p);
+            const intrusion = state?.scan.floatIntrusion;
+            if (state === undefined || intrusion?.kind !== "element") {
+              floatObserver?.unobserve(entry.target);
+              observedFloat.delete(p);
+              continue;
+            }
+            const next = renderedElementFloatIntrusionOf(p, entry.target, intrusion);
+            if (next === null) {
+              // A float that has stopped being rendered — an ancestor turned
+              // `display: none`, a tab panel closed — notifies at 0×0, and its
+              // computed `width` reverts to `auto`, which no geometry can be
+              // read from. Nothing is wrong with the paragraph: it just has no
+              // boxes to measure. Leave the enhancement alone and wait for the
+              // notification that arrives when it is laid out again, or the
+              // teardown below would strand it natively rendered for good (the
+              // recovery notification carries the geometry already on record,
+              // so the equality test below would find nothing to re-queue).
+              const box = entry.contentBoxSize?.[0];
+              const painted =
+                box !== undefined
+                  ? box.inlineSize > 0 || box.blockSize > 0
+                  : entry.contentRect.width > 0 || entry.contentRect.height > 0;
+              if (!painted) continue;
+              dropQueued(p);
+              const changed = bailToNative(
+                p,
+                "could not remeasure leading floated element after resize",
+              );
+              rebindFloatObservation(p);
+              if (changed) emitRelayout(p);
+              continue;
+            }
+            if (
+              Math.abs(next.inlineSize - intrusion.inlineSize) <= 0.05 &&
+              next.lines === intrusion.lines
+            ) {
+              continue;
+            }
+            state.scan.floatIntrusion = next;
+            state.lastPatch = "";
+            pendingFloatRelayout.add(p);
+            queued = true;
+          }
+          if (queued) restartPendingOrder();
+        });
+        rebindFloatObservation = (p, state = ownedState(p)) => {
+          const prior = observedFloat.get(p);
+          const intrusion = state?.scan.floatIntrusion;
+          const next =
+            intrusion?.kind === "element"
+              ? (state?.renderedFloat ?? intrusion.source)
+              : undefined;
+          if (prior === next) return;
+          if (prior !== undefined) {
+            floatObserver?.unobserve(prior);
+            observedFloat.delete(p);
+          }
+          if (next !== undefined) {
+            observedFloat.set(p, next);
+            floatParagraph.set(next, p);
+            floatObserver?.observe(next);
+          }
+        };
+      }
       observer = createWidthObserver((widths) => {
         for (const [el, width] of widths) {
           const state = ownedState(el as HTMLElement);
@@ -2408,13 +2588,19 @@ export function justify(
         // unless a slice is already queued for this frame chain, which
         // would double the drain (and its forced layout) in one frame.
         if (pendingWidths.size > 0) {
-          pendingOrder = visibleFirst([...pendingWidths.keys()]);
+          pendingOrder = visibleFirst([
+            ...new Set([...pendingWidths.keys(), ...pendingFloatRelayout]),
+          ]);
           pendingCursor = 0;
           if (!sliceQueued) drainPending();
         }
       });
       for (const p of paragraphs) {
-        if (ownedState(p) !== undefined) observer.observe(p);
+        const state = ownedState(p);
+        if (state !== undefined) {
+          observer.observe(p);
+          rebindFloatObservation(p, state);
+        }
       }
     }
     document.fonts.addEventListener("loadingdone", onFontsLoaded);
@@ -2517,7 +2703,9 @@ export function justify(
     } finally {
       restoreLifted();
     }
-    const stale = considered.filter((p) => decidedStyleKey.get(p) !== current.get(p));
+    const stale = considered.filter(
+      (p) => floatDecisions.has(p) || decidedStyleKey.get(p) !== current.get(p),
+    );
     if (stale.length === 0) return [];
     const restoreStale = suppressTransitions(stale);
     try {
@@ -2558,6 +2746,7 @@ export function justify(
         dropQueued(p);
       }
       bailed.delete(p);
+      floatDecisions.delete(p);
       scanned.delete(p);
     }
     adopt(stale);
@@ -2567,6 +2756,7 @@ export function justify(
       // as width tracking: an unobserved paragraph never enters nearViewport,
       // so its measured correction would park and never be promoted.
       if (ownedState(p) === undefined) {
+        rebindFloatObservation(p);
         observer?.unobserve(p);
         viewObserver?.unobserve(p);
         revealObserver?.unobserve(p);
@@ -2574,6 +2764,7 @@ export function justify(
         // reported for the same consumers that track the one-line demotion.
         if (wasEnhanced.has(p)) emitRelayout(p);
       } else {
+        rebindFloatObservation(p, ownedState(p));
         observer?.observe(p);
         viewObserver?.observe(p);
         revealObserver?.observe(p);
@@ -2647,6 +2838,7 @@ export function justify(
         clearComposedProtrusionCache();
       }
       pendingWidths.clear();
+      pendingFloatRelayout.clear();
       pendingCorrections.clear();
       hiddenCorrections.clear();
       pendingOrder = [];
@@ -2657,6 +2849,9 @@ export function justify(
       revealObserver?.disconnect();
       observer?.disconnect();
       observer = null;
+      floatObserver?.disconnect();
+      floatObserver = null;
+      observedFloat.clear();
       for (const p of paragraphs) {
         if (ownedState(p) !== undefined) restore(p);
       }

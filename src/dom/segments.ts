@@ -531,7 +531,9 @@ export function buildRenderSegments(
         floatedPrefix,
         floatedStyle:
           floatedPrefix !== undefined && !floatStyleEmitted
-            ? scan.floatIntrusion?.style
+            ? scan.floatIntrusion?.kind === "first-letter"
+              ? scan.floatIntrusion.style
+              : undefined
             : undefined,
         floatedInnerStyle:
           floatedPrefix !== undefined ? srcRun.floatInnerStyle : undefined,

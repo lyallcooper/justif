@@ -301,6 +301,8 @@ export interface PendingParagraph {
   /** Leading lines whose coordinate edge depends on a float. Correct these
    * from their measured physical width rather than the paragraph edge. */
   physicalFitLines: number;
+  /** Live deep clone of an authored leading float, when present. */
+  renderedFloat: Element | null;
 }
 
 
@@ -310,6 +312,13 @@ export function writeParagraph(
   contents: readonly RenderContent[],
   lineWidths: readonly number[],
   physicalFitLines = 0,
+  leadingFloat?: { source: Element; leadingTrivia: readonly Node[] },
+  /** The float this paragraph is already rendering, from the previous patch.
+   * Kept in place rather than re-cloned: a resize drag patches once per
+   * frame, and a fresh clone each time would restart the float's CSS
+   * transitions and image decode, drop listeners the page attached to it,
+   * and blur anything focused inside it. */
+  previousFloat?: Element | null,
 ): PendingParagraph {
   const doc = p.ownerDocument;
   const root = p.getRootNode();
@@ -323,6 +332,23 @@ export function writeParagraph(
   const lineElements: LineEntry[][] = [[]];
 
   const fragment = doc.createDocumentFragment();
+  let renderedFloat: Element | null = null;
+  /** The reused float, still attached to `p` — so the install below has to
+   * replace its FOLLOWING siblings rather than every child. */
+  let keptFloat: Element | null = null;
+  if (leadingFloat !== undefined) {
+    // The enhanced DOM always opens with the trivia then the float, so a
+    // still-attached float from the previous patch is already in position
+    // together with its trivia: only what follows needs rewriting.
+    if (previousFloat != null && previousFloat.parentNode === p) {
+      keptFloat = previousFloat;
+      renderedFloat = previousFloat;
+    } else {
+      for (const node of leadingFloat.leadingTrivia) fragment.append(node.cloneNode(true));
+      renderedFloat = leadingFloat.source.cloneNode(true) as Element;
+      fragment.append(renderedFloat);
+    }
+  }
   // One clone per source element for the whole paragraph: segments of the
   // same source element are contiguous, so a plain stack suffices and
   // elements never need duplicating (ids, tab stops, and accessible names
@@ -531,8 +557,19 @@ export function writeParagraph(
   // line box after itself. Consecutive breaks retain all preceding empty
   // entries, so <br><br> still contributes two native-height lines.
   if (lastWasHardBreak) lineElements.pop();
-  p.replaceChildren(fragment);
-  return { doc, paragraph: p, lineElements, lineWidths, physicalFitLines };
+  if (keptFloat === null) p.replaceChildren(fragment);
+  else {
+    while (keptFloat.nextSibling !== null) keptFloat.nextSibling.remove();
+    p.append(fragment);
+  }
+  return {
+    doc,
+    paragraph: p,
+    lineElements,
+    lineWidths,
+    physicalFitLines,
+    renderedFloat,
+  };
 }
 
 export interface SpacingCorrection {
@@ -701,13 +738,18 @@ function contentEndOf(
  * line: a decorated inline's border box, the clone holding a relocated end
  * margin, a pseudo-hyphen span, or the final glyph run itself (measured
  * without its collapsible trailing spaces, which paint nothing).
+ *
+ * Null when only a source-offset Range could carry the answer and this
+ * segment's `text-transform` changes the text's length, which puts those
+ * offsets out of step with the glyph run — the same read measureLineExtent
+ * refuses to make. The caller leaves the line's provisional pad standing.
  */
 function paintedEndOf(
   entries: readonly LineEntry[],
   endText: (LineEntry & { seg: RenderSegment }) | undefined,
   range: Range,
   rtl: boolean,
-): { value: number; rect: DOMRect } {
+): { value: number; rect: DOMRect } | null {
   const paintEndEntry = entries[entries.length - 1]!;
   let paintRect: DOMRect;
   if (paintEndEntry.paintEndEl !== undefined) {
@@ -734,6 +776,7 @@ function paintedEndOf(
         // collapsible space, so this is the path lines actually take.
         paintRect = endText!.el.getBoundingClientRect();
       } else {
+        if (endText!.seg.transformChangesLength === true) return null;
         range.setStart(node, 0);
         range.setEnd(node, end);
         paintRect = range.getBoundingClientRect();
@@ -913,6 +956,7 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
           const contentEnd = contentEndOf(fragment, paragraphStyle, rtl === true);
           const paintEndEntry = entries[entries.length - 1]!;
           const painted = paintedEndOf(entries, endText, range, rtl === true);
+          if (painted === null) continue;
           const paintRect = painted.rect;
           // The hyphen carrier is the one line-end box the engine can move
           // off this line on its own (an emergency break at its segment
