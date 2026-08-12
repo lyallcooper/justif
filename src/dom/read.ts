@@ -393,6 +393,16 @@ function inlineInsets(
  * `full-width` and `full-size-kana` are excluded for a smaller reason: they
  * substitute glyphs whose protrusion the table would still be answering for
  * the ASCII source characters.
+ *
+ * `lowercase` carries one measured, accepted defect: Greek capital sigma is
+ * context-sensitive (Σ lowercases to ς word-finally, σ elsewhere), and
+ * engines scope that decision to the inline box — a per-line span ending in
+ * Σ renders ς where the native page showed σ (`<span>ΟΣ</span><span>Ο</span>`
+ * lowercases to "οςο" in Chromium and WebKit). A justified Greek paragraph
+ * under `lowercase` can therefore show a final-form sigma at a line break
+ * mid-word. Guarding it would mean detecting capital sigma before every
+ * split point for a shape (all-caps Greek under lowercase) real pages
+ * essentially never have; the mismatch is accepted rather than paid for.
  */
 function supportedTextTransform(value: string): boolean {
   return value === "none" || value === "uppercase" || value === "lowercase";
