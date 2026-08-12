@@ -86,6 +86,30 @@ describe("release changelog metadata", () => {
       }),
     ).toThrow("README.md CDN pin");
   });
+
+  it("pins repository images to the release tag", () => {
+    const notes = `<picture>
+  <source type="image/avif" srcset="docs/images/example.avif">
+  <img src="docs/images/example.png" alt="Example">
+</picture>
+
+![Another example](docs/images/another.png)`;
+    const releaseChangelog = changelog.replace("- Previous work.", notes);
+    const rewritten = validateReleaseMetadata({
+      tag: "v1.2.3",
+      packageVersion: "1.2.3",
+      changelog: releaseChangelog,
+      readme:
+        '<script src="https://cdn.jsdelivr.net/npm/justif@1.2.3/dist/auto.js"></script>',
+    }).notes;
+    const assetRoot =
+      "https://raw.githubusercontent.com/lyallcooper/justif/v1.2.3/docs/images/";
+
+    expect(rewritten).toContain(`srcset="${assetRoot}example.avif"`);
+    expect(rewritten).toContain(`src="${assetRoot}example.png"`);
+    expect(rewritten).toContain(`](${assetRoot}another.png)`);
+    expect(releaseChangelog).toContain('src="docs/images/example.png"');
+  });
 });
 
 describe("README release synchronization", () => {

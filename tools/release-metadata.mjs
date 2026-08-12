@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 
 const VERSION_PATTERN = "\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?";
 const VERSION_RE = new RegExp(`^${VERSION_PATTERN}$`);
+const RAW_REPOSITORY_URL =
+  "https://raw.githubusercontent.com/lyallcooper/justif";
 
 export function parseChangelog(changelog) {
   const headings = [
@@ -84,6 +86,37 @@ export function promoteUnreleased(changelog, version, date) {
   return changelog.slice(0, heading.index) + replacement + changelog.slice(end);
 }
 
+function rewriteReleaseImageUrls(notes, tag) {
+  if (!tag.startsWith("v")) {
+    throw new Error(`Invalid release tag: ${tag}`);
+  }
+  assertVersion(tag.slice(1));
+  const assetRoot = `${RAW_REPOSITORY_URL}/${tag}/`;
+  const rewritePath = (path) =>
+    path.startsWith("docs/images/") ? `${assetRoot}${path}` : path;
+
+  return notes
+    .replace(
+      /\b(src|srcset)=(['"])([^'"]+)\2/g,
+      (_attribute, name, quote, value) => {
+        const rewritten = value
+          .split(",")
+          .map((candidate) => {
+            const match = candidate.match(/^(\s*)(\S+)(.*)$/);
+            if (!match) return candidate;
+            return `${match[1]}${rewritePath(match[2])}${match[3]}`;
+          })
+          .join(",");
+        return `${name}=${quote}${rewritten}${quote}`;
+      },
+    )
+    .replace(
+      /(!\[[^\]]*\]\()(docs\/images\/[^)\s]+)(\))/g,
+      (_image, opening, path, closing) =>
+        `${opening}${rewritePath(path)}${closing}`,
+    );
+}
+
 export function validateReleaseMetadata({
   tag,
   packageVersion,
@@ -107,7 +140,10 @@ export function validateReleaseMetadata({
     );
   }
 
-  const notes = extractReleaseNotes(changelog, packageVersion);
+  const notes = rewriteReleaseImageUrls(
+    extractReleaseNotes(changelog, packageVersion),
+    tag,
+  );
   const pins = [
     ...readme.matchAll(
       new RegExp(`/npm/justif@(${VERSION_PATTERN})/`, "g"),
