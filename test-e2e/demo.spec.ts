@@ -214,6 +214,23 @@ test("specimen sample sets its opening lines beside the drop cap", async ({ page
   expect(geometry.besideFloat).toBeGreaterThan(8);
   expect(geometry.belowFloatAtMargin).toBeGreaterThan(4);
 
+  // The initial fills its box exactly: the face's metrics (ascent 80%,
+  // descent 0) and the strut fallback pin the baseline, so no engine's
+  // fallback half-leading may shift the glyph inside the background plate.
+  const fit = await para.evaluate((p) => {
+    const group = p.querySelector(".dropcap-group")!;
+    const cap = group.querySelector(".dropcap")!;
+    const range = document.createRange();
+    range.setStart(cap.firstChild!, 0);
+    range.setEnd(cap.firstChild!, 1);
+    const g = group.getBoundingClientRect();
+    const t = range.getClientRects()[0]!;
+    return { dxLeft: t.left - g.left, dyTop: t.top - g.top, dyBottom: g.bottom - t.bottom };
+  });
+  expect(Math.abs(fit.dxLeft)).toBeLessThan(1);
+  expect(Math.abs(fit.dyTop)).toBeLessThan(1);
+  expect(Math.abs(fit.dyBottom)).toBeLessThan(1);
+
   // The native column shows the same structure for comparison.
   await expect(page.locator("#native > p.has-dropcap .dropcap")).toHaveText("T");
 });

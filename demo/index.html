@@ -261,6 +261,20 @@
     font-style: normal;
     font-display: block;
   }
+  /* The initials' ink is exactly a 0.8em square on the baseline and the face
+     carries matching metrics (ascent 80%, descent 0) — but the face covers
+     one letter, and engines disagree on which font struts the line when the
+     first face cannot: WebKit takes the initial's metrics, Blink can take
+     the fallback's, shifting the glyph by the fallback's half-leading.
+     Carrying the initials' metrics on a file the page has already loaded
+     settles it (lyall.co's arrangement). */
+  @font-face {
+    font-family: "Goudy Initialen Strut";
+    src: url("./fonts/Junicode-Roman-2.230.woff2") format("truetype-variations");
+    ascent-override: 80%;
+    descent-override: 0%;
+    line-gap-override: 0%;
+  }
 
   :root {
     color-scheme: light;
@@ -280,6 +294,12 @@
     --good: #2a6b46;
     --float-shadow: rgb(0 0 0 / 0.16);
     --scroll-shadow: rgb(0 0 0 / 0.28);
+    /* The specimen's initial, lyall.co's values: maroon ink on the page in
+       light mode, light ink on a maroon square in dark. The tint is also
+       what keeps the engraving legible — Blink's glyph-mask gamma scales
+       with ink darkness, and pure black clogs the hairline vines. */
+    --dropcap: #84362f;
+    --dropcap-bg: transparent;
   }
   :root[data-theme="dark"] {
     color-scheme: dark;
@@ -294,6 +314,8 @@
     --good: #72bd8b;
     --float-shadow: rgb(0 0 0 / 0.55);
     --scroll-shadow: rgb(255 255 255 / 0.2);
+    --dropcap: #ddd;
+    --dropcap-bg: #84362f;
   }
   @media (prefers-color-scheme: dark) {
     :root[data-theme="system"] {
@@ -309,6 +331,8 @@
       --good: #72bd8b;
       --float-shadow: rgb(0 0 0 / 0.55);
       --scroll-shadow: rgb(255 255 255 / 0.2);
+      --dropcap: #ddd;
+      --dropcap-bg: #84362f;
     }
   }
 
@@ -738,7 +762,8 @@
     float: left;
     width: 0.8em;
     margin: 0.04em 0.05em -0.03em 0;
-    font-family: "Goudy Initialen", serif;
+    background: var(--dropcap-bg);
+    font-family: "Goudy Initialen", "Goudy Initialen Strut", serif;
     font-size: 7.112em;
     font-style: normal;
     font-weight: 400;
@@ -755,7 +780,10 @@
        Only the initial gets this — body text wants the default weight. */
     text-rendering: geometricPrecision;
   }
-  .article .dropcap { display: block; }
+  .article .dropcap {
+    display: block;
+    color: var(--dropcap);
+  }
   /* The paragraph's opening quote hangs beside the initial, in the article
      face at text scale. */
   .article .dropcap-quote {
