@@ -414,6 +414,77 @@ test("gap highlights use a symmetric grayscale ramp", async ({ page }) => {
   });
 });
 
+test("metrics read the drop cap as neither a word space nor a line", async ({ page }) => {
+  await page.goto("/demo/");
+  await page.click("#dock-toggle");
+  await page.selectOption("#sample", "specimen");
+  await page.check("#deviation");
+
+  const rows = page.locator("#metrics table").nth(1).locator("tbody tr");
+  const loosest = rows.nth(3).locator("td").nth(2);
+  await expect(rows.nth(3).locator("td").nth(0)).toHaveText("loosest space");
+  // The float is 0.8em of a 6.75em initial wide — the better part of the
+  // measure. Counted as a space it dwarfs every real one (it reported around
+  // +2300%, in both columns at once), so any plausible word space is proof
+  // enough that the initial is not one. Polled: the row holds a placeholder
+  // until the first analysis lands.
+  await expect
+    .poll(async () => Number((await loosest.textContent())!.match(/\d+/)?.[0] ?? NaN), {
+      timeout: 15_000,
+    })
+    .toBeLessThan(500);
+
+  // Nor does the drop cap collect a deviation mark of its own.
+  const marksOverFloat = await page.locator("#enhanced").evaluate((article) => {
+    const float = article.querySelector(".dropcap-group")!.getBoundingClientRect();
+    return [...article.querySelectorAll(".gapmark")].filter((mark) => {
+      const r = mark.getBoundingClientRect();
+      return r.right > float.left + 1 && r.left < float.right - 1 &&
+        r.bottom > float.top + 1 && r.top < float.bottom - 1;
+    }).length;
+  });
+  expect(marksOverFloat).toBe(0);
+
+  // The initial and its hanging quote sit outside the flow, so neither adds
+  // a line to the count: it matches the body lines a reader can count.
+  const counts = await page.evaluate(() => {
+    const bodyLines = (article: Element) => {
+      const range = document.createRange();
+      let total = 0;
+      for (const p of article.querySelectorAll("p")) {
+        const tops: number[] = [];
+        const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+        for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
+          const parent = n.parentElement!;
+          if (parent.closest(".dropcap-group") !== null) continue;
+          const re = /\S+/g;
+          let m;
+          while ((m = re.exec(n.nodeValue ?? "")) !== null) {
+            range.setStart(n, m.index);
+            range.setEnd(n, m.index + m[0].length);
+            for (const r of range.getClientRects()) {
+              if (r.width > 0) tops.push(r.top);
+            }
+          }
+        }
+        tops.sort((a, b) => a - b);
+        total += tops.filter((top, i) => i === 0 || top - tops[i - 1]! >= 10).length;
+      }
+      return total;
+    };
+    const reported = document.querySelector("#metrics table")!
+      .querySelector("tbody tr")!.querySelectorAll("td");
+    return {
+      native: { measured: bodyLines(document.getElementById("native")!),
+        reported: Number(reported[1]!.textContent) },
+      enhanced: { measured: bodyLines(document.getElementById("enhanced")!),
+        reported: Number(reported[2]!.textContent) },
+    };
+  });
+  expect(counts.native.reported).toBe(counts.native.measured);
+  expect(counts.enhanced.reported).toBe(counts.enhanced.measured);
+});
+
 test("metrics leave equally natural spacing unranked", async ({ page }) => {
   await page.goto("/demo/");
   await page.click("#dock-toggle");

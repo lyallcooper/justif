@@ -3272,12 +3272,41 @@ await controller.ready;</code></pre>
     return width;
   }
 
+  // Text that sits outside the paragraph's inline flow belongs to no line:
+  // the specimen's drop cap is a float the opening lines are set BESIDE, and
+  // its quote is positioned against that float. Measured as words, the drop
+  // cap invents a one-box line of its own (inflating the line count in both
+  // columns) and the distance from the quote across the initial to the first
+  // real word reads as a single word space of some 2300% — which then lands in
+  // the mean, the deviation, the spread and the loosest-space row alike.
+  function inFlowChecker(p) {
+    const known = new Map();
+    const check = (el) => {
+      if (el === p || el === null) return true;
+      let result = known.get(el);
+      if (result === undefined) {
+        const cs = getComputedStyle(el);
+        result =
+          cs.float === "none" &&
+          cs.position !== "absolute" &&
+          cs.position !== "fixed" &&
+          check(el.parentElement);
+        known.set(el, result);
+      }
+      return result;
+    };
+    return check;
+  }
+
   function paragraphGeometry(p) {
     const words = []; // { rects: DOMRect[], natural }
+    const inFlow = inFlowChecker(p);
     const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
       const text = node.nodeValue;
-      const natural = naturalSpaceOf(node.parentElement ?? p);
+      const parent = node.parentElement ?? p;
+      if (!inFlow(parent)) continue;
+      const natural = naturalSpaceOf(parent);
       const re = /\S+/g;
       let m;
       while ((m = re.exec(text)) !== null) {
@@ -3285,7 +3314,7 @@ await controller.ready;</code></pre>
         sharedRange.setEnd(node, m.index + m[0].length);
         const rects = [...sharedRange.getClientRects()].filter((r) => r.width > 0);
         if (rects.length > 0) {
-          words.push({ rects, natural, text: m[0], el: node.parentElement ?? p });
+          words.push({ rects, natural, text: m[0], el: parent });
         }
       }
     }
