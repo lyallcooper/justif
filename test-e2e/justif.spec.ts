@@ -5809,6 +5809,179 @@ test("fixed-space paragraphs remain stable with tracking and expansion", async (
   }
 });
 
+test("a fixed-space run ending a line beside a float hangs whole", async ({
+  page,
+}) => {
+  // Beside a float the engines fit a line by its physical ink width, so its
+  // hang has to leave the line box for real rather than ride on an end
+  // margin. A trailing separator run hangs SEVERAL boxes: hang one of them
+  // and the rest either drops the whole line below the float or gets
+  // squeezed back out of the line's word spaces. The second shape also
+  // hangs the collapsible space in front of the run.
+  const sources = {
+    welded:
+      "an all too common one at that. Wide\u2003\u2003\u2003 gaps and rivers of " +
+      "whitespace certainly do not honor content and more words here to fill.",
+    spaced:
+      "an all too common one at that. Wide \u2003\u2003\u2003 gaps and rivers of " +
+      "whitespace certainly do not honor content and more words here to fill.",
+  };
+  /** The fixture paragraphs' own line box: 20px × 1.35. */
+  const LINE_HEIGHT_PX = 27;
+  await page.evaluate((texts) => {
+    const host = document.createElement("div");
+    host.id = "float-fixed-space-host";
+    for (const [id, text] of Object.entries(texts)) {
+      const p = document.createElement("p");
+      p.id = `float-fixed-space-${id}`;
+      p.style.cssText = "font:20px/1.35 Georgia,serif;text-align:justify;margin:0 0 24px";
+      const marker = document.createElement("span");
+      marker.className = "marker";
+      marker.style.cssText =
+        "float:left;width:80px;height:80px;margin-right:8px;background:#ddd";
+      p.append(marker, document.createTextNode(text));
+      host.append(p);
+    }
+    document.body.append(host);
+  }, sources);
+
+  await enhance(page, {}, "#float-fixed-space-host p");
+
+  interface Measured {
+    paragraph: string;
+    width: number;
+    /** Largest step between successive line tops. A line the engine refuses
+     * to fit beside the float lands under it, leaving the float's whole
+     * height as a hole in the text. */
+    topStep: number;
+    /** Lines ending in a fixed-separator run while beside the float. */
+    runEnds: Array<{
+      /** Narrowest gap on the line as a fraction of the natural space
+       * advance: a fully shrunken line keeps most of it, a line paying for
+       * an unhung run loses all of it and sets its words on top of each
+       * other. */
+      gapRatio: number;
+      /** Distance from the line's painted end to the measure. */
+      endGap: number;
+    }>;
+  }
+  const measured: Measured[] = [];
+  // From 210px up: at 200 the measure beside the float leaves this text no
+  // spare at all, and the engines drop the line below the float on any build.
+  for (const width of [210, 220, 230, 240, 260, 280]) {
+    await page.evaluate((w) => {
+      document.getElementById("float-fixed-space-host")!.style.width = `${w}px`;
+    }, width);
+    await waitForQuiescence(page, "#float-fixed-space-host");
+    measured.push(
+      ...(await page.evaluate((w) => {
+        const probe = document.createElement("span");
+        probe.style.cssText =
+          "font:20px/1.35 Georgia,serif;position:absolute;visibility:hidden;white-space:pre";
+        document.body.append(probe);
+        probe.textContent = "a a";
+        const spaced = probe.getBoundingClientRect().width;
+        probe.textContent = "aa";
+        const space = spaced - probe.getBoundingClientRect().width;
+        probe.remove();
+
+        return [...document.querySelectorAll<HTMLElement>("#float-fixed-space-host p")].map(
+          (p) => {
+            const box = p.getBoundingClientRect();
+            const markerWidth = p
+              .querySelector<HTMLElement>(".marker")!
+              .getBoundingClientRect().width;
+            const lines = new Map<
+              number,
+              { top: number; left: number; right: number; last: string; gap: number }
+            >();
+            for (const segment of p.querySelectorAll<HTMLElement>(".justif-seg")) {
+              const rect = segment.getBoundingClientRect();
+              const text = segment.textContent ?? "";
+              const top = Math.round(rect.top);
+              const line = lines.get(top) ?? {
+                top,
+                left: rect.left,
+                right: rect.right,
+                last: text,
+                gap: Infinity,
+              };
+              line.right = Math.max(line.right, rect.right);
+              line.last = text;
+              if (text.includes(" ")) {
+                const wordSpacing =
+                  Number.parseFloat(getComputedStyle(segment).wordSpacing) || 0;
+                line.gap = Math.min(line.gap, space + wordSpacing);
+              }
+              lines.set(top, line);
+            }
+            const tops = [...lines.keys()].sort((a, b) => a - b);
+            let topStep = 0;
+            for (let i = 1; i < tops.length; i++) {
+              topStep = Math.max(topStep, tops[i]! - tops[i - 1]!);
+            }
+            const runEnds = [...lines.values()]
+              .filter(
+                (line) =>
+                  /^[\u1680\u2000-\u200A\u205F\u3000]+$/u.test(line.last) &&
+                  line.left > box.left + markerWidth * 0.8,
+              )
+              .map((line) => ({
+                gapRatio: line.gap === Infinity ? 1 : line.gap / space,
+                endGap: box.right - line.right,
+              }));
+            return { paragraph: p.id, width: w, topStep, runEnds };
+          },
+        );
+      }, width)),
+    );
+  }
+
+  const texts = await page.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>("#float-fixed-space-host p")].map((p) => ({
+      id: p.id,
+      text: p.textContent ?? "",
+      enhanced: p.hasAttribute("data-justif"),
+    })),
+  );
+  for (const { id, text, enhanced } of texts) {
+    expect(enhanced, `${id} is enhanced`).toBe(true);
+    // The run and the space hung with it are source text, not spacing:
+    // hanging them must not consume either.
+    expect(text, `${id} keeps its separator run`).toContain(
+      id.endsWith("spaced") ? "Wide \u2003\u2003\u2003" : "Wide\u2003\u2003\u2003",
+    );
+  }
+
+  for (const shape of Object.keys(sources)) {
+    const paragraph = `float-fixed-space-${shape}`;
+    const own = measured.filter((entry) => entry.paragraph === paragraph);
+    for (const entry of own) {
+      expect
+        .soft(entry.topStep, `${shape} at ${entry.width}px sets every line beside the float`)
+        .toBeLessThan(LINE_HEIGHT_PX * 1.5);
+      for (const line of entry.runEnds) {
+        expect
+          .soft(line.gapRatio, `${shape} at ${entry.width}px keeps its word spaces`)
+          .toBeGreaterThan(0.5);
+        expect
+          .soft(line.endGap, `${shape} at ${entry.width}px fills the measure`)
+          .toBeLessThan(2);
+        expect
+          .soft(line.endGap, `${shape} at ${entry.width}px stays inside the measure`)
+          .toBeGreaterThan(-2);
+      }
+    }
+    // Checked last so the diagnostics above are reported too: without a line
+    // that ends at the run while beside the float, they would all pass on a
+    // build that simply drops such lines under it.
+    expect(
+      own.reduce((sum, entry) => sum + entry.runEnds.length, 0),
+      `${shape} ends a line at the run beside the float`,
+    ).toBeGreaterThan(0);
+  }
+});
+
 test("Unicode line and paragraph separators leave paragraphs native", async ({
   page,
 }) => {
