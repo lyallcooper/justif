@@ -2,40 +2,23 @@
 
 ## Unreleased
 
-- Paragraphs may now begin with a floated element, with the lines beside it
-  justified to the remaining width. Other floats still use native browser
-  justification.
-- `text-transform: uppercase` and `lowercase` no longer send a paragraph back
-  to browser justification. Transformed text is measured as it renders, so the
-  small-caps and `ß`-to-`SS` idioms are justified like ordinary prose.
-  `capitalize` still falls back to the browser.
-- Fixed-width Unicode spaces — en space, em space, thin space and the rest —
-  now keep their character and their width. They used to be replaced with
-  ordinary spaces, so copied text differed from what the page showed.
-- Paragraphs containing U+2028, U+2029, form feed, or vertical tab are now left
-  to the browser. Engines disagree on how wide these are and whether they break
-  a line, and Safari could split a line apart after justification had finished.
-- Hanging punctuation no longer shifts the text it sits beside. The character
-  next to a hung mark keeps the alignment it would have had on its own.
-- A paragraph's naturally short last line is no longer treated as sitting
-  beside a float on the same edge (a right float in left-to-right text). It
-  used to be squeezed to the beside-float width, which could wrap it into a
-  spurious extra line.
-- Resizing no longer flashes one invalid frame per width step. Paragraphs
-  are now re-broken in the same rendering update that observes the resize,
-  before it paints; previously the browser's own reflow of the outgoing
-  lines could paint first — most visibly beside a drop cap, where the text
-  briefly dropped below the float while dragging a window edge.
-- Fixed a crash while measuring a line that both ends in a hung character
-  and starts or ends at a trimmed space (no-break and fixed-width space runs
-  make this shape likely). The error silently abandoned spacing corrections
-  for every paragraph in the batch, and a paragraph with a leading float
-  could lose its wrap around the float entirely. A measurement failure now
-  also degrades to the provisional spacing for the affected batch instead of
-  aborting the enhancement pass.
+- Paragraphs can now begin with a floated element. Text besides the float is
+  justified to the available width.
 - Which characters hang is now configurable. See the [README
   section](https://github.com/lyallcooper/justif#protrusion-and-hanging-punctuation)
-  for more details.
+  for configuration details.
+- Uppercase and lowercase css text transformations no longer prevent
+  justification.
+- Resizing no longer briefly displays incorrect line breaks, especially beside
+  drop caps.
+- Hanging punctuation no longer shifts adjacent text out of alignment.
+- Short final lines no longer wrap unnecessarily beside a float.
+- Fixed-width spaces such as `&emsp` and `&ensp` now retain their original
+  characters and widths.
+- Fixed justification failures in lines combining hanging punctuation and
+  nonstandard spaces.
+- Paragraphs containing uncommon control or separator characters now safely
+  use browser justification.
 
 ## 0.7.2 (2026-08-07)
 
