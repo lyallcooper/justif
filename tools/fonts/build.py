@@ -29,9 +29,9 @@ which is preloaded and gates the first paint.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import os
-import shutil
 import sys
 import tarfile
 import tempfile
@@ -40,9 +40,14 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from fontTools import subset
-from fontTools.ttLib import TTFont
-from fontTools.varLib import instancer
+try:
+    from fontTools import subset
+    from fontTools.ttLib import TTFont
+    from fontTools.varLib import instancer
+except ModuleNotFoundError as error:
+    raise SystemExit(
+        f"{error}\nThis script expects to be run by uv: uv run tools/fonts/build.py"
+    )
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT_DIR = ROOT / "demo" / "fonts"
@@ -310,7 +315,10 @@ def fetch(url: str) -> bytes:
     """Download once per run of the tool, then reuse from the cache dir."""
     if url.startswith("local:"):
         return (OUT_DIR / url[len("local:"):]).read_bytes()
-    cached = cache_dir() / (str(abs(hash(url))) + "-" + url.rsplit("/", 1)[-1][:60])
+    # A stable digest: hash() is randomized per interpreter run, which would
+    # miss the cache on every invocation and strand one orphan copy per run.
+    key = hashlib.sha256(url.encode()).hexdigest()[:16]
+    cached = cache_dir() / (key + "-" + url.rsplit("/", 1)[-1][:60])
     if cached.exists():
         return cached.read_bytes()
     request = urllib.request.Request(url, headers={"User-Agent": "justif-font-build"})
@@ -456,6 +464,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    if shutil.which("uv") is None and "fontTools" not in sys.modules:
-        print("This script expects to be run by uv: uv run tools/fonts/build.py")
     sys.exit(main())
