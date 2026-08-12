@@ -17,6 +17,10 @@
   a line, and Safari could split a line apart after justification had finished.
 - Hanging punctuation no longer shifts the text it sits beside. The character
   next to a hung mark keeps the alignment it would have had on its own.
+- A paragraph's naturally short last line is no longer treated as sitting
+  beside a float on the same edge (a right float in left-to-right text). It
+  used to be squeezed to the beside-float width, which could wrap it into a
+  spurious extra line.
 - Which characters hang is now configurable. See the [README
   section](https://github.com/lyallcooper/justif#protrusion-and-hanging-punctuation)
   for more details.

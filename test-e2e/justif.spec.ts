@@ -990,6 +990,60 @@ test("right and logical leading floats exclude the correct physical edge", async
   ).toBe(true);
 });
 
+test("a naturally short last line is not counted as right-float overlap", async ({ page }) => {
+  // The failing shape: the float's intruded lines run right up to the
+  // paragraph's final line, which is naturally short (ragged) at the same
+  // edge the float occupies. Its shortfall must read as "last line", not as
+  // float overlap, or the last line is set to the narrowed measure and
+  // gains a spurious wrap.
+  const result = await page.evaluate(async () => {
+    const style = document.createElement("style");
+    style.textContent = `
+      #ragged-after-float { width: 340px; margin: 0; font: 17px/24px Georgia, serif; text-align: justify; }
+      #ragged-after-float > .marker { float: right; width: 200px; height: 40px; margin: 0; }
+    `;
+    document.head.append(style);
+    const p = document.createElement("p");
+    p.id = "ragged-after-float";
+    p.innerHTML =
+      '<span class="marker"></span>Tiny words sit by the box and the tale then ends on one line.';
+    document.getElementById("host")!.replaceChildren(p);
+    const native = window.__justifLines(p);
+    const contentLeft = p.getBoundingClientRect().left;
+    const ctl = window.__justif.justify([p]);
+    await ctl.ready;
+    const enhanced = window.__justifLines(p);
+    const output = {
+      native,
+      enhanced,
+      contentLeft,
+      segments: p.querySelectorAll(":scope > .justif-seg").length,
+      enhancedAttr: p.hasAttribute("data-justif"),
+    };
+    ctl.destroy();
+    return output;
+  });
+  expect(result.enhancedAttr).toBe(true);
+  // Shape guards, so metric drift fails loudly instead of skipping the bug
+  // path: every native line before the last sets beside the 200px float,
+  // and the native last line is ragged by more than half the float width
+  // yet wider than the beside-float measure.
+  const nativeLast = result.native.lines[result.native.lines.length - 1]!;
+  for (const line of result.native.lines.slice(0, -1)) {
+    expect(line.right).toBeLessThan(result.native.contentRight - 150);
+  }
+  expect(result.native.contentRight - nativeLast.right).toBeGreaterThan(100);
+  expect(nativeLast.right - result.contentLeft).toBeGreaterThan(150);
+  // The breaker sets the same number of lines the native layout had: the
+  // last line was measured at the full measure, not squeezed beside a float
+  // it never touches. (A phantom narrowed line self-heals visually — the
+  // extra segment reflows onto the previous line once the float ends above
+  // it — so the segment count is the observable, not the visual line
+  // count.)
+  expect(result.segments).toBe(result.native.lines.length);
+  expect(result.enhanced.lines.length).toBe(result.native.lines.length);
+});
+
 test("unsupported leading-element float arrangements stay native with specific reasons", async ({
   page,
 }) => {

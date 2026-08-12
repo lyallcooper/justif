@@ -752,6 +752,82 @@ function visualLines(
   return lines;
 }
 
+/** Content-box edges and resolved line height of a paragraph, in viewport
+ * coordinates — the frame both float paths measure line shortfall against. */
+function paragraphContentBox(
+  p: HTMLElement,
+  paragraphStyle: CSSStyleDeclaration,
+): { left: number; right: number; top: number; lineHeight: number } {
+  const rect = p.getBoundingClientRect();
+  return {
+    left: rect.left + pxValue(paragraphStyle.borderLeftWidth) + pxValue(paragraphStyle.paddingLeft),
+    right: rect.right - pxValue(paragraphStyle.borderRightWidth) - pxValue(paragraphStyle.paddingRight),
+    top: rect.top + pxValue(paragraphStyle.borderTopWidth) + pxValue(paragraphStyle.paddingTop),
+    lineHeight: parseFloat(paragraphStyle.lineHeight) || pxValue(paragraphStyle.fontSize) * 1.2,
+  };
+}
+
+/** Whether the paragraph's last line is naturally short at `floatSide`. A
+ * start-aligned (or centered) final line measures short at its ragged edge
+ * whether or not a float reaches it, so observed shortfall there is not
+ * evidence of intrusion. Reads the alignment governing the CURRENTLY
+ * rendered layout: the author's native justification during the scan, and
+ * the masked text-align (flush to the line-start edge) while enhanced. */
+function lastLineRaggedAt(
+  paragraphStyle: CSSStyleDeclaration,
+  floatSide: "left" | "right",
+): boolean {
+  if (paragraphStyle.textAlign === "justify-all") return false;
+  const last = paragraphStyle.getPropertyValue("text-align-last") || "auto";
+  if (last === "justify") return false;
+  if (last === "center") return true;
+  const direction = paragraphStyle.direction === "rtl" ? "rtl" : "ltr";
+  // The physical edge the last line stays flush against; it is ragged at
+  // the opposite one. `auto` and `start` follow direction (`auto` under
+  // text-align: justify falls back to start).
+  let flushEdge: "left" | "right";
+  if (last === "left" || last === "right") flushEdge = last;
+  else if (last === "end") flushEdge = direction === "rtl" ? "left" : "right";
+  else flushEdge = direction === "rtl" ? "right" : "left";
+  return floatSide !== flushEdge;
+}
+
+/** Count the consecutive line boxes a float narrows, from the observed
+ * inline shortfall of each rendered line backstopped by the float's
+ * vertical extent. The vertical prediction matters when the paragraph
+ * initially ends before the float does: after a later resize it can gain
+ * additional lines that still need the narrow measure. */
+function intrudedLineCount(
+  lines: ReadonlyArray<{ top: number; left: number; right: number }>,
+  content: { left: number; right: number; top: number; lineHeight: number },
+  paragraphStyle: CSSStyleDeclaration,
+  floatSide: "left" | "right",
+  inlineSize: number,
+  floatBottom: number,
+): number {
+  const skipLastLine = lastLineRaggedAt(paragraphStyle, floatSide);
+  let affected = 0;
+  for (let i = 0; i < lines.length; i++) {
+    // Only vertical geometry can say whether the float reaches a line that
+    // is short at its ragged edge anyway.
+    if (skipLastLine && i === lines.length - 1) break;
+    const line = lines[i]!;
+    const observed =
+      floatSide === "left" ? line.left - content.left : content.right - line.right;
+    // An ordinary first-line indent can move one line, but not by anything
+    // close to the whole float. Half the measured margin-box width cleanly
+    // separates the intruded lines from the full-width lines below it.
+    if (observed > inlineSize * 0.5) affected++;
+    else break;
+  }
+  const firstTextTop = lines[0]?.top ?? content.top;
+  const geometricLines = Math.max(
+    1,
+    Math.ceil((floatBottom - firstTextTop) / content.lineHeight - 1e-6),
+  );
+  return Math.max(affected, geometricLines);
+}
+
 /**
  * Measure a floated ::first-letter while the author's native DOM is still
  * present. CSSOM exposes used width/height for the pseudo-element only in
@@ -808,38 +884,19 @@ function floatedFirstLetter(
   );
   if (inlineSize <= 0) return null;
 
-  const paragraphRect = p.getBoundingClientRect();
-  const contentLeft =
-    paragraphRect.left + pxValue(paragraphStyle.borderLeftWidth) + pxValue(paragraphStyle.paddingLeft);
-  const contentRight =
-    paragraphRect.right - pxValue(paragraphStyle.borderRightWidth) - pxValue(paragraphStyle.paddingRight);
-  const contentTop =
-    paragraphRect.top + pxValue(paragraphStyle.borderTopWidth) + pxValue(paragraphStyle.paddingTop);
-  const paragraphLineHeight =
-    parseFloat(paragraphStyle.lineHeight) || pxValue(paragraphStyle.fontSize) * 1.2;
+  const content = paragraphContentBox(p, paragraphStyle);
 
   const tail = p.ownerDocument.createRange();
   tail.setStart(end.node, end.offset);
   const last = nodes[nodes.length - 1]!;
   tail.setEnd(last, last.data.length);
-  const lines = visualLines([...tail.getClientRects()], paragraphLineHeight);
-  let affected = 0;
-  for (const line of lines) {
-    const observed =
-      floatSide === "left" ? line.left - contentLeft : contentRight - line.right;
-    // An ordinary first-line indent can move one line, but not by anything
-    // close to the whole float. Half the measured margin-box width cleanly
-    // separates the intruded lines from the full-width lines below it.
-    if (observed > inlineSize * 0.5) affected++;
-    else break;
-  }
+  const lines = visualLines([...tail.getClientRects()], content.lineHeight);
 
-  // Predict the overlap from vertical geometry too. This matters when the
-  // paragraph initially ends before the float does: after a later resize it
-  // can gain additional lines that still need the narrow measure. Chromium
-  // exposes the pseudo's used height. Firefox/WebKit return `auto`; in that
-  // case Firefox's Range rect is its compact float content box, while a tall
-  // ink rect (WebKit) is not layout geometry and the computed line-height is.
+  // The float's bottom edge, for the vertical half of the overlap count.
+  // Chromium exposes the pseudo's used height. Firefox/WebKit return
+  // `auto`; in that case Firefox's Range rect is its compact float content
+  // box, while a tall ink rect (WebKit) is not layout geometry and the
+  // computed line-height is.
   const specifiedHeight = parseFloat(style.height);
   const compactAutoBox =
     !Number.isFinite(specifiedHeight) &&
@@ -864,16 +921,18 @@ function floatedFirstLetter(
       pxValue(style.paddingBottom) +
       pxValue(style.borderBottomWidth) +
       pxValue(style.marginBottom)
-    : contentTop +
+    : content.top +
       pxValue(style.marginTop) +
       borderBoxHeight +
       pxValue(style.marginBottom);
-  const firstTextTop = lines[0]?.top ?? contentTop;
-  const geometricLines = Math.max(
-    1,
-    Math.ceil((floatBottom - firstTextTop) / paragraphLineHeight - 1e-6),
+  const affected = intrudedLineCount(
+    lines,
+    content,
+    paragraphStyle,
+    floatSide,
+    inlineSize,
+    floatBottom,
   );
-  affected = Math.max(affected, geometricLines);
 
   return { kind: "first-letter", inlineSize, lines: affected, style: firstLetterStyle(style) };
 }
@@ -941,35 +1000,16 @@ function elementFloatGeometry(
     borderBlock + pxValue(style.marginTop) + pxValue(style.marginBottom);
   if (inlineSize <= 0 || blockSize <= 0) return null;
 
-  const paragraphRect = p.getBoundingClientRect();
-  const contentLeft =
-    paragraphRect.left + pxValue(paragraphStyle.borderLeftWidth) + pxValue(paragraphStyle.paddingLeft);
-  const contentRight =
-    paragraphRect.right - pxValue(paragraphStyle.borderRightWidth) - pxValue(paragraphStyle.paddingRight);
-  const contentTop =
-    paragraphRect.top + pxValue(paragraphStyle.borderTopWidth) + pxValue(paragraphStyle.paddingTop);
-  const paragraphLineHeight =
-    parseFloat(paragraphStyle.lineHeight) || pxValue(paragraphStyle.fontSize) * 1.2;
-
+  const content = paragraphContentBox(p, paragraphStyle);
   const tail = p.ownerDocument.createRange();
   tail.selectNodeContents(p);
   tail.setStartAfter(source);
-  const lines = visualLines([...tail.getClientRects()], paragraphLineHeight);
-  let affected = 0;
-  for (const line of lines) {
-    const observed =
-      floatSide === "left" ? line.left - contentLeft : contentRight - line.right;
-    if (observed > inlineSize * 0.5) affected++;
-    else break;
-  }
-
-  const firstTextTop = lines[0]?.top ?? contentTop;
-  const floatBottom = contentTop + blockSize;
-  const geometricLines = Math.max(
-    1,
-    Math.ceil((floatBottom - firstTextTop) / paragraphLineHeight - 1e-6),
-  );
-  return { inlineSize, lines: Math.max(affected, geometricLines) };
+  const lines = visualLines([...tail.getClientRects()], content.lineHeight);
+  const floatBottom = content.top + blockSize;
+  return {
+    inlineSize,
+    lines: intrudedLineCount(lines, content, paragraphStyle, floatSide, inlineSize, floatBottom),
+  };
 }
 
 function leadingElementFloatOf(
