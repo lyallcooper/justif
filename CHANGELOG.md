@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+<picture>
+  <source
+    type="image/avif"
+    srcset="docs/images/leading-float.avif"
+  >
+  <img
+    src="docs/images/leading-float.png"
+    alt="A paragraph justified beside an ornate floated initial"
+    width="300"
+  >
+</picture>
+
 - Paragraphs can now begin with a floated element. Text besides the float is
   justified to the available width.
 - Which characters hang is now configurable. See the [README
