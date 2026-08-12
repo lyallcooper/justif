@@ -375,6 +375,13 @@ export interface JustifyController {
    * `data-justif` attribute, but the controller still holds their measurements
    * and watches for a measure narrow enough to make line breaking useful. Test
    * this rather than the attribute to ask "is this enhancement still live?".
+   *
+   * The attribute answers the OTHER question, "is justif's rendering on the
+   * page right now?": every enhancement sets `data-justif` and every restore
+   * removes it, so a managed paragraph without the attribute is one the
+   * controller is watching but currently renders natively — a paragraph
+   * short enough for one line, or one whose leading float leaves no room to
+   * set beside it. Both signals are supported; they are two questions.
    */
   readonly managed: readonly HTMLElement[];
 }

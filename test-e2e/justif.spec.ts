@@ -4528,6 +4528,63 @@ test("rescan() picks up author CSS changes and leaves the rest alone", async ({ 
   expect(result.managed).toEqual(["rescan-subject", "rescan-declined"]);
 });
 
+test("managed plus data-justif discriminates justified, idle, and declined", async ({
+  page,
+}) => {
+  // The documented contract: `managed` answers "is the controller still
+  // watching this paragraph?", the data-justif attribute answers "is
+  // justif's rendering on the page right now?", and a managed paragraph
+  // without the attribute is idle — watched, currently native.
+  const result = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    const text =
+      "The extraordinarily complicated development of unquestionably " +
+      "international typographical conventions demonstrates considerable " +
+      "responsibility, naturally, whenever compositors compare alternatives.";
+    const make = (id: string, content: string, extra = "") => {
+      const p = document.createElement("p");
+      p.id = id;
+      p.setAttribute(
+        "style",
+        `width: 260px; text-align: justify; font: 17px Georgia, serif; margin: 0 0 1em; ${extra}`,
+      );
+      p.textContent = content;
+      host.append(p);
+      return p;
+    };
+    const long = make("state-long", text);
+    const short = make("state-short", "A short line.");
+    const declined = make("state-declined", text, "text-transform: capitalize;");
+    const released = make("state-released", text);
+    const controller = window.__justif.justify([long, short, declined, released]);
+    await controller.ready;
+    const shape = () => ({
+      managed: controller.managed.map((el) => el.id),
+      justified: [long, short, declined, released]
+        .filter((p) => p.hasAttribute("data-justif"))
+        .map((p) => p.id),
+    });
+    const initial = shape();
+    window.__justif.unjustify([released]);
+    const afterRelease = shape();
+    controller.destroy();
+    const afterDestroy = shape();
+    host.replaceChildren();
+    return { initial, afterRelease, afterDestroy };
+  });
+  // The one-line paragraph is managed yet unjustified — the idle state the
+  // two signals together identify; the declined paragraph is neither.
+  expect(result.initial).toEqual({
+    managed: ["state-long", "state-short", "state-released"],
+    justified: ["state-long", "state-released"],
+  });
+  expect(result.afterRelease).toEqual({
+    managed: ["state-long", "state-short"],
+    justified: ["state-long"],
+  });
+  expect(result.afterDestroy).toEqual({ managed: [], justified: [] });
+});
+
 /**
  * What a re-read must NOT cost, all of it invisible to the tests above because
  * they never rescan before tearing down:
