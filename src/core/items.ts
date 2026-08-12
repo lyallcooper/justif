@@ -435,13 +435,28 @@ function protrusionHang(
   side: "l" | "r",
 ): number {
   if (table === false) return 0;
+  const code = protrusionCodes(table, renderedChar(ch, run))?.[side] ?? 0;
+  return protrusionHangForCode(code, measure, ch, run, advanceOrLazy, side);
+}
+
+/** `protrusionHang` for a code the caller already resolved, so the edge
+ * classification in leading/trailingProtrusion pays for the table lookup
+ * (and its per-character case mapping) once, not twice. */
+function protrusionHangForCode(
+  code: number,
+  measure: Measure,
+  ch: string,
+  run: RunMetrics,
+  advanceOrLazy: number,
+  side: "l" | "r",
+): number {
   // Capped at 1000: a whole advance is as far out as a glyph goes, because
   // that is the point where it has left the measure and there is nothing
   // beyond gone. Negatives pass through — they pull a glyph IN, which is a
   // real thing the measured model asks for. The cap matters most on the paths
   // that never reach classification — `hyphenRp`'s materialized hyphen and
   // `protrudeInkOnly` runs — so that one rule holds everywhere.
-  const advCode = Math.min(1000, protrusionCodes(table, renderedChar(ch, run))?.[side] ?? 0);
+  const advCode = Math.min(1000, code);
   if (advCode === 0) return 0;
   const advance = advanceOrLazy < 0 ? measure.charAdvance(ch, run) : advanceOrLazy;
   const advHang = (advCode / 1000) * advance;
@@ -507,8 +522,9 @@ function leadingProtrusion(
   if (table === false) return 0;
   const mark = firstCodePoint(text);
   const inkOnly = run.protrudeInkOnly === true && measure.inkBearings !== undefined;
-  if (inkOnly || (protrusionCodes(table, renderedChar(mark, run))?.l ?? 0) < 1000) {
-    return protrusionHang(table, measure, mark, run, LAZY_ADVANCE, "l");
+  const markCode = protrusionCodes(table, renderedChar(mark, run))?.l ?? 0;
+  if (inkOnly || markCode < 1000) {
+    return protrusionHangForCode(markCode, measure, mark, run, LAZY_ADVANCE, "l");
   }
   const tail = text.slice(mark.length);
   const hang =
@@ -550,8 +566,9 @@ function trailingProtrusion(
   if (table === false) return 0;
   const mark = lastCodePoint(text);
   const inkOnly = run.protrudeInkOnly === true && measure.inkBearings !== undefined;
-  if (inkOnly || (protrusionCodes(table, renderedChar(mark, run))?.r ?? 0) < 1000) {
-    return protrusionHang(table, measure, mark, run, LAZY_ADVANCE, "r");
+  const markCode = protrusionCodes(table, renderedChar(mark, run))?.r ?? 0;
+  if (inkOnly || markCode < 1000) {
+    return protrusionHangForCode(markCode, measure, mark, run, LAZY_ADVANCE, "r");
   }
   const head = text.slice(0, text.length - mark.length);
   const hang =
