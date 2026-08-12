@@ -56,7 +56,10 @@ export interface RenderSegment {
    * author spacing when the declaration itself is omitted). */
   resolvedLetterSpacingPx: number;
   /** Portion of the terminal glyph's advance physically removed so a
-   * nowrap line can fit beside a float without moving the glyph itself. */
+   * nowrap line can fit beside a float without moving the glyph itself. A
+   * line ending in a fixed-separator run carries this on EVERY separator it
+   * hangs — each gives up only its own advance — so a line's total removal
+   * is the sum over its segments. */
   physicalEndHangPx?: number;
   /** Same removal for a line ending in an inserted hyphen, taken out of
    * the pseudo-hyphen's advance instead: the fit test beside a float
@@ -526,8 +529,10 @@ export function writeParagraph(
       let end = clusters.length - 1;
       // Only collapsible source spaces are layout glue. Fixed-width Unicode
       // separators are real box glyphs and can themselves be the character
-      // whose full advance hangs at the line end.
-      while (end >= 0 && clusters[end] === " ") end--;
+      // whose full advance hangs at the line end — as can the collapsible
+      // space hung with a trailing separator run, which is a segment of its
+      // own and sits INSIDE the line box, ahead of the run it hangs with.
+      while (end > 0 && clusters[end] === " ") end--;
       const hanging = clusters[end];
       if (hanging === undefined) el.textContent = segment.text;
       else {
@@ -963,9 +968,12 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
         const rightHang = endText?.seg.rightHangPx ?? 0;
         // Terminal-glyph and pseudo-hyphen removals are mutually exclusive
         // (a line ends in one or the other); both mean "this much of
-        // rightHang is already out of the measured rects".
+        // rightHang is already out of the measured rects". A hung
+        // fixed-separator run spreads its removal over the run's segments,
+        // so the terminal side is a sum, not the last segment's share.
         const physicalEndHang =
-          (endText?.seg.physicalEndHangPx ?? 0) + (endText?.seg.hyphenEndHangPx ?? 0);
+          textEntries.reduce((sum, entry) => sum + (entry.seg.physicalEndHangPx ?? 0), 0) +
+          (endText?.seg.hyphenEndHangPx ?? 0);
         const deliberateOverflow = endText?.seg.overflowPx ?? 0;
         const besideFloat = li < physicalFitLines;
         // Set lines should PAINT at the modeled edge too. The former

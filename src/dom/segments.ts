@@ -582,6 +582,12 @@ export function buildRenderSegments(
       flowExclusion = undefined;
     };
 
+    /** Model advance of each fixed-separator segment this line renders (and
+     * of the collapsible space that hangs with a trailing run), keyed by its
+     * index in `segments`. A trailing run's hang spans these whole boxes, so
+     * the physical hang beside a float is shed across all of them. */
+    const fixedSegmentWidth = new Map<number, number>();
+
     let trailingHangGlue = -1;
     const lineEndBox = breakEndBox(para, line.end);
     if (
@@ -658,6 +664,7 @@ export function buildRenderSegments(
           fixedSpaceBox = true;
           weldFixedSeparator = it.otherSpace === true;
           flush();
+          if (it.otherSpace === true) fixedSegmentWidth.set(segments.length - 1, it.width);
           fixedBoundary = boundary;
         }
       } else if (it.type === ItemType.Glue) {
@@ -672,6 +679,7 @@ export function buildRenderSegments(
           text = " ";
           fixedSpaceBox = true;
           flush();
+          fixedSegmentWidth.set(segments.length - 1, it.width);
           continue;
         }
         if (it.cjk === true) {
@@ -773,7 +781,38 @@ export function buildRenderSegments(
         endWithoutCollapsibleSpaces(last.text) > 0
           ? line.rightHang
           : 0;
-      if (physicalEndHang > 0) last.physicalEndHangPx = physicalEndHang;
+      if (physicalEndHang > 0) {
+        if (fixedSegmentWidth.has(segments.length - 1)) {
+          // A trailing fixed-separator run hangs whole boxes, not one
+          // glyph's protrusion: each separator can give up only its own
+          // advance, so shed the hang backwards across the run (and the
+          // collapsible space that hangs with it). Piling the whole run on
+          // the final separator collapses that one advance and leaves the
+          // rest inside the line, where the corrective pass would crush it
+          // out of the line's word spaces.
+          let remaining = physicalEndHang;
+          for (
+            let index = segments.length - 1;
+            remaining > 0.001 && fixedSegmentWidth.has(index);
+            index--
+          ) {
+            const hung = segments[index]!;
+            const share = Math.min(remaining, fixedSegmentWidth.get(index)!);
+            hung.physicalEndHangPx = share;
+            remaining -= share;
+            // The collapsible space hung with the run is a whitespace-only
+            // segment, and corrective reads take an edge space from the
+            // model rather than from a rect. Its hang has to come off there
+            // too, or the model re-adds an advance the DOM no longer has.
+            if (leadingCollapsibleSpaces(hung.text) === hung.text.length) {
+              hung.edgeTrim = {
+                ...hung.edgeTrim,
+                modelPx: Math.max(0, hung.edgeTrim.modelPx - share),
+              };
+            }
+          }
+        } else last.physicalEndHangPx = physicalEndHang;
+      }
       // A hyphen-ended line beside the float hangs its pseudo-hyphen the
       // same physical way — as reduced advance on the hyphen span itself
       // (letter-spacing after the "-"); a margin there is invisible to the
