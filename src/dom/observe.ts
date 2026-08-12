@@ -1,47 +1,70 @@
 /**
- * One shared ResizeObserver for all enhanced paragraphs, coalesced through
- * requestAnimationFrame. Entries carry the content-box inline size, so the
- * resize path never forces a layout read.
+ * One shared ResizeObserver for all enhanced paragraphs, delivered
+ * synchronously from the observer callback. That callback runs after layout
+ * and BEFORE paint, so a handler that re-breaks a paragraph there replaces
+ * the engine's own reflow of now-stale segments in the same rendering
+ * update — the invalid intermediate never paints. Deferring even one frame
+ * lets a width drag flash invalid layouts, most visibly a float paragraph's
+ * prose thrown below its drop cap. Entries carry the content-box inline
+ * size, so detection itself never forces a layout read.
+ *
+ * A handler that mutates an observed element's size inside this delivery
+ * would make the observer's loop guard report "ResizeObserver loop
+ * completed with undelivered notifications" on the console. `suspend`
+ * exists for exactly that: the handler declares the elements it is about to
+ * re-break, their observation stops for the remainder of this frame, and
+ * resumption's initial notification a frame later reports the size already
+ * on record — which the handler already treats as a no-op, ending the
+ * chain.
  */
 
 export interface WidthObserver {
   observe(el: Element): void;
   unobserve(el: Element): void;
+  /** Stop watching `el` until the next frame: the caller is about to change
+   * its size inside this observer's own delivery (see module comment). */
+  suspend(el: Element): void;
   disconnect(): void;
 }
 
 export function createWidthObserver(
   onWidths: (widths: ReadonlyMap<Element, number>) => void,
 ): WidthObserver {
-  const pending = new Map<Element, number>();
+  const suspended = new Set<Element>();
   let frame = 0;
 
-  const flush = (): void => {
+  const resume = (): void => {
     frame = 0;
-    if (pending.size === 0) return;
-    const batch = new Map(pending);
-    pending.clear();
-    onWidths(batch);
+    for (const el of suspended) observer.observe(el, { box: "content-box" });
+    suspended.clear();
   };
 
   const observer = new ResizeObserver((entries) => {
+    const batch = new Map<Element, number>();
     for (const entry of entries) {
       const size = entry.contentBoxSize?.[0];
-      const width = size !== undefined ? size.inlineSize : entry.contentRect.width;
-      pending.set(entry.target, width);
+      batch.set(entry.target, size !== undefined ? size.inlineSize : entry.contentRect.width);
     }
-    if (frame === 0) frame = requestAnimationFrame(flush);
+    onWidths(batch);
   });
 
   return {
-    observe: (el) => observer.observe(el, { box: "content-box" }),
+    observe: (el) => {
+      suspended.delete(el);
+      observer.observe(el, { box: "content-box" });
+    },
     unobserve: (el) => {
       observer.unobserve(el);
-      pending.delete(el);
+      suspended.delete(el);
+    },
+    suspend: (el) => {
+      observer.unobserve(el);
+      suspended.add(el);
+      if (frame === 0) frame = requestAnimationFrame(resume);
     },
     disconnect: () => {
       observer.disconnect();
-      pending.clear();
+      suspended.clear();
       if (frame !== 0) cancelAnimationFrame(frame);
     },
   };

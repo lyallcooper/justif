@@ -1196,6 +1196,83 @@ test("hang-span segments with edge-trimmed spaces measure without crashing", asy
   }
 });
 
+test("a width change re-breaks a float paragraph before the frame paints", async ({
+  page,
+}) => {
+  // Regression: width notifications were coalesced through
+  // requestAnimationFrame, one frame after the ResizeObserver delivery. The
+  // resize frame itself then painted the engine's reflow of the stale
+  // nowrap segments — for a float paragraph, prose thrown below the drop
+  // cap — before the next frame's patch replaced it. Dragging a window edge
+  // showed one such invalid frame per width step. Delivery now happens
+  // inside the ResizeObserver callback, after layout and before paint, so
+  // the two-frame probe below must never observe an un-re-broken layout.
+  const result = await page.evaluate(async () => {
+    const style = document.createElement("style");
+    style.textContent = `
+      #dropcap-drag { margin: 0; font: 17px/24px Georgia, serif; text-align: justify; }
+      #dropcap-drag > .cap { float: left; width: 120px; height: 120px; margin: 0 10px 0 0; }
+    `;
+    document.head.append(style);
+    const p = document.createElement("p");
+    p.id = "dropcap-drag";
+    p.style.width = "440px";
+    p.innerHTML =
+      '<span class="cap"></span>Many of us toil away in large git repositories, spending countless seconds every day waiting for git status to return to us its precious information deep from within the bowels of the git tree itself. The tale continues with more prose so the paragraph runs well past the ornament and settles into full measure lines beneath it, line after line, until the story finally ends.';
+    document.getElementById("host")!.replaceChildren(p);
+    const ctl = window.__justif.justify([p], { hyphenate: window.__justif.hyphenateEnUS });
+    await ctl.ready;
+
+    const raf = () => new Promise((resolve) => requestAnimationFrame(resolve));
+    const snapshot = () => {
+      const float = p.querySelector(".cap")!.getBoundingClientRect();
+      const range = document.createRange();
+      const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+      const tops: number[] = [];
+      for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
+        const re = /\S+/g;
+        let m;
+        while ((m = re.exec(n.nodeValue ?? "")) !== null) {
+          range.setStart(n, m.index);
+          range.setEnd(n, m.index + m[0].length);
+          const r = range.getClientRects()[0];
+          if (r !== undefined && r.width > 0) tops.push(r.top);
+        }
+      }
+      const lineTops = [...new Set(tops.map((t) => Math.round(t / 4) * 4))].sort(
+        (a, b) => a - b,
+      );
+      let maxGap = 0;
+      for (let i = 1; i < lineTops.length; i++) {
+        maxGap = Math.max(maxGap, lineTops[i]! - lineTops[i - 1]!);
+      }
+      return {
+        textBelowFloat: (lineTops[0] ?? 0) >= float.bottom - 4,
+        maxGap,
+      };
+    };
+
+    const violations: Array<{ width: number; belowFloat: boolean; maxGap: number }> = [];
+    const widths = [430, 410, 390, 370, 350, 330, 310, 290, 310, 330, 350, 370, 390, 410, 430, 440];
+    for (const w of widths) {
+      p.style.width = `${w}px`;
+      // Two frames: the first rendering update after the change lays out,
+      // delivers the ResizeObserver, and paints; this read at the second
+      // update's rAF (registered before any deferred flush could be) sees
+      // exactly the layout that first frame painted.
+      await raf();
+      await raf();
+      const snap = snapshot();
+      if (snap.textBelowFloat || snap.maxGap > 24 * 1.8) {
+        violations.push({ width: w, belowFloat: snap.textBelowFloat, maxGap: snap.maxGap });
+      }
+    }
+    ctl.destroy();
+    return violations;
+  });
+  expect(result).toEqual([]);
+});
+
 test("unsupported leading-element float arrangements stay native with specific reasons", async ({
   page,
 }) => {

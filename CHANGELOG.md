@@ -21,6 +21,11 @@
   beside a float on the same edge (a right float in left-to-right text). It
   used to be squeezed to the beside-float width, which could wrap it into a
   spurious extra line.
+- Resizing no longer flashes one invalid frame per width step. Paragraphs
+  are now re-broken in the same rendering update that observes the resize,
+  before it paints; previously the browser's own reflow of the outgoing
+  lines could paint first — most visibly beside a drop cap, where the text
+  briefly dropped below the float while dragging a window edge.
 - Fixed a crash while measuring a line that both ends in a hung character
   and starts or ends at a trimmed space (no-break and fixed-width space runs
   make this shape likely). The error silently abandoned spacing corrections

@@ -2369,8 +2369,16 @@ export function justify(
   };
 
   const visibleFirst = (els: HTMLElement[]): HTMLElement[] => {
-    if (els.length > 1 && viewObserver !== null) {
-      els.sort((a, b) => Number(!nearViewport.has(a)) - Number(!nearViewport.has(b)));
+    if (els.length > 1) {
+      // Visible before off-screen, float paragraphs before the rest: while
+      // a float paragraph waits for its patch, the engine renders its stale
+      // segments thrown below the float — the worst-degraded pending state,
+      // so it gets the first slice's budget. Stable sort: document order
+      // survives within each rank.
+      const rank = (p: HTMLElement): number =>
+        (viewObserver !== null && !nearViewport.has(p) ? 2 : 0) +
+        ((ownedState(p)?.scan.floatIntrusion ?? null) !== null ? 0 : 1);
+      els.sort((a, b) => rank(a) - rank(b));
     }
     return els;
   };
@@ -2451,6 +2459,27 @@ export function justify(
     if (wrote && anchor !== null) {
       const delta = anchor.getBoundingClientRect().top - anchorTop;
       if (Math.abs(delta) > 0.5) window.scrollBy(0, delta);
+    }
+    // Float paragraphs cannot wait for the deferred correction slices: a
+    // beside-float line still wearing its provisional wrap-safety pad can
+    // momentarily fail the engine's fit test and drop below the float — a
+    // one-frame hole beside the ornament on every resize step. Flush their
+    // corrections in this same rendering update (they are few — typically
+    // one per article — so the extra forced layout stays bounded); everything
+    // else keeps the batched read slices.
+    if (wrote) {
+      const floats = [...pendingCorrections.keys()].filter(
+        (el) => (ownedState(el)?.scan.floatIntrusion ?? null) !== null,
+      );
+      if (floats.length > 0) {
+        const batch: PatchEntry[] = floats.map((el) => {
+          const pending = pendingCorrections.get(el)!;
+          pendingCorrections.delete(el);
+          return { p: el, pending };
+        });
+        flushPatches(batch);
+        if (destroyed) return;
+      }
     }
     if (pendingCursor < pendingOrder.length) {
       scheduleSlice();
@@ -2617,12 +2646,20 @@ export function justify(
             continue;
           }
           pendingWidths.set(el as HTMLElement, width);
+          // About to be re-broken inside this same delivery — keep its own
+          // height change out of the observer loop (see createWidthObserver).
+          observer?.suspend(el);
         }
-        // Already inside the observer's rAF: order the queue (no reads —
+        // Delivered inside the ResizeObserver callback — after layout,
+        // before paint — so the first slice patched here replaces the
+        // engine's reflow of stale segments in the SAME rendering update:
+        // the invalid intermediate (a float paragraph's prose pushed below
+        // its drop cap) never paints. Order the queue (no reads —
         // visibility is tracked passively) and run the first slice now —
         // unless a slice is already queued for this frame chain, which
         // would double the drain (and its forced layout) in one frame.
         if (pendingWidths.size > 0) {
+          for (const p of pendingFloatRelayout) observer?.suspend(p);
           pendingOrder = visibleFirst([
             ...new Set([...pendingWidths.keys(), ...pendingFloatRelayout]),
           ]);
