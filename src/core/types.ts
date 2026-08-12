@@ -497,3 +497,23 @@ export function lineWidthAt(widths: LineWidths, line: number): number {
   if (typeof widths === "number") return widths;
   return widths[Math.min(line, widths.length - 1)] ?? 0;
 }
+
+/**
+ * The text a context-free `text-transform` renders for `text` — the ONE case
+ * mapping shared by the item model's glyph-identity lookups and the
+ * measurer's length checks, so the two sides can never disagree about which
+ * glyph a source character became.
+ *
+ * Deliberately locale-naive where the rendering engine is not (a probe under
+ * lang="tr" uppercases `i` to `İ`; this maps it to `I`): it answers which
+ * protrusion-table entry to look under and whether a mapping changes length,
+ * never what the engine draws — widths always come from a probe carrying the
+ * real property — and a miss on a locale-special glyph merely forgoes its
+ * protrusion. Values other than the two supported mappings pass text through
+ * unchanged.
+ */
+export function caseTransformedText(text: string, transform: string | undefined): string {
+  if (transform === "uppercase") return text.toUpperCase();
+  if (transform === "lowercase") return text.toLowerCase();
+  return text;
+}

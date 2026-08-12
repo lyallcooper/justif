@@ -10,6 +10,7 @@ import { protrusionCodes } from "./protrusion.js";
 import {
   type Box,
   type BuildOptions,
+  caseTransformedText,
   type Glue,
   type Item,
   ItemType,
@@ -406,8 +407,7 @@ function protrusionTable(
  * nothing, which is the right answer for a two-glyph rendering anyway.
  */
 function renderedChar(ch: string, run: RunMetrics): string {
-  if (run.textTransform === undefined) return ch;
-  return run.textTransform === "uppercase" ? ch.toUpperCase() : ch.toLowerCase();
+  return caseTransformedText(ch, run.textTransform);
 }
 
 /**

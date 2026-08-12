@@ -1,3 +1,5 @@
+import { caseTransformedText } from "../core/types.js";
+
 /**
  * Cached text measurement at font-stretch 100%. Ordinary runs use canvas;
  * variants and OpenType features canvas cannot express use batched DOM
@@ -471,9 +473,7 @@ const bearingCache = new Map<string, Map<string, { l: number; r: number }>>();
  * still index the glyph run.
  */
 export function transformedText(text: string, spec: FontSpec): string {
-  if (spec.textTransform === "uppercase") return text.toUpperCase();
-  if (spec.textTransform === "lowercase") return text.toLowerCase();
-  return text;
+  return caseTransformedText(text, spec.textTransform);
 }
 
 /**
