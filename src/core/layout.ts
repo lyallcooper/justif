@@ -119,9 +119,12 @@ export function layoutLines(
 
     const L = cumW[b]! - cumW[start]! + penWidth - leftHang - rightHang;
     const W = lineWidthAt(widths, i);
-    const Yg = cumY[b]! - cumY[start]! - hangStretch;
+    // The hang flex frozen into the end box is a subset of the line's own
+    // flex, so the pools cannot go negative; the clamp enforces that even if
+    // an absorbed glue were to sit before line.start.
+    const Yg = Math.max(0, cumY[b]! - cumY[start]! - hangStretch);
     const Yfil = cumYfil[b]! - cumYfil[start]!;
-    const Zg = cumZ[b]! - cumZ[start]! - hangShrink;
+    const Zg = Math.max(0, cumZ[b]! - cumZ[start]! - hangShrink);
     const Ye = cumExpY[b]! - cumExpY[start]!;
     const Ze = cumExpZ[b]! - cumExpZ[start]!;
     const Yt = cumTrackY[b]! - cumTrackY[start]!;

@@ -985,20 +985,26 @@ export function buildItems(
       precedingItem?.type === ItemType.Glue && precedingItem.fixedSpaceInitial === true
         ? precedingItem
         : undefined;
-    const precedingBox =
-      precedingItem?.type === ItemType.Penalty && precedingItem.fixedSpace === true
-        ? items[items.length - 2]
-        : precedingItem;
+    // The run this separator continues ends either directly behind, or behind
+    // the guard penalty and glue that a collapsible space between two fixed
+    // separators just flushed (flushPendingSpace always guards a
+    // fixedSpaceInitial glue with exactly one penalty in front of it).
+    let chainIndex = items.length - 1;
+    if (leadingGlue !== undefined) chainIndex -= 2;
+    const boundary = items[chainIndex];
     // Discovering another fixed separator removes the provisional boundary.
     // The new last box inherits the complete run's hang width.
+    const behindBoundary = items[chainIndex - 1];
     if (
-      precedingItem?.type === ItemType.Penalty &&
-      precedingItem.fixedSpace === true &&
-      precedingBox?.type === ItemType.Box &&
-      precedingBox.otherSpace === true
+      boundary?.type === ItemType.Penalty &&
+      boundary.fixedSpace === true &&
+      behindBoundary?.type === ItemType.Box &&
+      behindBoundary.otherSpace === true
     ) {
-      items.pop();
+      items.splice(chainIndex, 1);
+      chainIndex -= 1;
     }
+    const precedingBox = items[chainIndex];
     const { flowText, flowExclusion } = excludeFlow(separator, 0, exclusion);
     const width = measure.width(flowText, run);
     const box = makeBox(separator, runIndex, width, flowText, flowExclusion);

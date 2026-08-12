@@ -373,6 +373,18 @@ describe("three-pass behavior", () => {
     expect(lines[0]).toMatchObject({ rightHang: 20, glueRatio: 0 });
   });
 
+  it("never starts a line with a separator from a mixed fixed/collapsible run", () => {
+    const para = build("AAAA\u2003 \u2003BBBB CCCC");
+    for (let width = 40; width <= 120; width++) {
+      const result = breakParagraph(para, width, defaultBreakOptions);
+      const lines = layoutLines(para, result, width, defaultBuildOptions);
+      for (const line of lines) {
+        const text = lineText(para, line);
+        expect(text, `width ${width}: ${JSON.stringify(text)}`).not.toMatch(/^\u2003/);
+      }
+    }
+  });
+
   it("prices hang flex consistently at a later glue break", () => {
     const para = build("charlie delta \u2007 BBBB");
     const result = breakParagraph(para, 75, defaultBreakOptions);

@@ -94,6 +94,27 @@ describe("buildItems", () => {
     expect(space).toMatchObject({ rp: 20, hangStretch: 2, hangShrink: 4 / 3 });
   });
 
+  it("chains a separator run across an interior collapsible space", () => {
+    const para = build("AAAA\u2003 \u2003BBBB");
+    // One break opportunity for the whole run, after the second separator:
+    // the interior fixedSpace penalty is removed when the run continues.
+    expect(shape(para.items)).toBe(
+      "box(AAAA) box(\u2003) pen(10000) glue box(\u2003) pen(0) box(BBBB) pen(10000) fil pen(-10000)",
+    );
+    const spaces = para.items.filter(
+      (item) => item.type === ItemType.Box && item.otherSpace === true,
+    );
+    expect(spaces[0]).toMatchObject({ width: 16, rp: 16 });
+    // The final separator hangs the complete run — both separators plus the
+    // collapsible space — with the glue's flex frozen out of the line.
+    expect(spaces[1]).toMatchObject({
+      width: 16,
+      rp: 36,
+      hangStretch: 2,
+      hangShrink: 4 / 3,
+    });
+  });
+
   it("hangs an adjacent fixed-width separator run at its final boundary", () => {
     const para = build("one\u2003\u2003two");
     expect(shape(para.items)).toContain("box(\u2003) box(\u2003) pen(0)");
