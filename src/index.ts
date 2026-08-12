@@ -49,6 +49,7 @@ import { createWidthObserver, type WidthObserver } from "./dom/observe.js";
 import {
   beginScanBatch,
   contentWidthOf,
+  type ElementFloatIntrusion,
   endScanBatch,
   floatIntrusionOf,
   floatInlineSizeOf,
@@ -1984,26 +1985,50 @@ export function justify(
       const state = ownedState(p);
       const intrusion = state?.scan.floatIntrusion;
       if (state === undefined || intrusion?.kind !== "element") continue;
-      const next = renderedElementFloatIntrusionOf(
-        p,
-        state.renderedFloat ?? intrusion.source,
-        intrusion,
-      );
       // Unmeasurable is not a verdict: the paragraph keeps the geometry it
       // has, exactly as the resize observer leaves an unrendered float alone.
-      if (next === null) continue;
-      if (
-        Math.abs(next.inlineSize - intrusion.inlineSize) <= 0.05 &&
-        next.lines === intrusion.lines
-      ) {
-        continue;
-      }
-      state.scan.floatIntrusion = next;
-      state.lastPatch = "";
+      if (refreshElementFloat(p, state, intrusion) !== "changed") continue;
       pendingFloatRelayout.add(p);
       queued = true;
     }
     if (queued) restartPendingOrder();
+  };
+
+  /** Sub-pixel noise in a live rect read must not count as a geometry
+   * change, or every remeasure would invalidate every float paragraph. */
+  const floatGeometryEquals = (
+    a: { inlineSize: number; lines: number },
+    b: { inlineSize: number; lines: number },
+  ): boolean => Math.abs(a.inlineSize - b.inlineSize) <= 0.05 && a.lines === b.lines;
+
+  /**
+   * The one second look at an element float's geometry, shared by every path
+   * that re-reads it (post-patch verification, remeasures, the float's own
+   * resize notifications): measure the rendered float, compare with the
+   * shared tolerance, and on a real change store the new intrusion and
+   * invalidate the paragraph's last patch so the next layout uses it.
+   *
+   * "unmeasurable" is deliberately not acted on here: the caller decides
+   * whether an unreadable float means "wait" (an unrendered float keeps the
+   * geometry on record) or "bail" (the resize observer, for a float that is
+   * painted yet cannot be read).
+   */
+  const refreshElementFloat = (
+    p: HTMLElement,
+    state: ParaState,
+    intrusion: ElementFloatIntrusion,
+    source?: Element,
+  ): "unchanged" | "changed" | "unmeasurable" => {
+    const next = renderedElementFloatIntrusionOf(
+      p,
+      source ?? state.renderedFloat ?? intrusion.source,
+      intrusion,
+    );
+    if (next === null) return "unmeasurable";
+    if (floatGeometryEquals(next, intrusion)) return "unchanged";
+    state.scan.floatIntrusion = next;
+    state.lastPatch = "";
+    return "changed";
   };
 
   /** Re-order the drain queue around a newly queued paragraph and run it.
@@ -2075,15 +2100,7 @@ export function justify(
       const state = ownedState(p);
       if (state === undefined || state.scan.floatIntrusion === null) continue;
       if (state.scan.floatIntrusion.kind === "element") {
-        const source = state.renderedFloat ?? state.scan.floatIntrusion.source;
-        const next = renderedElementFloatIntrusionOf(p, source, state.scan.floatIntrusion);
-        if (next === null) continue;
-        if (
-          Math.abs(next.inlineSize - state.scan.floatIntrusion.inlineSize) > 0.05 ||
-          next.lines !== state.scan.floatIntrusion.lines
-        ) {
-          state.scan.floatIntrusion = next;
-          state.lastPatch = "";
+        if (refreshElementFloat(p, state, state.scan.floatIntrusion) === "changed") {
           changed = true;
         }
         continue;
@@ -2139,12 +2156,7 @@ export function justify(
         emitRelayout(p);
         continue;
       }
-      if (
-        Math.abs(next.inlineSize - state.scan.floatIntrusion!.inlineSize) > 0.05 ||
-        next.lines !== state.scan.floatIntrusion!.lines
-      ) {
-        changed = true;
-      }
+      if (!floatGeometryEquals(next, state.scan.floatIntrusion!)) changed = true;
       state.scan.floatIntrusion = next;
     }
     return changed;
@@ -2513,8 +2525,8 @@ export function justify(
               observedFloat.delete(p);
               continue;
             }
-            const next = renderedElementFloatIntrusionOf(p, entry.target, intrusion);
-            if (next === null) {
+            const verdict = refreshElementFloat(p, state, intrusion, entry.target);
+            if (verdict === "unmeasurable") {
               // A float that has stopped being rendered — an ancestor turned
               // `display: none`, a tab panel closed — notifies at 0×0, and its
               // computed `width` reverts to `auto`, which no geometry can be
@@ -2539,14 +2551,7 @@ export function justify(
               if (changed) emitRelayout(p);
               continue;
             }
-            if (
-              Math.abs(next.inlineSize - intrusion.inlineSize) <= 0.05 &&
-              next.lines === intrusion.lines
-            ) {
-              continue;
-            }
-            state.scan.floatIntrusion = next;
-            state.lastPatch = "";
+            if (verdict !== "changed") continue;
             pendingFloatRelayout.add(p);
             queued = true;
           }
