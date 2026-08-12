@@ -267,7 +267,7 @@
      first face cannot: WebKit takes the initial's metrics, Blink can take
      the fallback's, shifting the glyph by the fallback's half-leading.
      Carrying the initials' metrics on a file the page has already loaded
-     settles it (lyall.co's arrangement). */
+     settles it. */
   @font-face {
     font-family: "Goudy Initialen Strut";
     src: url("./fonts/Junicode-Roman-2.230.woff2") format("truetype-variations");
@@ -294,10 +294,10 @@
     --good: #2a6b46;
     --float-shadow: rgb(0 0 0 / 0.16);
     --scroll-shadow: rgb(0 0 0 / 0.28);
-    /* The specimen's initial, lyall.co's values: maroon ink on the page in
-       light mode, light ink on a maroon square in dark. The tint is also
-       what keeps the engraving legible — Blink's glyph-mask gamma scales
-       with ink darkness, and pure black clogs the hairline vines. */
+    /* The specimen's initial: maroon ink on the page in light mode, light
+       ink on a maroon square in dark. The tint is also what keeps the
+       engraving legible — Blink's glyph-mask gamma scales with ink
+       darkness, and pure black clogs the hairline vines. */
     --dropcap: #84362f;
     --dropcap-bg: transparent;
   }
@@ -752,10 +752,10 @@
      nothing. */
   .native.pretty p { text-wrap: pretty; }
   /* The specimen's drop cap: a floated ornate initial the enhancement sets
-     the opening lines beside (the leading-element float path). Metrics
-     cribbed from lyall.co — each Goudy initial's ink is exactly a 0.8em
-     square on the baseline, so at this width and line-height the box IS
-     the letter: no leading, nothing to align. */
+     the opening lines beside (the leading-element float path). Each Goudy
+     initial's ink is exactly a 0.8em square on the baseline, so at this
+     width and line-height the box IS the letter: no leading, nothing to
+     align. */
   .article p.has-dropcap { display: flow-root; }
   .article .dropcap-group {
     position: relative;
@@ -764,7 +764,14 @@
     margin: 0.04em 0.05em -0.03em 0;
     background: var(--dropcap-bg);
     font-family: "Goudy Initialen", "Goudy Initialen Strut", serif;
-    font-size: 7.112em;
+    /* A four-line drop, sized to the article grid (1em/1.45). A drop cap
+       whose float box ends within ~3px of a line boundary gets different
+       rounding calls from different engines — Safari resolved one as a
+       fifth cleared line below the ink (a blank band), others as a fifth
+       narrowed line. 0.84em of margin-box per group em (top margin + ink)
+       at 6.75em ends the float 2px INSIDE line four, whichever box an
+       engine measures floats by. */
+    font-size: 6.75em;
     font-style: normal;
     font-weight: 400;
     line-height: 0.8;
