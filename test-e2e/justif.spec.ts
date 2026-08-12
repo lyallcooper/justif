@@ -1044,6 +1044,78 @@ test("a naturally short last line is not counted as right-float overlap", async 
   expect(result.enhanced.lines.length).toBe(result.native.lines.length);
 });
 
+test("width changes beside a tall leading float never strand a hole in the text", async ({
+  page,
+}) => {
+  // Regression: during a width drag the engine reflows the PREVIOUS width's
+  // segments before justif re-breaks, pushing the ones that no longer fit
+  // beside the float under it. A float remeasure that trusted that
+  // transitional layout recorded a collapsed intrusion (observed 0 lines,
+  // vertical prediction anchored on the displaced first line), and the next
+  // patch rendered one narrowed line with a float-sized hole beside the
+  // ornament.
+  const result = await page.evaluate(async () => {
+    const style = document.createElement("style");
+    style.textContent = `
+      #dropcap-resize { margin: 0; font: 17px/24px Georgia, serif; text-align: justify; }
+      #dropcap-resize > .cap { float: left; width: 120px; height: 120px; margin: 0 10px 0 0; }
+    `;
+    document.head.append(style);
+    const p = document.createElement("p");
+    p.id = "dropcap-resize";
+    p.style.width = "440px";
+    p.innerHTML =
+      '<span class="cap"></span>Many of us toil away in large git repositories, spending countless seconds every day waiting for git status to return to us its precious information deep from within the bowels of the git tree itself. The tale continues with more prose so the paragraph runs well past the ornament and settles into full measure lines beneath it, line after line, until the story finally ends.';
+    document.getElementById("host")!.replaceChildren(p);
+    const ctl = window.__justif.justify([p], { hyphenate: window.__justif.hyphenateEnUS });
+    await ctl.ready;
+
+    const raf = () => new Promise((resolve) => requestAnimationFrame(resolve));
+    const settle = async (frames: number) => {
+      for (let i = 0; i < frames; i++) await raf();
+    };
+    const maxLineGap = () => {
+      const range = document.createRange();
+      const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+      const tops = new Set<number>();
+      for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
+        const re = /\S+/g;
+        let m;
+        while ((m = re.exec(n.nodeValue ?? "")) !== null) {
+          range.setStart(n, m.index);
+          range.setEnd(n, m.index + m[0].length);
+          const r = range.getClientRects()[0];
+          if (r !== undefined && r.width > 0) tops.add(Math.round(r.top / 4) * 4);
+        }
+      }
+      const sorted = [...tops].sort((a, b) => a - b);
+      let gap = 0;
+      for (let i = 1; i < sorted.length; i++) gap = Math.max(gap, sorted[i]! - sorted[i - 1]!);
+      return gap;
+    };
+
+    const gaps: Array<{ width: number; gap: number }> = [];
+    const widths = [
+      430, 420, 410, 400, 390, 380, 370, 360, 350, 340, 330, 320, 310, 300,
+      320, 340, 360, 380, 400, 420, 440, 300, 440,
+    ];
+    for (const w of widths) {
+      p.style.width = `${w}px`;
+      await settle(4);
+      const gap = maxLineGap();
+      if (gap > 24 * 1.8) gaps.push({ width: w, gap });
+    }
+    await settle(12);
+    const finalGap = maxLineGap();
+    const enhanced = p.hasAttribute("data-justif");
+    ctl.destroy();
+    return { gaps, finalGap, enhanced };
+  });
+  expect(result.enhanced).toBe(true);
+  expect(result.gaps).toEqual([]);
+  expect(result.finalGap).toBeLessThan(24 * 1.8);
+});
+
 test("unsupported leading-element float arrangements stay native with specific reasons", async ({
   page,
 }) => {

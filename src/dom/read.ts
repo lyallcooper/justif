@@ -830,10 +830,17 @@ function intrudedLineCount(
     if (observed > inlineSize * 0.5) affected++;
     else break;
   }
-  const firstTextTop = lines[0]?.top ?? content.top;
+  // A leading float's text starts beside its top. A first line at or below
+  // the float's bottom is a transitional layout — stale segments the engine
+  // reflowed at a width they were not built for — not evidence that the
+  // float overlaps nothing; anchor the vertical prediction at the content
+  // top instead.
+  const firstLine = lines[0];
+  const textTop =
+    firstLine !== undefined && firstLine.top < floatBottom ? firstLine.top : content.top;
   const geometricLines = Math.max(
     1,
-    Math.ceil((floatBottom - firstTextTop) / content.lineHeight - 1e-6),
+    Math.ceil((floatBottom - textTop) / content.lineHeight - 1e-6),
   );
   return Math.max(affected, geometricLines);
 }

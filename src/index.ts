@@ -2012,13 +2012,27 @@ export function justify(
    * whether an unreadable float means "wait" (an unrendered float keeps the
    * geometry on record) or "bail" (the resize observer, for a float that is
    * painted yet cannot be read).
+   *
+   * "stale" protects the geometry on record from a layout that is no
+   * layout at all. Mid-drag, the segments on screen were built for a width
+   * the paragraph no longer has — the engine has already reflowed them, and
+   * commonly pushed the ones that no longer fit beside the float under it —
+   * so rects read now describe a rendering the model never chose. Writing
+   * an intrusion measured from one (observed count 0, the vertical
+   * prediction collapsed) is how a resize could leave a tall drop cap with
+   * one narrowed line and a paragraph-sized hole beside it.
    */
   const refreshElementFloat = (
     p: HTMLElement,
     state: ParaState,
     intrusion: ElementFloatIntrusion,
     source?: Element,
-  ): "unchanged" | "changed" | "unmeasurable" => {
+  ): "unchanged" | "changed" | "unmeasurable" | "stale" => {
+    if (pendingWidths.has(p)) return "stale";
+    const widthNow = contentWidthOf(p);
+    if (typeof widthNow !== "number" || Math.abs(widthNow - state.width) > 0.05) {
+      return "stale";
+    }
     const next = renderedElementFloatIntrusionOf(
       p,
       source ?? state.renderedFloat ?? intrusion.source,
