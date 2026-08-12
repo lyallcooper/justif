@@ -744,6 +744,16 @@
     font-weight: 400;
     line-height: 0.8;
     text-transform: uppercase;
+    /* The initial is mostly ink: its detail lives in hairline WHITE vines,
+       which Blink's default stem darkening clogs shut on 1x displays;
+       geometricPrecision disables that (measured: mush to fully drawn at
+       1x, no change at 2x; Firefox and WebKit identical either way). Do
+       NOT reach for -webkit-font-smoothing: antialiased here instead: on
+       macOS 26 the system WebKit responds by STROKING this glyph's
+       contours rather than filling them — the ornament renders as white
+       line-work — while the ordinary smoothing mode fills it correctly.
+       Only the initial gets this — body text wants the default weight. */
+    text-rendering: geometricPrecision;
   }
   .article .dropcap { display: block; }
   /* The paragraph's opening quote hangs beside the initial, in the article
