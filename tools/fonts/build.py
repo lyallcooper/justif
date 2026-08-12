@@ -72,7 +72,12 @@ LATIN = sorted(
     | set(DEMO)
 )
 
-SETS = {"demo": sorted(set(DEMO)), "latin": LATIN}
+# The one letter the specimen sample's drop cap sets. Goudy Initialen's
+# floriated glyphs run ~10 KB each, so the face carries exactly the initial
+# the demo renders; a new opening word means extending this set.
+INITIALS = [ord("T")]
+
+SETS = {"demo": sorted(set(DEMO)), "latin": LATIN, "initials": INITIALS}
 
 # Junicode's figures are oldstyle by default, so the drawer's numeric readouts
 # need `lnum` and `tnum` kept to stay lining and tabular. Latin Modern is the
@@ -286,6 +291,19 @@ MANIFEST: tuple[Family, ...] = (
                  "https://raw.githubusercontent.com/quoteunquoteapps/CourierPrime/master/fonts/ttf/CourierPrime-Italic.ttf"),
             Face("CourierPrime-Bold-3.018.woff2",
                  "https://raw.githubusercontent.com/quoteunquoteapps/CourierPrime/master/fonts/ttf/CourierPrime-Bold.ttf"),
+        ),
+    ),
+    Family(
+        "Goudy Initialen",
+        "1.1",
+        "Dieter Steffmann's 2000 digitization (Typographer Mediengestaltung) "
+        "of the floriated initials Goudy drew for Lanston around 1905 "
+        "(Goudy Initials No. 296), served as the foundry build by 1001fonts. "
+        "Sets the specimen sample's drop cap.",
+        (
+            Face("GoudyInitialen-1.1.woff2",
+                 "https://www.1001fonts.com/download/goudy-initialen.zip",
+                 member="GoudyInitialen.ttf", charset="initials"),
         ),
     ),
     Family(

@@ -168,6 +168,56 @@ test("opening the drawer preserves the current sample viewport", async ({ page }
   expect(viewportAfter.paragraphTop).toBeCloseTo(viewportBefore.paragraphTop!, 1);
 });
 
+test("specimen sample sets its opening lines beside the drop cap", async ({ page }) => {
+  await page.goto("/demo/");
+  await page.click("#dock-toggle");
+  await page.selectOption("#sample", "specimen");
+
+  // The drop-cap paragraph is enhanced, not declined: the leading-element
+  // float path accepts it.
+  const para = page.locator("#enhanced > p.has-dropcap");
+  await expect(para).toHaveCount(1);
+  await expect(para).toHaveAttribute("data-justif", "", { timeout: 15_000 });
+
+  // The initial renders in the subset Goudy face, not a fallback serif.
+  await expect
+    .poll(() =>
+      page.evaluate(() => document.fonts.check('normal 400 16px "Goudy Initialen"')),
+    )
+    .toBe(true);
+
+  const geometry = await para.evaluate((p) => {
+    const float = p.querySelector(".dropcap-group")!.getBoundingClientRect();
+    const range = document.createRange();
+    const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+    let besideFloat = 0;
+    let belowFloatAtMargin = 0;
+    for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
+      if ((n.parentElement as HTMLElement).closest(".dropcap-group") !== null) continue;
+      const re = /\S+/g;
+      let m;
+      while ((m = re.exec(n.nodeValue ?? "")) !== null) {
+        range.setStart(n, m.index);
+        range.setEnd(n, m.index + m[0].length);
+        const r = range.getClientRects()[0];
+        if (r === undefined || r.width <= 0) continue;
+        if (r.top < float.bottom - 4 && r.left > float.right - 4) besideFloat++;
+        else if (r.top >= float.bottom - 4 && r.left < float.left + float.width * 0.5) {
+          belowFloatAtMargin++;
+        }
+      }
+    }
+    return { besideFloat, belowFloatAtMargin };
+  });
+  // Opening lines set beside the initial; the paragraph resumes at the
+  // margin once the float ends.
+  expect(geometry.besideFloat).toBeGreaterThan(8);
+  expect(geometry.belowFloatAtMargin).toBeGreaterThan(4);
+
+  // The native column shows the same structure for comparison.
+  await expect(page.locator("#native > p.has-dropcap .dropcap")).toHaveText("T");
+});
+
 test("short Alice excerpt is available as a sample", async ({ page }) => {
   await page.goto("/demo/");
   await page.click("#dock-toggle");

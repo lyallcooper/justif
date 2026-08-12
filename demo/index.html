@@ -252,6 +252,15 @@
     font-style: normal;
     font-display: block;
   }
+  /* Ornate initial for the specimen's drop cap, subset to the one letter it
+     sets (see tools/fonts/build.py); fetched only when that sample renders. */
+  @font-face {
+    font-family: "Goudy Initialen";
+    src: url("./fonts/GoudyInitialen-1.1.woff2") format("woff2");
+    font-weight: 400;
+    font-style: normal;
+    font-display: block;
+  }
 
   :root {
     color-scheme: light;
@@ -718,6 +727,36 @@
      .article p stays: it also guards against ink-repaint bugs and costs
      nothing. */
   .native.pretty p { text-wrap: pretty; }
+  /* The specimen's drop cap: a floated ornate initial the enhancement sets
+     the opening lines beside (the leading-element float path). Metrics
+     cribbed from lyall.co — each Goudy initial's ink is exactly a 0.8em
+     square on the baseline, so at this width and line-height the box IS
+     the letter: no leading, nothing to align. */
+  .article p.has-dropcap { display: flow-root; }
+  .article .dropcap-group {
+    position: relative;
+    float: left;
+    width: 0.8em;
+    margin: 0.04em 0.05em -0.03em 0;
+    font-family: "Goudy Initialen", serif;
+    font-size: 7.112em;
+    font-style: normal;
+    font-weight: 400;
+    line-height: 0.8;
+    text-transform: uppercase;
+  }
+  .article .dropcap { display: block; }
+  /* The paragraph's opening quote hangs beside the initial, in the article
+     face at text scale. */
+  .article .dropcap-quote {
+    position: absolute;
+    top: -0.185em;
+    right: 104%;
+    font-family: var(--demo-family, "Junicode"), Georgia, serif;
+    font-size: 0.33em;
+    line-height: 1;
+    text-transform: none;
+  }
   /* True small caps. font-variant-caps reaches the real smcp in Junicode,
      Coelacanth, EB Garamond, Alegreya, Source Serif 4 and Roboto Slab, keeping
      the small caps on the same weight and slope as the text around them; the
@@ -1210,7 +1249,8 @@
   // Sample texts. "tale": smart quotes, quote-opening paragraphs (left
   // protrusion). "tech": inline <code> in another font inside justified
   // lines, plus a <pre> block that justif leaves untouched. "specimen":
-  // small caps, soft hyphens, no-break spaces, dashes, mixed inline markup.
+  // a floated drop cap (the leading-element float path), small caps, soft
+  // hyphens, no-break spaces, dashes, mixed inline markup.
   // "aliceExcerpt": a punctuation-rich passage that makes the spacing
   // comparison especially visible at the default measure. "alice":
   // Carroll's chapters I–VI complete (~13,400 words, ~300 paragraphs;
@@ -1279,7 +1319,7 @@ await controller.ready;</code></pre>
       the original content.</p>`,
 
     specimen: `
-      <p>“<span class="smcp">The reader should enter</span> a page as easily
+      <p class="has-dropcap"><span class="dropcap-group"><span class="dropcap-quote">“</span><span class="dropcap">T</span></span><span class="smcp">he reader should enter</span> a page as easily
       as a room.” Good typography does not ask to be admired before the
       words are understood. It gives each voice its register: roman for the
       steady argument, <em>italic for a change of tone</em>, and
@@ -3146,6 +3186,7 @@ await controller.ready;</code></pre>
   function loadFontsForState() {
     const families = [$("font").value];
     if ($("sample").value === "tech") families.push("'Courier Prime'");
+    if ($("sample").value === "specimen") families.push("'Goudy Initialen'");
     return Promise.all(families.map(loadFontFamily));
   }
 
