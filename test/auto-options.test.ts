@@ -77,6 +77,15 @@ describe("--justif-* parsing", () => {
     expect(
       from({ "--justif-hanging-characters-start": JSON.stringify(hangingCharacters.start) }),
     ).toMatchObject({ options: {}, key: "" });
+    // Zero, surrogate and out-of-range hex escapes decode to U+FFFD (CSS
+    // Syntax §4.3.7), so all such spellings canonicalize to one set.
+    const fffd = from({ "--justif-hanging-characters-end": '"�"' });
+    for (const spelling of ['"\\0"', '"\\D800"', '"\\DFFF"', '"\\110000"']) {
+      const parsed = from({ "--justif-hanging-characters-end": spelling });
+      expect(parsed.invalid, spelling).toEqual([]);
+      expect(parsed.options, spelling).toEqual(fffd.options);
+      expect(parsed.key, spelling).toBe(fffd.key);
+    }
     // An unterminated string is reported, not silently taken as a group name.
     const bad = from({ "--justif-hanging-characters-end": '".,' });
     expect(bad.options).toEqual({});

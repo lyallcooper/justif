@@ -151,8 +151,12 @@ function parseCssString(raw: string): string | undefined {
       continue;
     }
     const code = Number.parseInt(hex[0], 16);
-    if (code === 0 || code > 0x10ffff) return undefined;
-    out += String.fromCodePoint(code);
+    // CSS Syntax §4.3.7: zero, surrogates and out-of-range hex escapes all
+    // decode to U+FFFD — the string stays well-formed.
+    out +=
+      code === 0 || (code >= 0xd800 && code <= 0xdfff) || code > 0x10ffff
+        ? "�"
+        : String.fromCodePoint(code);
     i += hex[0].length;
     // A single trailing whitespace terminates a hex escape and is not content
     // — any whitespace, not just a space, and CRLF counts as the one newline
