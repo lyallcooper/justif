@@ -1947,19 +1947,28 @@ export function justify(
       else if (e.p.isConnected) hiddenCorrections.set(e.p, e.pending);
     }
     if (measure.length > 0) {
-      const { corrections, hidden, invalid } = measureCorrections(
-        measure.map((e) => e.pending),
-      );
-      applyCorrections(corrections);
-      for (const i of hidden) {
-        const e = measure[i]!;
-        hiddenCorrections.set(e.p, e.pending);
-      }
-      for (const { index, reason } of invalid) {
-        const e = measure[index]!;
-        if (ownedState(e.p) === undefined) continue;
-        dropQueued(e.p);
-        if (bailToNative(e.p, reason)) emitRelayout(e.p);
+      // Isolated like the render path (safePatch): a measurement pass that
+      // throws must not abort the commit, reject justify() in the caller,
+      // or skip verifyElementFloats for the whole batch. The degraded state
+      // is every line keeping its provisional wrap-safety pad — loose, but
+      // laid out — instead of a batch of paragraphs stranded uncorrected.
+      try {
+        const { corrections, hidden, invalid } = measureCorrections(
+          measure.map((e) => e.pending),
+        );
+        applyCorrections(corrections);
+        for (const i of hidden) {
+          const e = measure[i]!;
+          hiddenCorrections.set(e.p, e.pending);
+        }
+        for (const { index, reason } of invalid) {
+          const e = measure[index]!;
+          if (ownedState(e.p) === undefined) continue;
+          dropQueued(e.p);
+          if (bailToNative(e.p, reason)) emitRelayout(e.p);
+        }
+      } catch (error) {
+        console.error("justif: correction measurement threw", error);
       }
     }
     verifyElementFloats(measure);

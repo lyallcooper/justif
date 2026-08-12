@@ -21,6 +21,13 @@
   beside a float on the same edge (a right float in left-to-right text). It
   used to be squeezed to the beside-float width, which could wrap it into a
   spurious extra line.
+- Fixed a crash while measuring a line that both ends in a hung character
+  and starts or ends at a trimmed space (no-break and fixed-width space runs
+  make this shape likely). The error silently abandoned spacing corrections
+  for every paragraph in the batch, and a paragraph with a leading float
+  could lose its wrap around the float entirely. A measurement failure now
+  also degrades to the provisional spacing for the affected batch instead of
+  aborting the enhancement pass.
 - Which characters hang is now configurable. See the [README
   section](https://github.com/lyallcooper/justif#protrusion-and-hanging-punctuation)
   for more details.

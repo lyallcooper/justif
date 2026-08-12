@@ -1116,6 +1116,86 @@ test("width changes beside a tall leading float never strand a hole in the text"
   expect(result.finalGap).toBeLessThan(24 * 1.8);
 });
 
+test("hang-span segments with edge-trimmed spaces measure without crashing", async ({
+  page,
+}) => {
+  // Regression: a segment that ends in a hanging cluster renders as
+  // [text, span.justif-hanging-end, text], but the edge-trim branch of the
+  // correction measurement addressed it as a single text node. A paragraph
+  // whose breaks produced both features on one segment (fixed-width or
+  // no-break space runs make this likely) threw IndexSizeError from
+  // measureCorrections, which aborted the whole commit: every paragraph in
+  // the batch kept its provisional pads, the beside-float fit compensation
+  // never landed, and Chromium pushed the prose out from beside the float.
+  const result = await page.evaluate(async () => {
+    const style = document.createElement("style");
+    style.textContent = `
+      .has-dropcap { margin: 0 0 2em; width: 480px; font: 17px/1.55 Georgia, serif; text-align: justify; display: flow-root; }
+      .has-dropcap .dropcap-group { float: left; text-transform: uppercase; margin: .14em .02em -.17em 0; font-size: 7em; line-height: .85; position: relative; }
+      .has-dropcap .smallcaps { font-variant-caps: all-small-caps; }
+    `;
+    document.head.append(style);
+    const make = (id: string, run: string) => {
+      const p = document.createElement("p");
+      p.id = id;
+      p.className = "has-dropcap";
+      p.innerHTML =
+        '<span class="dropcap-group"><span class="dropcap">M</span></span><span class="smallcaps">any</span> of us have watched justified text fall apart into Wide ' +
+        run +
+        ' gaps between words, rivers running down the page, and lines that never quite settle. The manifesto continues with several more sentences of ordinary prose so that the paragraph wraps well past the ornament and fills the remaining measure with quiet, even lines of text until it finally ends.';
+      return p;
+    };
+    const variants = [
+      make("hang-trim-em", "\u2003\u2003\u2003"),
+      make("hang-trim-sp", "   "),
+      make("hang-trim-nb", "\u00A0\u00A0\u00A0"),
+    ];
+    document.getElementById("host")!.replaceChildren(...variants);
+    let error: string | null = null;
+    let ctl: { destroy(): void } | null = null;
+    try {
+      const c = window.__justif.justify(variants, {
+        hyphenate: window.__justif.hyphenateEnUS,
+      });
+      ctl = c;
+      await (c as unknown as { ready: Promise<void> }).ready;
+    } catch (thrown) {
+      error = String(thrown);
+    }
+    const report = variants.map((p) => {
+      const float = [...p.querySelectorAll(".dropcap-group")]
+        .map((el) => el.getBoundingClientRect())
+        .reduce((a, b) => (b.width * b.height > a.width * a.height ? b : a));
+      const range = document.createRange();
+      const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+      let besideFloat = 0;
+      for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
+        if ((n.parentElement as HTMLElement).closest(".dropcap-group") !== null) continue;
+        const re = /\S+/g;
+        let m;
+        while ((m = re.exec(n.nodeValue ?? "")) !== null) {
+          range.setStart(n, m.index);
+          range.setEnd(n, m.index + m[0].length);
+          const r = range.getClientRects()[0];
+          if (r !== undefined && r.width > 0 && r.top < float.bottom - 4 && r.left > float.right - 4) {
+            besideFloat++;
+          }
+        }
+      }
+      return { id: p.id, enhanced: p.hasAttribute("data-justif"), besideFloat };
+    });
+    ctl?.destroy();
+    return { error, report };
+  });
+  expect(result.error).toBeNull();
+  for (const p of result.report) {
+    expect(p.enhanced, p.id).toBe(true);
+    // The prose wraps beside the drop cap: many words sit to its right,
+    // above its bottom edge.
+    expect(p.besideFloat, p.id).toBeGreaterThan(20);
+  }
+});
+
 test("unsupported leading-element float arrangements stay native with specific reasons", async ({
   page,
 }) => {

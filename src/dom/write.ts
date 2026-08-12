@@ -659,6 +659,29 @@ function foreignMutated(entries: readonly LineEntry[]): boolean {
   });
 }
 
+/**
+ * The text node and offset holding character index `index` of a segment's
+ * complete text. A plain segment is one text node, but a physical-end-hang
+ * segment nests its hanging cluster inside a span ([text, span, text]), so
+ * an offset can live past the first node. Boundary offsets resolve to the
+ * end of the earlier node; null only when the segment holds no text at all.
+ */
+function segmentTextPoint(
+  el: Element,
+  index: number,
+): { node: Text; offset: number } | null {
+  const walker = el.ownerDocument.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  let remaining = index;
+  let last: Text | null = null;
+  for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
+    const text = n as Text;
+    if (remaining <= text.length) return { node: text, offset: remaining };
+    remaining -= text.length;
+    last = text;
+  }
+  return last === null ? null : { node: last, offset: last.length };
+}
+
 interface LineExtent {
   /** Measured glyph-run width (edge spaces excluded — see modelPx). */
   rectPx: number;
@@ -697,13 +720,22 @@ function measureLineExtent(entries: readonly LineEntry[], range: Range): LineExt
       // (the element rect above includes them). A transform that changes the
       // text's length puts source offsets out of step with the glyph run, so
       // this particular read cannot be trusted — give up on the line rather
-      // than correct it by a wrong amount.
+      // than correct it by a wrong amount. The endpoints are resolved across
+      // the segment's text nodes because a physical-end-hang segment nests
+      // its hanging cluster in a span; its negative letter-spacing keeps the
+      // hung advance out of the range's layout rects, exactly as it stays
+      // out of the element rect the other branch reads.
       if (seg.transformChangesLength === true) unmeasurable = true;
-      const node = el.firstChild as Text;
-      range.setStart(node, seg.edgeTrim.lead);
-      range.setEnd(node, seg.text.length - seg.edgeTrim.trail);
-      rectPx += range.getBoundingClientRect().width;
-      modelPx += seg.edgeTrim.modelPx;
+      const start = segmentTextPoint(el, seg.edgeTrim.lead);
+      const end = segmentTextPoint(el, seg.text.length - seg.edgeTrim.trail);
+      if (start === null || end === null) {
+        unmeasurable = true;
+      } else {
+        range.setStart(start.node, start.offset);
+        range.setEnd(end.node, end.offset);
+        rectPx += range.getBoundingClientRect().width;
+        modelPx += seg.edgeTrim.modelPx;
+      }
     }
     if (seg !== null && seg.decorPx !== undefined) modelPx += seg.decorPx;
     // Start margins are never relocated; the exact modeled value is already
@@ -777,8 +809,12 @@ function paintedEndOf(
         paintRect = endText!.el.getBoundingClientRect();
       } else {
         if (endText!.seg.transformChangesLength === true) return null;
+        // Resolved across the segment's text nodes: the painted end can sit
+        // inside a physical-end-hang segment's hanging-cluster span.
+        const endPoint = segmentTextPoint(endText!.el, end);
+        if (endPoint === null) return null;
         range.setStart(node, 0);
-        range.setEnd(node, end);
+        range.setEnd(endPoint.node, endPoint.offset);
         paintRect = range.getBoundingClientRect();
       }
     } else paintRect = paintEndEntry.el.getBoundingClientRect();
