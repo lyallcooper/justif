@@ -79,8 +79,8 @@ your `<head>`:
 <script
   type="module"
   blocking="render"
-  src="https://cdn.jsdelivr.net/npm/justif@0.7.2/dist/auto.js"
-  integrity="sha384-w/TAnAUDwlGQWzMcDwXgpTgcx+IkpHKRPmC1BjFfn2VVafO7nHRcJ6szHO+jWMlT"
+  src="https://cdn.jsdelivr.net/npm/justif@0.8.0/dist/auto.js"
+  integrity="sha384-O/kgJJsG6zZbvrrp7EJZ2gF33SctlQBiqr8RzeHXH9hl2IriGV6AWRDN01vgUa4R"
   crossorigin="anonymous"
 ></script>
 ```
