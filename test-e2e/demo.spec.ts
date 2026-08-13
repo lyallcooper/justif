@@ -248,6 +248,41 @@ test("specimen sample sets its opening lines beside the drop cap", async ({ page
   await expect(page.locator("#native > p.has-dropcap .dropcap")).toHaveText("T");
 });
 
+test("the drop cap sinks three to five lines with the measure", async ({ page }) => {
+  await page.goto("/demo/");
+  await page.click("#dock-toggle");
+  await page.selectOption("#sample", "specimen");
+
+  // Lines of paragraph text set beside the initial, counted from the float's
+  // own box rather than the requested size, so this measures what the reader
+  // sees. The drop cap scales off the measure alone, so the native pane is
+  // enough and there is no justification pass to wait on.
+  const linesBeside = async (measureEm: number) => {
+    await page.locator("#measure").fill(String(measureEm));
+    return page.locator("#native > p.has-dropcap").evaluate((p) => {
+      const group = p.querySelector(".dropcap-group")!;
+      const ink = group.getBoundingClientRect();
+      const tops = new Set<number>();
+      const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
+        if ((n.parentElement as HTMLElement).closest(".dropcap-group") !== null) continue;
+        const range = document.createRange();
+        range.selectNodeContents(n);
+        for (const rect of range.getClientRects()) {
+          if (rect.width > 0) tops.add(Math.round(rect.top));
+        }
+      }
+      return [...tops].filter((top) => top < ink.bottom - 2).length;
+    });
+  };
+
+  // Sampled inside each band rather than at its edge, so retuning the
+  // thresholds does not have to mean retuning the test.
+  expect(await linesBeside(14)).toBe(3);
+  expect(await linesBeside(20)).toBe(4);
+  expect(await linesBeside(30)).toBe(5);
+});
+
 test("short Alice excerpt is available as a sample", async ({ page }) => {
   await page.goto("/demo/");
   await page.click("#dock-toggle");

@@ -750,14 +750,21 @@
     margin: 0.04em 0.05em -0.03em 0;
     background: var(--dropcap-bg);
     font-family: var(--demo-family, "Junicode"), Georgia, serif;
-    /* A four-line drop, sized to the article grid (1em/1.45). A drop cap
-       whose float box ends within ~3px of a line boundary gets different
-       rounding calls from different engines — Safari resolved one as a
-       fifth cleared line below the ink (a blank band), others as a fifth
-       narrowed line. 0.84em of margin-box per group em (top margin + ink)
-       at 6.75em ends the float 2px INSIDE line four, whichever box an
-       engine measures floats by. */
-    font-size: 6.75em;
+    /* The initial sinks a whole number of lines of the article grid
+       (1em/1.45), stepped with the measure by applyDropCapScale(). Whole
+       lines rather than a fluid scale because a drop cap whose float box ends
+       within ~3px of a line boundary gets different rounding calls from
+       different engines — Safari resolved one as a fifth cleared line below
+       the ink (a blank band), others as a fifth narrowed line.
+
+       Top margin plus ink comes to 0.84em per group em, so solving
+       0.84G = lines × 1.45 − 0.13 ends the float ~2px INSIDE the last line it
+       occupies, whichever box an engine measures floats by. `em` in font-size
+       resolves against the parent, so those are article ems — the grid the
+       lines are counted in. Four lines yields 6.75em, the value this was
+       hand-tuned to before it took a range. */
+    --dropcap-lines: 4;
+    font-size: calc((var(--dropcap-lines) * 1.45em - 0.13em) / 0.84);
     font-style: normal;
     font-weight: 400;
     line-height: 0.8;
@@ -3142,6 +3149,8 @@ await controller.ready;</code></pre>
   function setSample() {
     const html = SAMPLES[document.getElementById("sample").value];
     for (const host of [native, enhanced]) host.innerHTML = html;
+    // Fresh markup, so the drop cap's per-element scale has to be set again.
+    applyDropCapScale();
   }
 
   const $ = (id) => document.getElementById(id);
@@ -3802,6 +3811,33 @@ await controller.ready;</code></pre>
       article.style.width = width;
     }
     $("measure-out").textContent = $("measure").value + "em";
+    applyDropCapScale();
+  }
+
+  /* How many article lines the specimen's initial sinks. Stepped, never
+     scaled: a drop cap belongs on the grid, and a float ending mid-line makes
+     engines disagree about the last one (see .dropcap-group).
+
+     The float is 0.85em wide per group em, so three lines take 4.3em of the
+     measure, four 5.7em, five 7.2em. These thresholds deliberately favour the
+     larger initial: each step is allowed to reach about a third of the measure
+     at its narrow end, where a more cautious set would hold it near a fifth.
+     An ornamented initial is the point of the specimen, so it earns the room. */
+  function dropCapLines(measureEm) {
+    if (measureEm < 18) return 3;
+    if (measureEm < 24) return 4;
+    return 5;
+  }
+
+  function applyDropCapScale() {
+    // syncMeasureLimit() caps the slider at what the window can fit, so the
+    // slider value is already the measure the article actually gets.
+    const lines = String(dropCapLines(parseFloat($("measure").value)));
+    // On the groups themselves rather than an ancestor, for the same
+    // style-invalidation reason as the article width above.
+    for (const group of document.querySelectorAll(".dropcap-group")) {
+      group.style.setProperty("--dropcap-lines", lines);
+    }
   }
 
   let applyGeneration = 0;
