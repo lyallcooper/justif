@@ -2286,7 +2286,14 @@ export function justify(
     const root = document.documentElement;
     const width = root.clientWidth || window.innerWidth;
     const height = root.clientHeight || window.innerHeight;
-    // Percentage root margins resolve against the root's width.
+    // One margin for all four sides, deliberately: the observer resolves a
+    // percentage against the matching axis (top and bottom against the
+    // root's HEIGHT), so on a landscape viewport this seed calls "near" a
+    // band the observer would not. That bias is the right one for a
+    // fallback — measuring a paragraph the observer would skip costs one
+    // correction pass, while skipping one it would measure leaves that
+    // paragraph on its provisional pad until the first report lands. Do not
+    // "fix" this to match the observer without that trade in mind.
     const margin = width / 2;
     for (const { p } of batch) {
       const r = p.getBoundingClientRect();
