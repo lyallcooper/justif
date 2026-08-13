@@ -5870,7 +5870,16 @@ test("a fixed-space run ending a line beside a float hangs whole", async ({
   // spare at all, and the engines drop the line below the float on any build.
   for (const width of [210, 220, 230, 240, 260, 280]) {
     await page.evaluate((w) => {
-      document.getElementById("float-fixed-space-host")!.style.width = `${w}px`;
+      const host = document.getElementById("float-fixed-space-host")!;
+      host.style.width = `${w}px`;
+      // These paragraphs are appended below every other fixture block, well
+      // past the viewport, and a resize there parks its corrections until
+      // the reveal observer promotes them. An uncorrected line carries the
+      // model's drift in its ink — which beside a float, where the fit test
+      // reads ink and not the safety margin, is enough to drop a line under
+      // the float on its own. Assert about the corrected geometry the reader
+      // sees: scroll the paragraphs in, and let quiescence cover the reveal.
+      host.scrollIntoView({ block: "center" });
     }, width);
     await waitForQuiescence(page, "#float-fixed-space-host");
     measured.push(
