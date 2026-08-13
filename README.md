@@ -80,7 +80,7 @@ your `<head>`:
   type="module"
   blocking="render"
   src="https://cdn.jsdelivr.net/npm/justif@0.8.0/dist/auto.js"
-  integrity="sha384-O/kgJJsG6zZbvrrp7EJZ2gF33SctlQBiqr8RzeHXH9hl2IriGV6AWRDN01vgUa4R"
+  integrity="sha384-FIqkuKcyxFGuMWPaiWKwJ86H4D+A/BvHEtuR7fPz6w2V27l2kzMsgLgzIkXItv2C"
   crossorigin="anonymous"
 ></script>
 ```
