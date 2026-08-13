@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --quiet
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["fonttools>=4.53", "brotli>=1.1", "skia-pathops>=0.8"]
+# dependencies = ["fonttools>=4.53", "brotli>=1.1"]
 # ///
 """Build the demo's WOFF2 files from pinned upstream font sources.
 
@@ -72,12 +72,7 @@ LATIN = sorted(
     | set(DEMO)
 )
 
-# The one letter the specimen sample's drop cap sets. Goudy Initialen's
-# floriated glyphs run ~10 KB each, so the face carries exactly the initial
-# the demo renders; a new opening word means extending this set.
-INITIALS = [ord("T")]
-
-SETS = {"demo": sorted(set(DEMO)), "latin": LATIN, "initials": INITIALS}
+SETS = {"demo": sorted(set(DEMO)), "latin": LATIN}
 
 # Junicode's figures are oldstyle by default, so the drawer's numeric readouts
 # need `lnum` and `tnum` kept to stay lining and tabular. Latin Modern is the
@@ -106,12 +101,6 @@ class Face:
     # dropped, which is worth doing when the extra deltas are large and the
     # demo has no control for them. Empty keeps every axis.
     axes: tuple[str, ...] = ()
-    # Rewrite each glyph as an overlap-free outline. For sources whose
-    # contours self-intersect with mixed windings (amateur digitizations),
-    # rasterizers disagree about the fill itself — Safari knocked Goudy
-    # Initialen's interiors out into line-work while Chrome filled them —
-    # and every internal seam picks up double-coverage antialiasing.
-    remove_overlaps: bool = False
 
 
 @dataclass(frozen=True)
@@ -300,20 +289,6 @@ MANIFEST: tuple[Family, ...] = (
         ),
     ),
     Family(
-        "Goudy Initialen",
-        "1.1",
-        "Dieter Steffmann's 2000 digitization (Typographer Mediengestaltung) "
-        "of the floriated initials Goudy drew for Lanston around 1905 "
-        "(Goudy Initials No. 296), served as the foundry build by 1001fonts. "
-        "Sets the specimen sample's drop cap.",
-        (
-            Face("GoudyInitialen-1.1.woff2",
-                 "https://www.1001fonts.com/download/goudy-initialen.zip",
-                 member="GoudyInitialen.ttf", charset="initials",
-                 remove_overlaps=True),
-        ),
-    ),
-    Family(
         "IBM Plex Mono",
         "1.000",
         "IBM's @ibm/plex-mono-variable package. Supersedes the static 2.3 "
@@ -392,14 +367,6 @@ def build_face(family: Family, face: Face) -> str:
     data = source_bytes(face)
     if face.axes:
         data = drop_axes(data, face.axes)
-    if face.remove_overlaps:
-        from fontTools.ttLib.removeOverlaps import removeOverlaps
-
-        with TTFont(io.BytesIO(data), fontNumber=0) as font:
-            removeOverlaps(font)
-            buffer = io.BytesIO()
-            font.save(buffer)
-            data = buffer.getvalue()
     with TTFont(io.BytesIO(data), fontNumber=0) as font:
         found = version_of(font)
         available = set(font.getBestCmap())

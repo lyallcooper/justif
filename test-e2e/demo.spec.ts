@@ -179,12 +179,20 @@ test("specimen sample sets its opening lines beside the drop cap", async ({ page
   await expect(para).toHaveCount(1);
   await expect(para).toHaveAttribute("data-justif", "", { timeout: 15_000 });
 
-  // The initial renders in the subset Goudy face, not a fallback serif.
-  await expect
-    .poll(() =>
-      page.evaluate(() => document.fonts.check('normal 400 16px "Goudy Initialen"')),
-    )
-    .toBe(true);
+  // The ornament is drawn by the inline SVG rather than set as text, so what
+  // guards against a bare fallback letter is the art itself: a real path,
+  // covering the group's box, over a letter painted transparent.
+  const art = await para.evaluate((p) => {
+    const svg = p.querySelector<SVGSVGElement>(".dropcap-group svg.dropcap-art");
+    if (svg === null) return null;
+    return {
+      pathLength: svg.querySelector("path")?.getAttribute("d")?.length ?? 0,
+      letterColor: getComputedStyle(p.querySelector(".dropcap")!).color,
+    };
+  });
+  expect(art).not.toBeNull();
+  expect(art!.pathLength).toBeGreaterThan(1000);
+  expect(art!.letterColor).toBe("rgba(0, 0, 0, 0)");
 
   const geometry = await para.evaluate((p) => {
     const float = p.querySelector(".dropcap-group")!.getBoundingClientRect();
@@ -214,21 +222,26 @@ test("specimen sample sets its opening lines beside the drop cap", async ({ page
   expect(geometry.besideFloat).toBeGreaterThan(8);
   expect(geometry.belowFloatAtMargin).toBeGreaterThan(4);
 
-  // The initial fills its box exactly: the face's metrics (ascent 80%,
-  // descent 0) and the strut fallback pin the baseline, so no engine's
-  // fallback half-leading may shift the glyph inside the background plate.
+  // The initial fills its box exactly. This used to rest on the face's
+  // metrics (ascent 80%, descent 0) plus a strut fallback pinning the
+  // baseline, because engines disagreed about which font struts the line.
+  // The art is sized and positioned against the box itself now, so the fit
+  // is pure geometry and no half-leading can shift it inside the plate.
   const fit = await para.evaluate((p) => {
     const group = p.querySelector(".dropcap-group")!;
-    const cap = group.querySelector(".dropcap")!;
-    const range = document.createRange();
-    range.setStart(cap.firstChild!, 0);
-    range.setEnd(cap.firstChild!, 1);
+    const art = group.querySelector("svg.dropcap-art")!;
     const g = group.getBoundingClientRect();
-    const t = range.getClientRects()[0]!;
-    return { dxLeft: t.left - g.left, dyTop: t.top - g.top, dyBottom: g.bottom - t.bottom };
+    const a = art.getBoundingClientRect();
+    return {
+      dxLeft: a.left - g.left,
+      dyTop: a.top - g.top,
+      dxRight: g.right - a.right,
+      dyBottom: g.bottom - a.bottom,
+    };
   });
   expect(Math.abs(fit.dxLeft)).toBeLessThan(1);
   expect(Math.abs(fit.dyTop)).toBeLessThan(1);
+  expect(Math.abs(fit.dxRight)).toBeLessThan(1);
   expect(Math.abs(fit.dyBottom)).toBeLessThan(1);
 
   // The native column shows the same structure for comparison.
