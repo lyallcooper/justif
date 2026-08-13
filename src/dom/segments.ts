@@ -3,7 +3,7 @@
  * the DOM writer's segment model (write.ts does the actual DOM emission).
  * No lifecycle, no state — index.ts stays plumbing.
  */
-import { CJK_CHAR } from "../core/cjk.js";
+import { CJK_CHAR, graphemes } from "../core/cjk.js";
 import { breakEndBox } from "../core/items.js";
 import { opticalCandidates, opticalFontKey, opticalProtrusion } from "./optical.js";
 import {
@@ -120,6 +120,70 @@ function separatorWidthIn(spec: FontSpec, context: () => string, separator: stri
     );
   }
   return measureWidth(separator, spec);
+}
+
+/**
+ * What is safe to remove from a closing box's measured advance. The engine
+ * clamps that box's own span at zero width, so a shed larger than its true
+ * advance simply does not happen — and the model would then be describing a
+ * narrower line than the DOM rendered. Canvas and DOM disagree about a
+ * single cluster by a fraction of its width (a 20px Georgia period has been
+ * seen 0.28px apart), so keep a proportional reserve and let the line's word
+ * spaces, which are exact, pay for whatever that leaves unshed.
+ */
+function shedCapacity(advance: number): number {
+  return Math.max(0, advance - Math.max(0.5, advance * 0.1));
+}
+
+/**
+ * Advance of the segment's terminal cluster: its own glyph advance plus the
+ * letter-spacing that follows it, which is what a shed there can remove.
+ */
+function terminalClusterAdvance(
+  segment: RenderSegment,
+  endBox: Box | undefined,
+  scan: ParagraphScan,
+): number {
+  if (endBox === undefined) return 0;
+  const clusters = graphemes(segment.text);
+  let end = clusters.length - 1;
+  // Collapsible trailing spaces are not the carrier (see the writer).
+  while (end > 0 && clusters[end] === " ") end--;
+  const terminal = clusters[end];
+  if (terminal === undefined || terminal === " ") return 0;
+  const spec = scan.specs[scan.runs[endBox.run]!.spec]!;
+  return Math.max(
+    0,
+    measureWidth(terminal, spec) *
+      // A condensed line renders narrower than the spec measures.
+      Math.min(1, segment.fontStretchPct / 100) +
+      segment.resolvedLetterSpacingPx,
+  );
+}
+
+/** Set a line `px` tighter by taking it out of the word spaces its
+ * corrective pass would use, in the same proportions. */
+function tightenLine(
+  segments: readonly RenderSegment[],
+  first: number,
+  px: number,
+): void {
+  if (px <= 0.001) return;
+  const countAt = (index: number): number =>
+    Math.max(
+      0,
+      segments[index]!.adjustableSpaceCount -
+        (index === first ? segments[index]!.edgeTrim.lead : 0),
+    );
+  let spaces = 0;
+  for (let i = first; i < segments.length; i++) spaces += countAt(i);
+  // A line of nothing but fixed boxes has no spacing to give; it keeps the
+  // over-wide box, exactly as the corrective pass leaves such a line alone.
+  if (spaces === 0) return;
+  const delta = px / spaces;
+  for (let i = first; i < segments.length; i++) {
+    if (countAt(i) > 0) segments[i]!.wordSpacingPx -= delta;
+  }
 }
 
 /** Core Measure implementation backed by the canvas cache. */
@@ -410,6 +474,8 @@ export function buildRenderSegments(
 
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
     const line = lines[lineIndex]!;
+    /** Where this line's own segments start, for line-wide adjustments. */
+    const lineFirstSegment = segments.length;
     // Absolute word-spacing per run on this line: the author's own
     // word-spacing, the offset from the space glyph's advance to the glue
     // width the engine assigned (nonzero for pressured oversized spaces),
@@ -773,7 +839,7 @@ export function buildRenderSegments(
       // line box. Painted inline boxes retain the ordinary margin
       // representation: their overhang is not a terminal glyph advance.
       const besideFloat = lineOffset + lineIndex < (scan.floatIntrusion?.lines ?? 0);
-      const physicalEndHang =
+      const requestedHang =
         besideFloat &&
         !line.hyphenated &&
         endBox?.paintedEnd !== true &&
@@ -781,7 +847,11 @@ export function buildRenderSegments(
         endWithoutCollapsibleSpaces(last.text) > 0
           ? line.rightHang
           : 0;
-      if (physicalEndHang > 0) {
+      /** What the closing box can still give up, after the hang below. */
+      let padCapacity = 0;
+      /** Of `requestedHang`, what no box on the line could give up. */
+      let unshed = 0;
+      if (requestedHang > 0) {
         if (fixedSegmentWidth.has(segments.length - 1)) {
           // A trailing fixed-separator run hangs whole boxes, not one
           // glyph's protrusion: each separator can give up only its own
@@ -790,16 +860,18 @@ export function buildRenderSegments(
           // the final separator collapses that one advance and leaves the
           // rest inside the line, where the corrective pass would crush it
           // out of the line's word spaces.
-          let remaining = physicalEndHang;
+          let remaining = requestedHang;
           for (
             let index = segments.length - 1;
             remaining > 0.001 && fixedSegmentWidth.has(index);
             index--
           ) {
             const hung = segments[index]!;
-            const share = Math.min(remaining, fixedSegmentWidth.get(index)!);
+            const width = fixedSegmentWidth.get(index)!;
+            const share = Math.min(remaining, width);
             hung.physicalEndHangPx = share;
             remaining -= share;
+            if (index === segments.length - 1) padCapacity = width - share;
             // The collapsible space hung with the run is a whitespace-only
             // segment, and corrective reads take an edge space from the
             // model rather than from a rect. Its hang has to come off there
@@ -811,8 +883,18 @@ export function buildRenderSegments(
               };
             }
           }
-        } else last.physicalEndHangPx = physicalEndHang;
+          unshed = remaining;
+        } else {
+          const capacity = shedCapacity(terminalClusterAdvance(last, endBox, scan));
+          const share = Math.min(requestedHang, capacity);
+          if (share > 0) last.physicalEndHangPx = share;
+          unshed = requestedHang - share;
+          padCapacity = capacity - share;
+        }
+      } else if (besideFloat && !line.hyphenated && endBox?.paintedEnd !== true) {
+        padCapacity = shedCapacity(terminalClusterAdvance(last, endBox, scan));
       }
+      const physicalEndHang = requestedHang - unshed;
       // A hyphen-ended line beside the float hangs its pseudo-hyphen the
       // same physical way — as reduced advance on the hyphen span itself
       // (letter-spacing after the "-"); a margin there is invisible to the
@@ -826,14 +908,57 @@ export function buildRenderSegments(
         const endSpec = scan.specs[scan.runs[endBox!.run]!.spec]!;
         last.hyphenLetterSpacingPx = endSpec.letterSpacingPx - hyphenEndHang;
       }
+      // Beside a float the safety pad in the margin below buys the line
+      // nothing: the fit test reads the line's advance, and a margin is not
+      // part of it. The model's own drift — a few hundredths of a pixel is
+      // plenty — then drops the whole line under the float and leaves a
+      // float-sized hole until the correction that would have fixed it
+      // runs, which for an off-screen paragraph is never.
+      //
+      // So the pad is shed the way the hangs are, from the advance of
+      // whichever box closes the line. That is free where the box has the
+      // room, since nothing follows it: no glyph moves and the line paints
+      // exactly where it did, only the box the engine measures gets
+      // shorter.
+      if (besideFloat) {
+        const endSpec =
+          endBox === undefined ? undefined : scan.specs[scan.runs[endBox.run]!.spec]!;
+        const capacity =
+          line.hyphenated && endBox !== undefined && endSpec !== undefined
+            ? shedCapacity(runsMetrics[endBox.run]!.hyphenWidth + endSpec.letterSpacingPx) -
+              hyphenEndHang
+            : padCapacity;
+        const pad = Math.max(0, Math.min(WRAP_SAFETY_PAD_PX, capacity));
+        if (pad > 0.001) {
+          last.physicalPadPx = pad;
+          // A hyphenated line sheds on the hyphen span the writer appends
+          // after this segment, so the terminal cluster is left alone.
+          if (line.hyphenated && endSpec !== undefined) {
+            last.hyphenLetterSpacingPx =
+              (last.hyphenLetterSpacingPx ?? endSpec.letterSpacingPx) - pad;
+          }
+        }
+        // Whatever the closing box could not give up — of the hang, and of
+        // the pad — the line pays for by setting that much tighter, which
+        // is what the corrective pass does to it anyway when it runs. This
+        // only moves the same reckoning to write time, where a line whose
+        // correction is parked can still benefit from it. Spacing is exact,
+        // unlike an advance the engine may clamp, so it is also what makes
+        // the arithmetic above safe to be conservative with.
+        tightenLine(segments, lineFirstSegment, unshed + (WRAP_SAFETY_PAD_PX - pad));
+      }
       last.marginEndPx = -(
         line.rightHang -
+        unshed -
         physicalEndHang -
         hyphenEndHang +
         line.overflowPx +
         WRAP_SAFETY_PAD_PX
       );
-      last.rightHangPx = line.rightHang;
+      // What the line will actually protrude: a hang its closing box could
+      // not shed was paid for in spacing above, so it is no longer standing
+      // outside the measure and must not be corrected for as though it were.
+      last.rightHangPx = line.rightHang - unshed;
       last.overflowPx = line.overflowPx;
       // A zero fixed hang still marks an unpadded painted element's REAL
       // close. Keep the safety/correction margin on that clone's outside;

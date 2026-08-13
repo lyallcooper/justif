@@ -63,9 +63,9 @@ test("the drop-in stays within its size budget", async ({ page }) => {
   // The drop-in is fetched from a CDN before first paint, so its weight is a
   // feature. Keep modest headroom over what it measures today: a dependency
   // landing in the bundle by accident is tens of kilobytes, not hundreds.
-  expect(size.auto.raw, "dist/auto.js bytes").toBeLessThan(145_000);
-  if (size.auto.gzip > 0) expect(size.auto.gzip, "dist/auto.js gzipped").toBeLessThan(58_000);
-  expect(size.index.raw, "dist/index.js bytes").toBeLessThan(157_000);
+  expect(size.auto.raw, "dist/auto.js bytes").toBeLessThan(148_000);
+  if (size.auto.gzip > 0) expect(size.auto.gzip, "dist/auto.js gzipped").toBeLessThan(59_000);
+  expect(size.index.raw, "dist/index.js bytes").toBeLessThan(160_000);
 });
 
 test("a re-read rebuilds only what changed", async ({ page }) => {

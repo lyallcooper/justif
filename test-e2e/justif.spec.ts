@@ -5991,6 +5991,106 @@ test("a fixed-space run ending a line beside a float hangs whole", async ({
   }
 });
 
+test("a parked line beside a float still fits beside it", async ({ page }) => {
+  // A paragraph the viewport observers call far parks its corrections: after
+  // a resize its lines keep the model's drift in their ink until the reader
+  // scrolls them in. Beside a float that is the state that matters, because
+  // the fit test reads the line's advance and NOT the negative end margin
+  // the wrap-safety pad lives in — so a few hundredths of a pixel used to
+  // put a whole line under the float and leave a float-sized hole in the
+  // text. The pad is shed from the closing box's advance instead, and a hang
+  // too big for that box to shed is paid for in spacing. Nothing here is
+  // scrolled into view: that is the point.
+  // Not covered here: a line whose trailing punctuation hangs FAR (a comma
+  // and a close quote together ask for more than the closing cluster's whole
+  // advance). Chromium fits such a line beside a float by where its glyphs
+  // PAINT, and a hang paints outside the box by definition, so no shed
+  // represents it there — the line still drops while parked, as it did
+  // before this test existed. Its corrected geometry is fine in all three
+  // engines, which is why the sweep above this one covers it.
+  const sources = {
+    plain:
+      "an all too common one at that. Wide gaps and rivers of " +
+      "whitespace certainly do not honor content and more words here to fill.",
+    hyphenated:
+      "an all too common one at that. Wide gaps and extraordinary rivers of " +
+      "whitespace certainly do not honor complicated content and more here.",
+    // A trailing fixed-separator run hangs whole boxes, several of them.
+    separators:
+      "an all too common one at that. Wide    gaps and rivers of " +
+      "whitespace certainly do not honor content and more words here to fill.",
+  };
+  /** The fixture paragraphs' own line box: 20px × 1.35. */
+  const LINE_HEIGHT_PX = 27;
+  await page.evaluate((texts) => {
+    const host = document.createElement("div");
+    host.id = "parked-float-host";
+    for (const [id, text] of Object.entries(texts)) {
+      const p = document.createElement("p");
+      p.id = `parked-float-${id}`;
+      p.style.cssText = "font:20px/1.35 Georgia,serif;text-align:justify;margin:0 0 24px";
+      const marker = document.createElement("span");
+      marker.className = "marker";
+      marker.style.cssText =
+        "float:left;width:80px;height:80px;margin-right:8px;background:#ddd";
+      p.append(marker, document.createTextNode(text));
+      host.append(p);
+    }
+    document.body.append(host);
+  }, sources);
+
+  await enhance(page, { hyphenate: true }, "#parked-float-host p");
+
+  // Widths chosen from a 205–300px sweep of all three engines: each one
+  // dropped a line under the float on the build before this test, and the
+  // set spans all three shapes and all three engines. Sub-pixel drift moves
+  // the exact offenders between platforms, so the sweep's whole span is
+  // sampled rather than one knife edge.
+  const measured: Array<{ paragraph: string; width: number; topStep: number }> = [];
+  for (const width of [221, 227, 229, 232, 243, 262, 281, 289, 294, 300]) {
+    await page.evaluate((w) => {
+      document.getElementById("parked-float-host")!.style.width = `${w}px`;
+      // Back to the top: these paragraphs sit below every other fixture
+      // block, so this is what leaves their corrections parked.
+      window.scrollTo(0, 0);
+    }, width);
+    await waitForQuiescence(page, "#parked-float-host");
+    measured.push(
+      ...(await page.evaluate((w) => {
+        return [...document.querySelectorAll<HTMLElement>("#parked-float-host p")].map((p) => {
+          const tops = new Set<number>();
+          for (const segment of p.querySelectorAll<HTMLElement>(".justif-seg")) {
+            tops.add(Math.round(segment.getBoundingClientRect().top));
+          }
+          const sorted = [...tops].sort((a, b) => a - b);
+          let topStep = 0;
+          for (let i = 1; i < sorted.length; i++) {
+            topStep = Math.max(topStep, sorted[i]! - sorted[i - 1]!);
+          }
+          return { paragraph: p.id, width: w, topStep };
+        });
+      }, width)),
+    );
+  }
+
+  for (const entry of measured) {
+    expect
+      .soft(
+        entry.topStep,
+        `${entry.paragraph} at ${entry.width}px sets every line beside the float while parked`,
+      )
+      .toBeLessThan(LINE_HEIGHT_PX * 1.5);
+  }
+  // The paragraphs must actually have been parked: a correction that ran
+  // would rescue these lines and the assertions above would prove nothing.
+  const parked = await page.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>("#parked-float-host p")].every(
+      (p) => p.getBoundingClientRect().top > window.innerHeight,
+    ),
+  );
+  expect(parked, "the paragraphs stayed below the viewport").toBe(true);
+});
+
 test("Unicode line and paragraph separators leave paragraphs native", async ({
   page,
 }) => {

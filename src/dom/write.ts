@@ -68,6 +68,16 @@ export interface RenderSegment {
    * the line's final text segment; the writer moves it onto the following
    * hyphen span. */
   hyphenEndHangPx?: number;
+  /** The wrap-safety pad in the one form that works beside a float: advance
+   * removed from the line's terminal cluster (or its pseudo-hyphen) instead
+   * of carried in the end margin, which the fit test does not read. Unlike
+   * the hang removals above this is not intentional protrusion — no glyph
+   * moves, so the line paints exactly where it would without it — it is the
+   * slack that keeps model drift from dropping a whole line under the float
+   * while its correction is deferred or parked. Bounded by what that cluster
+   * can actually give up, so the model never claims a removal the DOM did
+   * not make. */
+  physicalPadPx?: number;
   /** Absolute letter-spacing emitted on that hyphen span (the run's own
    * letter-spacing minus hyphenEndHangPx): spacing after the "-" shrinks
    * its advance while the ink still paints past the shortened line box. */
@@ -524,7 +534,13 @@ export function writeParagraph(
       // space-all disables the trim. A no-op in other engines.
       el.style.setProperty("text-spacing-trim", "space-all");
     }
-    if (segment.physicalEndHangPx !== undefined && segment.physicalEndHangPx > 0) {
+    // A hyphen-ended line sheds its pad on the pseudo-hyphen span instead
+    // (hyphenLetterSpacingPx already carries it), so the terminal cluster
+    // must not shed it a second time.
+    const shedPx =
+      (segment.physicalEndHangPx ?? 0) +
+      (segment.hyphenLetterSpacingPx === undefined ? (segment.physicalPadPx ?? 0) : 0);
+    if (shedPx > 0) {
       const clusters = graphemes(segment.text);
       let end = clusters.length - 1;
       // Only collapsible source spaces are layout glue. Fixed-width Unicode
@@ -541,9 +557,7 @@ export function writeParagraph(
         el.append(before);
         const span = doc.createElement("span");
         span.className = "justif-hanging-end";
-        span.style.letterSpacing = px(
-          segment.resolvedLetterSpacingPx - segment.physicalEndHangPx,
-        );
+        span.style.letterSpacing = px(segment.resolvedLetterSpacingPx - shedPx);
         span.textContent = hanging;
         el.append(span, after);
       }
@@ -974,6 +988,15 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
         const physicalEndHang =
           textEntries.reduce((sum, entry) => sum + (entry.seg.physicalEndHangPx ?? 0), 0) +
           (endText?.seg.hyphenEndHangPx ?? 0);
+        // The wrap-safety pad shed from the terminal cluster is out of the
+        // measured rects exactly as the hang removals are, but it is not
+        // protrusion: it stays shed after correction (it is what keeps the
+        // corrected line safe too), so it comes off the target and not off
+        // the end margin below.
+        const physicalPad = textEntries.reduce(
+          (sum, entry) => sum + (entry.seg.physicalPadPx ?? 0),
+          0,
+        );
         const deliberateOverflow = endText?.seg.overflowPx ?? 0;
         const besideFloat = li < physicalFitLines;
         // Set lines should PAINT at the modeled edge too. The former
@@ -993,7 +1016,8 @@ export function measureCorrections(pending: readonly PendingParagraph[]): Correc
             (availableWidth -
               FLOAT_WRAP_SPARE_PX +
               rightHang -
-              physicalEndHang +
+              physicalEndHang -
+              physicalPad +
               deliberateOverflow);
         } else {
           const fragment = fragmentForLine(fragments.rects, lineRect!, rtl === true);
