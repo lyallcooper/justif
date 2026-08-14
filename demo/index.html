@@ -762,9 +762,17 @@
        occupies, whichever box an engine measures floats by. `em` in font-size
        resolves against the parent, so those are article ems — the grid the
        lines are counted in. Four lines yields 6.75em, the value this was
-       hand-tuned to before it took a range. */
-    --dropcap-lines: 4;
-    font-size: calc((var(--dropcap-lines) * 1.45em - 0.13em) / 0.84);
+       hand-tuned to before it took a range.
+
+       The line count is INHERITED (applyDropCapScale() sets it on <body>)
+       rather than declared here, because the enhancement renders a CLONE of
+       an authored leading float and stashes the original off-document: a
+       value written onto the group in the live DOM lands on the clone, and
+       the next re-justify — a font change, a feature toggle — rebuilds the
+       clone from the untouched original and brings the old count back. An
+       inherited property reaches whichever copy is live. The fallback is the
+       four-line default. */
+    font-size: calc((var(--dropcap-lines, 4) * 1.45em - 0.13em) / 0.84);
     font-style: normal;
     font-weight: 400;
     line-height: 0.8;
@@ -3833,11 +3841,16 @@ await controller.ready;</code></pre>
     // syncMeasureLimit() caps the slider at what the window can fit, so the
     // slider value is already the measure the article actually gets.
     const lines = String(dropCapLines(parseFloat($("measure").value)));
-    // On the groups themselves rather than an ancestor, for the same
-    // style-invalidation reason as the article width above.
-    for (const group of document.querySelectorAll(".dropcap-group")) {
-      group.style.setProperty("--dropcap-lines", lines);
-    }
+    // Inherited from <body>, NOT written onto the groups: the justified
+    // column renders a clone of the authored float, so a value set on the
+    // group in the live DOM is thrown away by the next re-justify (see
+    // .dropcap-group). An inherited custom property invalidates the computed
+    // style of every element that can see it — which is why the measure
+    // itself goes straight onto the articles — but this one is a step, not a
+    // scale: skipping the write when the count is unchanged leaves at most
+    // two of them in a full slider drag.
+    if (document.body.style.getPropertyValue("--dropcap-lines") === lines) return;
+    document.body.style.setProperty("--dropcap-lines", lines);
   }
 
   let applyGeneration = 0;

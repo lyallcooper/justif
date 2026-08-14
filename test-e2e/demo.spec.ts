@@ -283,6 +283,37 @@ test("the drop cap sinks three to five lines with the measure", async ({ page })
   expect(await linesBeside(30)).toBe(5);
 });
 
+test("the drop cap keeps its step when the text is re-justified", async ({ page }) => {
+  await page.goto("/demo/");
+  await page.waitForFunction(
+    () => !document.documentElement.classList.contains("fonts-loading"),
+  );
+  await page.click("#dock-toggle");
+  // Install the sample at the five-line step, then step DOWN to three: the
+  // justified column renders a CLONE of the authored float, so the narrower
+  // step reaches only the clone, and the re-justify below rebuilds that clone
+  // from an original still carrying the wide one.
+  await page.locator("#measure").fill("30");
+  await page.selectOption("#sample", "specimen");
+  await page.locator("#measure").fill("14");
+
+  const dropCapHeight = (pane: string) =>
+    page
+      .locator(`#${pane} > p.has-dropcap .dropcap-group`)
+      .evaluate((el) => Math.round(el.getBoundingClientRect().height));
+
+  // Both panes read the same measure, so their initials are the same size —
+  // and the browser pane, which nothing rewrites, is the reference.
+  const authored = await dropCapHeight("native");
+  await expect.poll(() => dropCapHeight("enhanced")).toBe(authored);
+
+  // Toggling any layout feature re-justifies; so does changing the typeface.
+  await page.click("#protrusion");
+  await expect.poll(() => dropCapHeight("enhanced")).toBe(authored);
+  await page.selectOption("#font", "'Coelacanth'");
+  await expect.poll(() => dropCapHeight("enhanced")).toBe(authored);
+});
+
 test("short Alice excerpt is available as a sample", async ({ page }) => {
   await page.goto("/demo/");
   await page.click("#dock-toggle");
