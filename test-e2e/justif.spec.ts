@@ -716,6 +716,135 @@ test("floated ::first-letter drop caps use the remaining width on every intruded
   expect(restored).toEqual(original.html);
 });
 
+test("a line-end glyph hung beside a float keeps its kern with the glyph before it", async ({
+  page,
+}) => {
+  // Beside a float the closing cluster's hang comes out of its own letter
+  // advance, which puts it in a span of its own — a shaping boundary that
+  // drops the pair kern between it and the glyph before it unless the writer
+  // puts that kern back. Junicode kerns period + right double quote by
+  // −94/1000 em, so every line ending here has ~2.3px riding on it, and the
+  // text ends every word with that pair so the break the engine picks cannot
+  // avoid it.
+  const original = await page.evaluate(async () => {
+    await document.fonts.load('24px "Junicode"');
+    const style = document.createElement("style");
+    style.textContent = `
+      /* Outweigh the fixture's own '#host p' font declarations. */
+      #host p#kern-hang,
+      #host p#kern-native {
+        width: 300px;
+        margin: 0;
+        font: 24px/1.3 "Junicode";
+        text-align: justify;
+      }
+      #host p#kern-hang::first-letter {
+        float: left;
+        padding-right: 6px;
+        font-size: 76px;
+        line-height: 0.8;
+      }
+    `;
+    document.head.append(style);
+    const text = ("Rooms.” ".repeat(12) + "Rooms.”").trim();
+    const p = document.createElement("p");
+    p.id = "kern-hang";
+    p.textContent = text;
+    const native = document.createElement("p");
+    native.id = "kern-native";
+    native.textContent = text;
+    document.getElementById("host")!.replaceChildren(p, native);
+
+    // Where the browser paints the quote relative to the stop it follows,
+    // with the pair in one shaping run: the offset justif must reproduce.
+    const source = native.firstChild as Text;
+    const stopAt = source.data.indexOf(".”");
+    const offsetOf = (node: Text, at: number): number => {
+      const stop = document.createRange();
+      stop.setStart(node, at);
+      stop.setEnd(node, at + 1);
+      const quote = document.createRange();
+      quote.setStart(node, at + 1);
+      quote.setEnd(node, at + 2);
+      return quote.getBoundingClientRect().left - stop.getBoundingClientRect().left;
+    };
+    const nativeOffset = offsetOf(source, stopAt);
+    // The same offset from the shaper directly: the stop's advance with the
+    // pair kern applied. Exact in every engine, which the rects above are not
+    // — WebKit rounds an unstyled paragraph's range rects to whole pixels.
+    const ctx = document.createElement("canvas").getContext("2d")!;
+    ctx.font = getComputedStyle(native).font;
+    const nativeKern =
+      ctx.measureText(".”").width - ctx.measureText(".").width - ctx.measureText("”").width;
+    // Tracking and expansion would scale the pair by a per-line percentage
+    // and blur the comparison; the kern is what this test is about.
+    window.__justif.controller = window.__justif.justify([p], {
+      expansion: false,
+      tracking: false,
+    });
+    return { text, nativeOffset, nativeKern };
+  });
+  await page.evaluate(() => window.__justif.controller!.ready);
+  await waitForQuiescence(page, "#kern-hang");
+
+  const result = await page.evaluate(() => {
+    const p = document.getElementById("kern-hang")!;
+    const carriers = [...p.querySelectorAll<HTMLElement>(".justif-hanging-end")];
+    return {
+      text: p.textContent,
+      offsets: carriers.map((carrier) => {
+        const stop = document.createRange();
+        // The carrier holds the quote; the stop is the last character of the
+        // text node the writer left in front of it.
+        const prev = carrier.previousSibling as Text;
+        stop.setStart(prev, prev.data.length - 1);
+        stop.setEnd(prev, prev.data.length);
+        const quote = document.createRange();
+        quote.selectNodeContents(carrier);
+        return {
+          carrier: carrier.textContent,
+          stop: prev.data.slice(-1),
+          offset: quote.getBoundingClientRect().left - stop.getBoundingClientRect().left,
+          kerning: getComputedStyle(carrier).fontKerning,
+          margin: parseFloat(carrier.style.marginInlineStart) || 0,
+        };
+      }),
+    };
+  });
+
+  expect(result.text).toBe(original.text);
+  // Every intruded line ends in the pair, and the drop cap intrudes on at
+  // least two of them in every engine.
+  expect(result.offsets.length).toBeGreaterThanOrEqual(2);
+  for (const [i, seen] of result.offsets.entries()) {
+    expect.soft(seen.carrier, `carrier ${i + 1} is the quote`).toBe("”");
+    expect.soft(seen.stop, `carrier ${i + 1} follows the stop`).toBe(".");
+    // The compensation is only sound because the boundary drops the kern in
+    // every engine, which is what the carrier's own font-kerning guarantees.
+    expect.soft(seen.kerning, `carrier ${i + 1} shapes without pair kerning`).toBe("none");
+    expect
+      .soft(
+        Math.abs(seen.margin - original.nativeKern),
+        `carrier ${i + 1} carries the pair's own kern (${seen.margin} vs ${original.nativeKern})`,
+      )
+      .toBeLessThan(0.06);
+    // And lands where the browser paints it. Loose enough for WebKit's
+    // whole-pixel native rects; the uncompensated carrier sits ~2.3px out.
+    expect
+      .soft(
+        Math.abs(seen.offset - original.nativeOffset),
+        `carrier ${i + 1} sits where the browser puts it (${seen.offset} vs ${original.nativeOffset})`,
+      )
+      .toBeLessThan(1);
+  }
+
+  const restored = await page.evaluate(() => {
+    window.__justif.controller!.destroy();
+    return document.getElementById("kern-hang")!.textContent;
+  });
+  expect(restored).toBe(original.text);
+});
+
 test("one leading floated element is cloned opaquely and narrows overlapping lines", async ({
   page,
 }) => {

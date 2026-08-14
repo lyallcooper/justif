@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A quote or other mark ending a line beside a drop cap no longer drifts away
+  from the character before it.
 - Fixed a small word-spacing error on lines beside a drop cap.
 
 ## 0.8.1 (2026-08-14)

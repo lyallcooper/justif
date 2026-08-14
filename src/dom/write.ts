@@ -82,6 +82,30 @@ export interface RenderSegment {
    * letter-spacing minus hyphenEndHangPx): spacing after the "-" shrinks
    * its advance while the ink still paints past the shortened line box. */
   hyphenLetterSpacingPx?: number;
+  /**
+   * The kern between the segment's terminal cluster and the cluster before it
+   * (negative for the usual tight pair), which the hang carrier's own span
+   * would otherwise drop: a span with its own letter-spacing is a shaping
+   * boundary, so the pair is shaped in two runs and the adjustment never
+   * applies. The measured line then comes out wider than the model and the
+   * corrective pass takes the difference out of its word spaces — leaving the
+   * closing mark visibly detached from the stop it follows while the line
+   * still reads flush.
+   *
+   * Restored as a negative start margin on the carrier, which moves its box
+   * (and so its glyph) back to where an unbroken run would have put it while
+   * leaving the shed advance shed. The carrier also declares
+   * `font-kerning: none`, which is what makes the compensation sound: Chromium
+   * and WebKit drop the kern whatever the span carries, but Firefox shapes
+   * across the boundary whenever the segment itself has a letter-spacing, and
+   * a compensation may only answer a loss that is certain. The carrier holds
+   * one grapheme cluster, so it has no kerning of its own to give up.
+   *
+   * Unset when the pair does not kern, and when the terminal cluster opens its
+   * segment: the boundary before it is then the segment's own, which this
+   * feature did not introduce and cannot speak for.
+   */
+  terminalKernPx?: number;
   /** Feature settings to emit when tracking needs to retain common
    * ligatures. Includes the author's low-level settings so this declaration
    * never replaces their stylistic sets or variant choices. */
@@ -203,8 +227,8 @@ export function hangCarrierShed(seg: RenderSegment): number {
 
 /**
  * How the writer divides a segment that sheds advance from its terminal
- * cluster: the text before that cluster, the cluster carrying the shed, and
- * the rest.
+ * cluster: the text before that cluster, the cluster carrying the shed, the
+ * cluster right before it (whose pair kern the split drops), and the rest.
  *
  * Only collapsible source spaces are layout glue, so they are never the
  * carrier. Fixed-width Unicode separators are real box glyphs and can
@@ -215,6 +239,7 @@ export function hangCarrierShed(seg: RenderSegment): number {
  */
 export function terminalSplit(text: string): {
   before: string;
+  prev: string | undefined;
   terminal: string | undefined;
   after: string;
 } {
@@ -222,9 +247,10 @@ export function terminalSplit(text: string): {
   let end = clusters.length - 1;
   while (end > 0 && clusters[end] === " ") end--;
   const terminal = clusters[end];
-  if (terminal === undefined) return { before: "", terminal, after: "" };
+  if (terminal === undefined) return { before: "", prev: undefined, terminal, after: "" };
   return {
     before: clusters.slice(0, end).join(""),
+    prev: end > 0 ? clusters[end - 1] : undefined,
     terminal,
     after: clusters.slice(end + 1).join(""),
   };
@@ -625,6 +651,12 @@ export function writeParagraph(
         const span = doc.createElement("span");
         span.className = "justif-hanging-end";
         span.style.letterSpacing = px(segment.resolvedLetterSpacingPx - shedPx);
+        // Take the pair kern this boundary costs out of the engine's hands
+        // and put it back as layout (see RenderSegment.terminalKernPx).
+        if (segment.terminalKernPx !== undefined) {
+          span.style.fontKerning = "none";
+          span.style.marginInlineStart = px(segment.terminalKernPx);
+        }
         span.textContent = terminal;
         el.append(span, after);
       }

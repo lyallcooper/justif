@@ -39,7 +39,12 @@ import {
   leadingCollapsibleSpaces,
   trailingCollapsibleSpaces,
 } from "./whitespace.js";
-import { type RenderSegment, terminalSplit, WRAP_SAFETY_PAD_PX } from "./write.js";
+import {
+  hangCarrierShed,
+  type RenderSegment,
+  terminalSplit,
+  WRAP_SAFETY_PAD_PX,
+} from "./write.js";
 
 const AUTHOR_NO_BREAK_SPACE = /[\u00A0\u202F]/;
 const DASH_JUNCTION = /[\u002D\u2010-\u2015]/;
@@ -155,6 +160,48 @@ function terminalClusterAdvance(
       Math.min(1, segment.fontStretchPct / 100) +
       segment.resolvedLetterSpacingPx,
   );
+}
+
+/** Below this the kern would move the carrier by less than the engine can
+ * paint, so the writer leaves it undeclared and an unkerned pair — the common
+ * case — renders exactly as it did before. */
+const KERN_EPSILON = 0.01;
+
+/**
+ * The kern between a shedding segment's terminal cluster and the cluster
+ * before it: what the writer has to restore as layout once that cluster is
+ * shaped in a run of its own (see RenderSegment.terminalKernPx). Undefined
+ * when there is no pair to kern, or the font does not kern this one.
+ */
+function terminalPairKern(
+  segment: RenderSegment,
+  endBox: Box | undefined,
+  scan: ParagraphScan,
+): number | undefined {
+  if (endBox === undefined) return undefined;
+  // A CJK segment renders with `font-kerning: none` (see RenderSegment.cjk):
+  // canvas and DOM disagree about kana pairs, so the model assumes solid
+  // setting and the renderer matches it. There is no pair adjustment in the
+  // DOM to restore, and canvas would happily measure one.
+  if (segment.cjk === true) return undefined;
+  const spec = scan.specs[scan.runs[endBox.run]!.spec]!;
+  // A transformed run is measured from SOURCE text, with the probe carrying
+  // the property. That is exact for a whole segment, but the pair alone can
+  // render as different glyphs than it does in place (`capitalize` is
+  // context-sensitive), and a kern measured for the wrong pair would move the
+  // carrier by the wrong amount. Leave those runs as they were.
+  if (spec.textTransform !== "none") return undefined;
+  const { prev, terminal } = terminalSplit(segment.text);
+  if (prev === undefined || terminal === undefined) return undefined;
+  // Letter- and word-spacing enter each measurement once per cluster, so they
+  // cancel and what remains is the pair adjustment alone. Measured at the
+  // spec's own width: an expanded line's kern differs by hundredths of a
+  // pixel, which the corrective pass absorbs like any other model drift.
+  const kern =
+    measureWidth(prev + terminal, spec) -
+    measureWidth(prev, spec) -
+    measureWidth(terminal, spec);
+  return Math.abs(kern) > KERN_EPSILON ? kern : undefined;
 }
 
 /** Set a line `px` tighter by taking it out of the word spaces its
@@ -947,6 +994,13 @@ export function buildRenderSegments(
         // unlike an advance the engine may clamp, so it is also what makes
         // the arithmetic above safe to be conservative with.
         tightenLine(segments, lineFirstSegment, unshed + (WRAP_SAFETY_PAD_PX - pad));
+      }
+      // Whatever the writer ends up shedding, the carrier it sheds from is
+      // shaped apart from the cluster before it. Hand it the pair kern that
+      // costs, so the mark stays put against the glyph it follows.
+      if (hangCarrierShed(last) > 0) {
+        const kern = terminalPairKern(last, endBox, scan);
+        if (kern !== undefined) last.terminalKernPx = kern;
       }
       last.marginEndPx = -(
         line.rightHang -
