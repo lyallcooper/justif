@@ -188,6 +188,49 @@ export interface RenderHardBreak {
 export type RenderContent = RenderSegment | RenderHardBreak;
 
 /**
+ * Advance shed from a segment's terminal cluster: the terminal glyph's
+ * physical hang, plus the wrap-safety pad unless a pseudo-hyphen carries that
+ * instead (`hyphenLetterSpacingPx` already holds it, and the cluster must not
+ * shed it twice). Positive means the writer gives that cluster a span of its
+ * own — the one place the shed can live as reduced letter advance.
+ */
+export function hangCarrierShed(seg: RenderSegment): number {
+  return (
+    (seg.physicalEndHangPx ?? 0) +
+    (seg.hyphenLetterSpacingPx === undefined ? (seg.physicalPadPx ?? 0) : 0)
+  );
+}
+
+/**
+ * How the writer divides a segment that sheds advance from its terminal
+ * cluster: the text before that cluster, the cluster carrying the shed, and
+ * the rest.
+ *
+ * Only collapsible source spaces are layout glue, so they are never the
+ * carrier. Fixed-width Unicode separators are real box glyphs and can
+ * themselves be the character whose full advance hangs at the line end — as
+ * can the collapsible space hung with a trailing separator run, which is a
+ * segment of its own and sits INSIDE the line box, ahead of the run it hangs
+ * with. `terminal` is undefined only for an empty segment.
+ */
+export function terminalSplit(text: string): {
+  before: string;
+  terminal: string | undefined;
+  after: string;
+} {
+  const clusters = graphemes(text);
+  let end = clusters.length - 1;
+  while (end > 0 && clusters[end] === " ") end--;
+  const terminal = clusters[end];
+  if (terminal === undefined) return { before: "", terminal, after: "" };
+  return {
+    before: clusters.slice(0, end).join(""),
+    terminal,
+    after: clusters.slice(end + 1).join(""),
+  };
+}
+
+/**
  * Provisional trailing-margin pad (px) each line carries from write time
  * until its measured correction runs: covers model drift (expansion
  * responds per glyph; canvas vs DOM variance, ≤ ~1.3px observed) so a
@@ -573,31 +616,16 @@ export function writeParagraph(
       // space-all disables the trim. A no-op in other engines.
       el.style.setProperty("text-spacing-trim", "space-all");
     }
-    // A hyphen-ended line sheds its pad on the pseudo-hyphen span instead
-    // (hyphenLetterSpacingPx already carries it), so the terminal cluster
-    // must not shed it a second time.
-    const shedPx =
-      (segment.physicalEndHangPx ?? 0) +
-      (segment.hyphenLetterSpacingPx === undefined ? (segment.physicalPadPx ?? 0) : 0);
+    const shedPx = hangCarrierShed(segment);
     if (shedPx > 0) {
-      const clusters = graphemes(segment.text);
-      let end = clusters.length - 1;
-      // Only collapsible source spaces are layout glue. Fixed-width Unicode
-      // separators are real box glyphs and can themselves be the character
-      // whose full advance hangs at the line end — as can the collapsible
-      // space hung with a trailing separator run, which is a segment of its
-      // own and sits INSIDE the line box, ahead of the run it hangs with.
-      while (end > 0 && clusters[end] === " ") end--;
-      const hanging = clusters[end];
-      if (hanging === undefined) el.textContent = segment.text;
+      const { before, terminal, after } = terminalSplit(segment.text);
+      if (terminal === undefined) el.textContent = segment.text;
       else {
-        const before = clusters.slice(0, end).join("");
-        const after = clusters.slice(end + 1).join("");
         el.append(before);
         const span = doc.createElement("span");
         span.className = "justif-hanging-end";
         span.style.letterSpacing = px(segment.resolvedLetterSpacingPx - shedPx);
-        span.textContent = hanging;
+        span.textContent = terminal;
         el.append(span, after);
       }
     } else el.textContent = segment.text;
@@ -699,10 +727,14 @@ function foreignMutated(entries: readonly LineEntry[]): boolean {
       el.childNodes.length === 1 &&
       el.firstChild?.nodeType === 3 &&
       (el.firstChild as Text).data === seg.text;
-    if (!(seg.physicalEndHangPx !== undefined && seg.physicalEndHangPx > 0)) {
+    // The shed — a terminal glyph's hang, the wrap-safety pad, or both — is
+    // what puts a span in the segment, so it is also what says which shape is
+    // the writer's own. Reading the hang alone called a pad-only segment's
+    // carrier foreign and skipped an ordinary line's correction.
+    if (hangCarrierShed(seg) <= 0) {
       return !singleText;
     }
-    // A physical-end-hang segment legitimately holds text around its own
+    // A shedding segment legitimately holds text around its own
     // hanging-cluster span (or a lone text node when every cluster is
     // whitespace); anything else is foreign.
     const mid = el.childNodes[1] as Element | undefined;

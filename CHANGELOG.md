@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fixed a small word-spacing error on lines beside a drop cap.
+
 ## 0.8.1 (2026-08-14)
 
 - Chrome no longer sometimes pushes a line out from beside a drop cap, leaving

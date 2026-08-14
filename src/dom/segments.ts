@@ -3,7 +3,7 @@
  * the DOM writer's segment model (write.ts does the actual DOM emission).
  * No lifecycle, no state — index.ts stays plumbing.
  */
-import { CJK_CHAR, graphemes } from "../core/cjk.js";
+import { CJK_CHAR } from "../core/cjk.js";
 import { breakEndBox } from "../core/items.js";
 import { opticalCandidates, opticalFontKey, opticalProtrusion } from "./optical.js";
 import {
@@ -39,7 +39,7 @@ import {
   leadingCollapsibleSpaces,
   trailingCollapsibleSpaces,
 } from "./whitespace.js";
-import { type RenderSegment, WRAP_SAFETY_PAD_PX } from "./write.js";
+import { type RenderSegment, terminalSplit, WRAP_SAFETY_PAD_PX } from "./write.js";
 
 const AUTHOR_NO_BREAK_SPACE = /[\u00A0\u202F]/;
 const DASH_JUNCTION = /[\u002D\u2010-\u2015]/;
@@ -145,11 +145,7 @@ function terminalClusterAdvance(
   scan: ParagraphScan,
 ): number {
   if (endBox === undefined) return 0;
-  const clusters = graphemes(segment.text);
-  let end = clusters.length - 1;
-  // Collapsible trailing spaces are not the carrier (see the writer).
-  while (end > 0 && clusters[end] === " ") end--;
-  const terminal = clusters[end];
+  const { terminal } = terminalSplit(segment.text);
   if (terminal === undefined || terminal === " ") return 0;
   const spec = scan.specs[scan.runs[endBox.run]!.spec]!;
   return Math.max(
