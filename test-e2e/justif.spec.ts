@@ -860,6 +860,77 @@ test("one leading floated element is cloned opaquely and narrows overlapping lin
   expect(restored).toBe(original.html);
 });
 
+test("lines stay beside the float as the band moves under them", async ({ page }) => {
+  await page.evaluate(() => {
+    const style = document.createElement("style");
+    style.textContent = `
+      #float-band {
+        --float-width: 108px;
+        width: 574px;
+        margin: 0;
+        font: 18.66px/27px Georgia, serif;
+        text-align: justify;
+      }
+      #float-band > .initial {
+        float: left;
+        width: var(--float-width);
+        height: 104px;
+        background: #ddd;
+      }
+    `;
+    document.head.append(style);
+    const p = document.createElement("p");
+    p.id = "float-band";
+    p.innerHTML =
+      '<span class="initial"></span>The extraordinarily complicated development of ' +
+      "unquestionably international typographical conventions demonstrates considerable " +
+      "responsibility throughout contemporary civilization, and the compositor who sets " +
+      "them must reckon with the measure before anything else at all. Every line that " +
+      "stands beside a floated initial answers to a narrower column than the lines below.";
+    document.getElementById("host")!.replaceChildren(p);
+    // Resize observation off, so the sweep below moves the band WITHOUT
+    // rebuilding the model: what is under test is whether the engine keeps
+    // the lines justif already set beside the float there. A live page
+    // reaches the same state whenever the band changes ahead of the model —
+    // a deferred re-justify, a parked correction, a float that resizes with
+    // a webfont — and once a line drops it stays down, since its measured
+    // correction then finds a line already the width its narrow band asked
+    // for.
+    window.__justif.controller = window.__justif.justify([p], { observeResize: false });
+  });
+  await page.evaluate(() => window.__justif.controller!.ready);
+  await waitForQuiescence(page, "#float-band");
+
+  const sweep = await page.evaluate(() => {
+    const p = document.getElementById("float-band")!;
+    const besideCount = (): number => {
+      const left = p.getBoundingClientRect().left;
+      return [...p.querySelectorAll<HTMLElement>(":scope > .justif-seg")].filter(
+        (el) => el.getBoundingClientRect().left > left + 20,
+      ).length;
+    };
+    const baseline = besideCount();
+    const dropped: Array<{ width: number; beside: number }> = [];
+    // Only ever WIDENS the band: every line that fit at the justified width
+    // must still fit in more room, so any shortfall is the engine refusing
+    // one. The range covers slack from the safety pad out past one space
+    // advance, where the refusal window sits.
+    for (let step = 1; step <= 72; step++) {
+      const width = 108 - step / 16;
+      p.style.setProperty("--float-width", `${width}px`);
+      const beside = besideCount();
+      if (beside < baseline) dropped.push({ width, beside });
+    }
+    p.style.removeProperty("--float-width");
+    return { baseline, dropped };
+  });
+
+  expect(sweep.baseline).toBeGreaterThanOrEqual(3);
+  expect(sweep.dropped).toEqual([]);
+
+  await page.evaluate(() => window.__justif.controller!.destroy());
+});
+
 test("a hidden and re-shown leading float keeps its justified rendering", async ({ page }) => {
   await page.evaluate(() => {
     const style = document.createElement("style");

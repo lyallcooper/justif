@@ -442,6 +442,8 @@ export function buildRenderSegments(
 
   // Joint preceding the NEXT line, decided by each line's breakpoint.
   let pendingJoint: RenderSegment["joint"] = "none";
+  /** Whether the line that joint closes was set beside the float. */
+  let pendingJointBesideFloat = false;
 
   // Inline padding/border (StyledRun.padStartPx/padEndPx) is layout width
   // the corrective measurement can't see in the text rects — it renders on
@@ -496,6 +498,7 @@ export function buildRenderSegments(
     };
 
     let joint = pendingJoint;
+    let jointFlat = pendingJoint === "space" && pendingJointBesideFloat;
     let first = true;
     let text = "";
     let run = -1;
@@ -620,6 +623,7 @@ export function buildRenderSegments(
         decorPx,
         cjk: hasCJK,
         joint,
+        jointFlat: jointFlat ? true : undefined,
         marginStartOwner:
           first && line.leftHang > 0 ? srcRun.boxStartProtrusionOwner : undefined,
         // Assigned only to the line's actual final segment below. Pointing
@@ -631,6 +635,7 @@ export function buildRenderSegments(
       if (srcRun.padEndPx !== undefined) lastSegForRun.set(run, segments.length - 1);
       if (flowText.length > 0) {
         joint = "none";
+        jointFlat = false;
         first = false;
       }
       text = "";
@@ -971,6 +976,7 @@ export function buildRenderSegments(
 
     // Decide the joint that separates this line from the next.
     const brk = para.items[line.end];
+    pendingJointBesideFloat = lineOffset + lineIndex < (scan.floatIntrusion?.lines ?? 0);
     if (line.hyphenated) pendingJoint = "hyphen";
     else if (brk !== undefined && brk.type === ItemType.Glue) pendingJoint = "space";
     else if (

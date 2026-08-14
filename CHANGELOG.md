@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Chrome no longer sometimes pushes a line out from beside a drop cap, leaving
+  a gap next to it and a short line below.
+
 ## 0.8.0 (2026-08-12)
 
 <picture>

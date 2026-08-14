@@ -152,6 +152,28 @@ export interface RenderSegment {
    *   a break span whose ::after is a generated ZWSP.
    */
   joint: "none" | "space" | "hyphen" | "wbr";
+  /**
+   * Write that space joint with no advance of its own: it closes a line the
+   * float intrudes on. The character stays in the DOM — copies, find, and
+   * the accessibility tree read the same text — only the box it renders in
+   * is zero-width.
+   *
+   * Chromium hangs a break space that overflows the band, as the other
+   * engines do, UNLESS a negative margin on the box opening the next line
+   * pulls the running position back inside: the space then counts against
+   * the band, the nowrap line after it cannot fit, and the whole line is set
+   * below the float at its narrow measure. Measured, a line is refused
+   * exactly when the room left in its band falls in `(space − |start
+   * margin|, space]` — never above, never below. Line starts protrude by
+   * precisely such a margin, and the room a line leaves beside a float is
+   * near a space often enough to matter: the safety pad and the closing
+   * glyph's hang both come out of its advance, and a line with no glue to
+   * stretch keeps whatever the model could not fill besides. A dropped line
+   * also stays dropped — the correction that would rescue it measures a line
+   * already as wide as its own narrow band asked for. A space with no
+   * advance to spend cannot open the window at any width.
+   */
+  jointFlat?: true;
 }
 
 /** A mandatory source break between independently laid-out segments. The
@@ -191,6 +213,10 @@ const SHEET_TEXT =
   // in those cases; Chromium consults the block container and ignores it.
   ".justif-seg,.justif-hyphen,.justif-break{overflow-wrap:normal;word-break:normal;line-break:auto}" +
   ".justif-seg{white-space:nowrap}" +
+  // The break space beside a float, written with neither advance nor
+  // leading (see RenderSegment.jointFlat). It still breaks: a space is a
+  // break opportunity whatever it measures.
+  ".justif-joint{font-size:0;line-height:0}" +
   // Once the source letter is a real float, Firefox retargets the
   // paragraph pseudo to the first normal-flow letter. Neutralize that
   // second pseudo; the real float carries the snapshotted author styles.
@@ -453,8 +479,21 @@ export function writeParagraph(
       const depth = Math.min(commonDepth(segment.ancestors), stack.length);
       stack.length = depth;
       const container = containerAt(depth);
-      if (segment.joint === "space") container.append(doc.createTextNode(" "));
-      else {
+      if (segment.joint === "space") {
+        const space = doc.createTextNode(" ");
+        if (segment.jointFlat !== true) container.append(space);
+        else {
+          // Beside a float the break space is written without an advance
+          // (see RenderSegment.jointFlat). Its leading goes with it: a
+          // zero-size box still takes the inherited line-height, half of it
+          // below a baseline it has nothing hanging under, which would
+          // deepen every line box on the float's side of the paragraph.
+          const flat = doc.createElement("span");
+          flat.className = "justif-joint";
+          flat.append(space);
+          container.append(flat);
+        }
+      } else {
         // Zero-width break opportunity via generated content, not a <wbr>
         // element and not a ZWSP text node (see SHEET_TEXT): the text
         // layer — selection, clipboard, find-in-page — stays byte-identical
