@@ -9,7 +9,6 @@
  * own answer here.
  */
 
-import { contentWidthOf, type ElementFloatIntrusion, renderedElementFloatIntrusionOf } from "./read.js";
 import { describeError } from "../core/errors.js";
 import type { DrainQueues } from "./drain.js";
 import {
@@ -55,6 +54,9 @@ export interface CorrectionHost {
   seedNearViewport(batch: readonly PatchEntry[]): void;
   /** Re-order the drain queue around newly queued paragraphs and run it. */
   restartPendingOrder(): void;
+  /** Take a second look at the float geometry of the paragraphs just
+   * corrected, from the layout the patch itself produced. */
+  verifyElementFloats(batch: readonly PatchEntry[]): void;
   /** The drain's queues: this pass parks what it cannot measure and queues
    * the float re-layouts it discovers. */
   readonly queues: DrainQueues;
@@ -239,7 +241,7 @@ export function createCorrectionPass(host: CorrectionHost) {
       try {
         applyCorrections(corrections);
         for (const entry of park) host.queues.hiddenCorrections.set(entry.p, entry.pending);
-        verifyElementFloats(measured);
+        host.verifyElementFloats(measured);
       } catch (error) {
         console.error("justif: correction write threw", error);
       }
@@ -340,91 +342,5 @@ export function createCorrectionPass(host: CorrectionHost) {
     if (outcome.changed) note(entry.p);
   };
 
-  /**
-   * Second look at an element float's intrusion, from the layout the patch
-   * just produced. The first reading after a width change is taken while the
-   * paragraph still holds the PREVIOUS break's segments; when those no longer
-   * fit beside the float the engine pushes them under it, and the tail rects
-   * then say the float overlaps a single line — an answer that would stick,
-   * since re-breaking to it changes the float's own box not at all.
-   *
-   * Measuring again here breaks that: this layout was built from the geometry
-   * it is being measured against, so a differing answer means the first
-   * reading was the stale one. The pair converges (the corrected break puts
-   * text beside the float, which measures back the same), and the equality
-   * test is what ends it.
-   */
-  const verifyElementFloats = (batch: readonly PatchEntry[]): void => {
-    let queued = false;
-    for (const { p } of batch) {
-      const state = host.ownedState(p);
-      const intrusion = state?.scan.floatIntrusion;
-      if (state === undefined || intrusion?.kind !== "element") continue;
-      // Unmeasurable is not a verdict: the paragraph keeps the geometry it
-      // has, exactly as the resize observer leaves an unrendered float alone.
-      if (refreshElementFloat(p, state, intrusion) !== "changed") continue;
-      host.queues.pendingFloatRelayout.add(p);
-      queued = true;
-    }
-    if (queued) host.restartPendingOrder();
-  };
-
-  /** Sub-pixel noise in a live rect read must not count as a geometry
-   * change, or every remeasure would invalidate every float paragraph. */
-  const floatGeometryEquals = (
-    a: { inlineSize: number; lines: number },
-    b: { inlineSize: number; lines: number },
-  ): boolean => Math.abs(a.inlineSize - b.inlineSize) <= 0.05 && a.lines === b.lines;
-
-  /**
-   * The one second look at an element float's geometry, shared by every path
-   * that re-reads it (post-patch verification, remeasures, the float's own
-   * resize notifications): measure the rendered float, compare with the
-   * shared tolerance, and on a real change store the new intrusion and
-   * invalidate the paragraph's last patch so the next layout uses it.
-   *
-   * "unmeasurable" is deliberately not acted on here: the caller decides
-   * whether an unreadable float means "wait" (an unrendered float keeps the
-   * geometry on record) or "bail" (the resize observer, for a float that is
-   * painted yet cannot be read).
-   *
-   * "stale" protects the geometry on record from a layout that is no
-   * layout at all. Mid-drag, the segments on screen were built for a width
-   * the paragraph no longer has — the engine has already reflowed them, and
-   * commonly pushed the ones that no longer fit beside the float under it —
-   * so rects read now describe a rendering the model never chose. Writing
-   * an intrusion measured from one (observed count 0, the vertical
-   * prediction collapsed) is how a resize could leave a tall drop cap with
-   * one narrowed line and a paragraph-sized hole beside it.
-   */
-  const refreshElementFloat = (
-    p: HTMLElement,
-    state: ParaState,
-    intrusion: ElementFloatIntrusion,
-    source?: Element,
-  ): "unchanged" | "changed" | "unmeasurable" | "stale" => {
-    if (host.queues.pendingWidths.has(p)) return "stale";
-    const widthNow = contentWidthOf(p);
-    if (typeof widthNow !== "number" || Math.abs(widthNow - state.width) > 0.05) {
-      return "stale";
-    }
-    const next = renderedElementFloatIntrusionOf(
-      p,
-      source ?? state.renderedFloat ?? intrusion.source,
-      intrusion,
-    );
-    if (next === null) return "unmeasurable";
-    if (floatGeometryEquals(next, intrusion)) return "unchanged";
-    state.scan.floatIntrusion = next;
-    state.lastPatch = "";
-    return "changed";
-  };
-
-  return {
-    flushPatches,
-    floatGeometryEquals,
-    refreshElementFloat,
-    rejectPatch,
-    verifyElementFloats,
-  };
+  return { flushPatches };
 }

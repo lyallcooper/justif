@@ -1316,6 +1316,79 @@ test("width changes beside a tall leading float never strand a hole in the text"
   expect(result.finalGap).toBeLessThan(24 * 1.8);
 });
 
+/**
+ * The float's OWN size moving, with the paragraph's measure untouched. Nothing
+ * else notices this: the paragraph's width observer is silent (its box did not
+ * change), and no patch runs, so the post-patch verification never gets a turn
+ * either. Only the float's own ResizeObserver can report it — and if it does
+ * not, the segments keep the widths they were broken to, no longer fit beside
+ * the wider float, and the engine drops the prose below it, leaving a
+ * float-sized hole where the first lines should be.
+ */
+test("a float that resizes under a paragraph re-breaks it", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const style = document.createElement("style");
+    style.textContent = `
+      #float-grow { margin: 0; width: 440px; font: 17px/24px Georgia, serif; text-align: justify; }
+      #float-grow .cap { float: left; width: 80px; height: 96px; margin: 0 10px 0 0; }
+    `;
+    document.head.append(style);
+    const p = document.createElement("p");
+    p.id = "float-grow";
+    p.innerHTML =
+      '<span class="cap"></span>Many of us toil away in large git repositories, spending countless seconds every day waiting for git status to return to us its precious information deep from within the bowels of the git tree itself. The tale continues with more prose so the paragraph runs well past the ornament and settles into full measure lines beneath it, line after line, until the story finally ends.';
+    document.getElementById("host")!.replaceChildren(p);
+    const ctl = window.__justif.justify([p], { hyphenate: window.__justif.hyphenateEnUS });
+    await ctl.ready;
+
+    const settle = async (frames: number) => {
+      for (let i = 0; i < frames; i++) {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+    };
+    /**
+     * Where the first rendered line sits relative to the float. Enhancement
+     * replaces the paragraph's contents, so the LIVE float is a clone of the
+     * authored one — it has to be re-queried, and resized through the
+     * stylesheet rather than through the detached original.
+     */
+    const firstLine = () => {
+      const cap = p.querySelector<HTMLElement>(".cap")!.getBoundingClientRect();
+      const seg = p.querySelector<HTMLElement>(".justif-seg")!.getBoundingClientRect();
+      return {
+        floatWidth: Math.round(cap.width),
+        // Positive: the line starts at or after the float's right edge, so it
+        // sets beside the ornament. Negative: it was pushed under it.
+        clearance: Math.round(seg.left - cap.right),
+        segWidth: Math.round(seg.width),
+      };
+    };
+
+    await settle(4);
+    const before = firstLine();
+    // Only the ornament changes; the paragraph's own box is exactly as it was.
+    const paragraphWidth = p.getBoundingClientRect().width;
+    style.textContent = style.textContent!.replace("width: 80px", "width: 220px");
+    await settle(10);
+    const after = firstLine();
+    const enhanced = p.hasAttribute("data-justif");
+    const widthHeld = p.getBoundingClientRect().width === paragraphWidth;
+    ctl.destroy();
+    return { before, after, enhanced, widthHeld };
+  });
+
+  expect(result.widthHeld).toBe(true);
+  expect(result.enhanced).toBe(true);
+  expect(result.before.floatWidth).toBe(80);
+  expect(result.after.floatWidth).toBe(220);
+  // Beside the ornament before, and still beside it after: re-broken to the
+  // measure the wider float leaves, not thrown underneath it.
+  expect(result.before.clearance).toBeGreaterThanOrEqual(0);
+  expect(result.after.clearance).toBeGreaterThanOrEqual(0);
+  // And re-broken means genuinely narrower lines, not merely shifted.
+  expect(result.after.segWidth).toBeLessThan(result.before.segWidth);
+});
+
 test("hang-span segments with edge-trimmed spaces measure without crashing", async ({
   page,
 }) => {

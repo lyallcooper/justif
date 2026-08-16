@@ -42,6 +42,7 @@ import {
 import { createCorrectionPass, type PatchEntry, type PatchOutcome } from "./dom/corrections.js";
 import { joinClipboardCleanup } from "./dom/clipboard.js";
 import { createDrain, createDrainQueues } from "./dom/drain.js";
+import { createFloatTracking } from "./dom/floats.js";
 import {
   collectFontProbes,
   type FontProbe,
@@ -689,7 +690,6 @@ export function justify(
    */
   const carriedStyleAttr = new WeakMap<HTMLElement, string | null>();
   let destroyed = false;
-  let rebindFloatObservation: (p: HTMLElement, state?: ParaState) => void = () => {};
 
   const initialResolution = resolveOptions(options);
   /** Fixed for this controller's lifetime: `hyphenate` is outside the
@@ -951,14 +951,14 @@ export function justify(
   const safePatch = (p: HTMLElement): PatchOutcome => {
     try {
       const outcome = patchOne(p);
-      rebindFloatObservation(p, ownedState(p));
+      floats.rebind(p, ownedState(p));
       return outcome;
     } catch (error) {
       const outcome = {
         changed: bailToNative(p, `threw while rendering: ${describeError(error)}`),
         pending: null,
       };
-      rebindFloatObservation(p, ownedState(p));
+      floats.rebind(p, ownedState(p));
       return outcome;
     }
   };
@@ -1046,74 +1046,6 @@ export function justify(
   let fontsConverged = false;
 
 
-  const refreshFloatIntrusions = (): boolean => {
-    let changed = false;
-    for (const p of paragraphs) {
-      const state = ownedState(p);
-      if (state === undefined || state.scan.floatIntrusion === null) continue;
-      if (state.scan.floatIntrusion.kind === "element") {
-        if (refreshElementFloat(p, state, state.scan.floatIntrusion) === "changed") {
-          changed = true;
-        }
-        continue;
-      }
-      const nextInlineSize = floatInlineSizeOf(p);
-      if (nextInlineSize === null) continue;
-      // With unchanged font probes, only the live inline size needs this
-      // cheap refresh. Enhanced nowrap fragments are not an independent
-      // source of truth for native overlap count: Safari can push a wide
-      // provisional segment below the float and report one affected line,
-      // creating a self-reinforcing re-break. Font changes take the native
-      // restoration path below and re-read both dimensions instead.
-      if (Math.abs(nextInlineSize - state.scan.floatIntrusion.inlineSize) > 0.05) {
-        state.scan.floatIntrusion = {
-          kind: "first-letter",
-          inlineSize: nextInlineSize,
-          lines: state.scan.floatIntrusion.lines,
-          style: state.scan.floatIntrusion.style,
-        };
-        changed = true;
-      }
-    }
-    return changed;
-  };
-
-  /** Font changes can alter an auto-height first-letter's overlap count,
-   * which the enhanced nowrap fragments cannot reveal. Restore all managed
-   * drop caps to their author DOM in one write phase, then measure the same
-   * native geometry used by the initial scan. Re-enhancement happens in the
-   * immediately following remeasureAll call, before the browser can paint. */
-  const refreshNativeFloatIntrusions = (): boolean => {
-    if (destroyed) return false;
-    const candidates = paragraphs.flatMap((p) => {
-      const state = ownedState(p);
-      return state !== undefined && state.scan.floatIntrusion !== null ? [{ p, state }] : [];
-    });
-    let changed = false;
-    for (const { p, state } of candidates) {
-      queues.drop(p);
-      if (restoreManagedOutput(p, state)) changed = true;
-    }
-    for (const { p, state } of candidates) {
-      const next = floatIntrusionOf(
-        p,
-        state.scan.runs.map((run) => run.text).join(""),
-        state.scan.floatIntrusion ?? undefined,
-      );
-      if (next === null) {
-        states.delete(p);
-        rebindFloatObservation(p);
-        bailed.add(p);
-        emitSkip(p, "could not remeasure paragraph float after font change");
-        emitRelayout(p);
-        continue;
-      }
-      if (!floatGeometryEquals(next, state.scan.floatIntrusion!)) changed = true;
-      state.scan.floatIntrusion = next;
-    }
-    return changed;
-  };
-
   /**
    * `fontsStale` (the default) drops the measurement caches and re-probes
    * baselines — what a font change needs, because every cached advance may now
@@ -1127,7 +1059,7 @@ export function justify(
    */
   const remeasureAll = (floatGeometryFresh = false, fontsStale = true): void => {
     if (destroyed) return;
-    if (!floatGeometryFresh) refreshFloatIntrusions();
+    if (!floatGeometryFresh) floats.refreshIntrusions();
     if (fontsStale) {
       clearMeasureCache();
       clearCalibrationCache();
@@ -1187,26 +1119,42 @@ export function justify(
     suspendWidthObservation: (p) => observer?.suspend(p),
   });
 
+  // Float intrusion geometry — its re-reads, the float's own resize
+  // observation, and the post-patch verification below — lives in
+  // ./dom/floats.js. Built before the correction pass, which asks it to take
+  // that second look; `declineRestored` is a thunk for the same reason
+  // `flushPatches` is one above.
+  const floats = createFloatTracking({
+    destroyed: () => destroyed,
+    paragraphs,
+    ownedState: (p) => ownedState(p),
+    bailToNative: (p, reason) => bailToNative(p, reason),
+    declineRestored: (p, reason) => {
+      states.delete(p);
+      floats.rebind(p);
+      bailed.add(p);
+      emitSkip(p, reason);
+      emitRelayout(p);
+    },
+    emitRelayout: (p) => emitRelayout(p),
+    queues,
+    restartPendingOrder: () => drain.restartPendingOrder(),
+  });
+
   // The correction pass and its width negotiation live in ./dom/corrections.js;
   // `CorrectionHost` there is the whole of what they need from this controller.
-  const {
-    flushPatches,
-    floatGeometryEquals,
-    refreshElementFloat,
-    rejectPatch,
-    verifyElementFloats,
-  } =
-    createCorrectionPass({
-      ownedState: (p) => ownedState(p),
-      bailToNative: (p, reason) => bailToNative(p, reason),
-      emitRelayout: (p) => emitRelayout(p),
-      safePatch: (p) => safePatch(p),
-      seedNearViewport: (batch) => drain.seedNearViewport(batch),
-      restartPendingOrder: () => drain.restartPendingOrder(),
-      queues,
-      tracksViewport: drain.tracksViewport,
-      viewportReady: () => drain.viewportReady(),
-    });
+  const { flushPatches } = createCorrectionPass({
+    ownedState: (p) => ownedState(p),
+    bailToNative: (p, reason) => bailToNative(p, reason),
+    emitRelayout: (p) => emitRelayout(p),
+    safePatch: (p) => safePatch(p),
+    seedNearViewport: (batch) => drain.seedNearViewport(batch),
+    restartPendingOrder: () => drain.restartPendingOrder(),
+    verifyElementFloats: (batch) => floats.verifyElementFloats(batch),
+    queues,
+    tracksViewport: drain.tracksViewport,
+    viewportReady: () => drain.viewportReady(),
+  });
 
   /** This controller's contribution to the shared copy handler. */
   const leaveClipboardCleanup =
@@ -1222,9 +1170,6 @@ export function justify(
         });
 
   let observer: WidthObserver | null = null;
-  let floatObserver: ResizeObserver | null = null;
-  const observedFloat = new Map<HTMLElement, Element>();
-  const floatParagraph = new WeakMap<Element, HTMLElement>();
   /** Late font loads only matter if they change what canvas measures: a
    * loadingdone fired moments after a commit that already measured those
    * faces (the async path's own loads, a page-driven re-justify) would
@@ -1256,8 +1201,8 @@ export function justify(
   const onFontsLoaded = (): void => {
     const metricsChanged = probesChanged(fontProbes);
     const floatChanged = metricsChanged
-      ? refreshNativeFloatIntrusions()
-      : refreshFloatIntrusions();
+      ? floats.refreshNativeIntrusions()
+      : floats.refreshIntrusions();
     if (metricsChanged || floatChanged) remeasureAll(true);
   };
 
@@ -1271,76 +1216,13 @@ export function justify(
       if (ownedState(p) !== undefined) drain.observe(p);
     }
     if (options.observeResize !== false) {
-      if (typeof ResizeObserver !== "undefined") {
-        floatObserver = new ResizeObserver((entries) => {
-          let queued = false;
-          for (const entry of entries) {
-            const p = floatParagraph.get(entry.target);
-            if (p === undefined || observedFloat.get(p) !== entry.target) continue;
-            const state = ownedState(p);
-            const intrusion = state?.scan.floatIntrusion;
-            if (state === undefined || intrusion?.kind !== "element") {
-              floatObserver?.unobserve(entry.target);
-              observedFloat.delete(p);
-              continue;
-            }
-            const verdict = refreshElementFloat(p, state, intrusion, entry.target);
-            if (verdict === "unmeasurable") {
-              // A float that has stopped being rendered — an ancestor turned
-              // `display: none`, a tab panel closed — notifies at 0×0, and its
-              // computed `width` reverts to `auto`, which no geometry can be
-              // read from. Nothing is wrong with the paragraph: it just has no
-              // boxes to measure. Leave the enhancement alone and wait for the
-              // notification that arrives when it is laid out again, or the
-              // teardown below would strand it natively rendered for good (the
-              // recovery notification carries the geometry already on record,
-              // so the equality test below would find nothing to re-queue).
-              const box = entry.contentBoxSize?.[0];
-              const painted =
-                box !== undefined
-                  ? box.inlineSize > 0 || box.blockSize > 0
-                  : entry.contentRect.width > 0 || entry.contentRect.height > 0;
-              if (!painted) continue;
-              queues.drop(p);
-              const changed = bailToNative(
-                p,
-                "could not remeasure leading floated element after resize",
-              );
-              rebindFloatObservation(p);
-              if (changed) emitRelayout(p);
-              continue;
-            }
-            if (verdict !== "changed") continue;
-            queues.pendingFloatRelayout.add(p);
-            queued = true;
-          }
-          if (queued) drain.restartPendingOrder();
-        });
-        rebindFloatObservation = (p, state = ownedState(p)) => {
-          const prior = observedFloat.get(p);
-          const intrusion = state?.scan.floatIntrusion;
-          const next =
-            intrusion?.kind === "element"
-              ? (state?.renderedFloat ?? intrusion.source)
-              : undefined;
-          if (prior === next) return;
-          if (prior !== undefined) {
-            floatObserver?.unobserve(prior);
-            observedFloat.delete(p);
-          }
-          if (next !== undefined) {
-            observedFloat.set(p, next);
-            floatParagraph.set(next, p);
-            floatObserver?.observe(next);
-          }
-        };
-      }
+      floats.attachObserver();
       observer = createWidthObserver(drain.onWidths);
       for (const p of paragraphs) {
         const state = ownedState(p);
         if (state !== undefined) {
           observer.observe(p);
-          rebindFloatObservation(p, state);
+          floats.rebind(p, state);
         }
       }
     }
@@ -1497,14 +1379,14 @@ export function justify(
       // as width tracking: an unobserved paragraph never enters nearViewport,
       // so its measured correction would park and never be promoted.
       if (ownedState(p) === undefined) {
-        rebindFloatObservation(p);
+        floats.rebind(p);
         observer?.unobserve(p);
         drain.unobserve(p);
         // Its segments are gone, which is a layout change like any other —
         // reported for the same consumers that track the one-line demotion.
         if (wasEnhanced.has(p)) emitRelayout(p);
       } else {
-        rebindFloatObservation(p, ownedState(p));
+        floats.rebind(p, ownedState(p));
         observer?.observe(p);
         drain.observe(p);
       }
@@ -1527,7 +1409,7 @@ export function justify(
       });
     },
     refresh() {
-      refreshNativeFloatIntrusions();
+      floats.refreshNativeIntrusions();
       remeasureAll(true);
     },
     rescan(targets) {
@@ -1558,7 +1440,7 @@ export function justify(
       expansion = resolved.expansion;
       spacing = resolved.spacing;
       protrusionCtx = resolved.protrusionCtx;
-      refreshNativeFloatIntrusions();
+      floats.refreshNativeIntrusions();
       remeasureAll(true, false);
     },
     destroy() {
@@ -1583,9 +1465,7 @@ export function justify(
       drain.disconnect();
       observer?.disconnect();
       observer = null;
-      floatObserver?.disconnect();
-      floatObserver = null;
-      observedFloat.clear();
+      floats.disconnect();
       for (const p of paragraphs) {
         if (ownedState(p) !== undefined) restore(p);
       }
