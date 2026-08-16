@@ -11,6 +11,7 @@
 
 import type { ParagraphItems, RunMetrics } from "../core/types.js";
 import type { FontSpec } from "./measure.js";
+import { TEXT_AUTOSIZING_DECLARATIONS } from "./write.js";
 import type { HardBreak, ParagraphScan } from "./read.js";
 
 export interface ParaPart {
@@ -345,4 +346,88 @@ export function restoreManagedOutput(
   state.enhanced = false;
   state.renderedFloat = null;
   return true;
+}
+
+/**
+ * Take over a paragraph: stash its author DOM and neutralize the CSS that
+ * would fight the model's own line breaking. Everything written here is an
+ * inline declaration on the paragraph, restored byte-for-byte with the rest
+ * of the style attribute by destroy().
+ */
+export function beginEnhancement(p: HTMLElement, state: ParaState): void {
+  state.original.append(...p.childNodes);
+  state.enhanced = true;
+  p.setAttribute("data-justif", "");
+  if (state.scan.floatIntrusion?.kind === "first-letter") {
+    p.setAttribute("data-justif-dropcap", "");
+  }
+  // Recorded, since the enhancement is answerable for every declaration it leaves
+  // on the author's element — as one group, because these two are one property.
+  maskAuthorStyles(p, state, TEXT_AUTOSIZING_DECLARATIONS, "important");
+  // Neutralize the author's text-align: justify (the browser must not
+  // re-justify our exactly-filled lines) — toward the line-START edge,
+  // which is the right edge in an RTL paragraph.
+  maskAuthorStyle(p, state, "text-align", state.scan.direction === "rtl" ? "right" : "left");
+  // text-align-last also applies to lines terminated by <br>. The core
+  // has already implemented its `justify` case by setting each segment
+  // ending as a rectangle, so neutralize that native second pass.
+  // Other author alignments remain useful: the browser can center/end-
+  // align our already-sized ragged ending without changing its breaks.
+  if (state.scan.justifyAll) {
+    const last = state.scan.direction === "rtl" ? "right" : "left";
+    maskAuthorStyle(p, state, "text-align-last", last);
+  }
+  // Neutralize CSS hanging-punctuation (Safari): it would hang quotes
+  // and stops on top of our protrusion — a double hang — and shift
+  // rendered widths our wrap model doesn't know about. A no-op in
+  // engines that don't support the property. Use a `hangingPunctuation`
+  // mode for the full-hang style instead.
+  maskAuthorStyle(p, state, "hanging-punctuation", "none");
+  // Reset the properties that decide where the engine MAY break. The
+  // model chose every break and each glyph run is `nowrap`, so neither
+  // the permissive values (which license a break where the text offers
+  // no opportunity) nor the restrictive ones (`keep-all`, `strict`,
+  // `loose`) have legitimate work left in the enhanced DOM: measured
+  // identical layout for CJK either way, and a too-wide token overflows
+  // the same as before, `break-all` or not. What the permissive values do
+  // have is a way to break the wrap guarantee. A line's ink deliberately
+  // overhangs the measure (a hanging hyphen protrudes, and every line
+  // carries the provisional wrap-safety pad), and Chromium and Firefox
+  // read that overhang as "this line overflows" and re-break it at the one
+  // boundary still available: between a segment and the `.justif-hyphen`
+  // carrying its hyphen glyph, which then paints at the START of the next
+  // line. WebKit takes the same break far more rarely, but does take it.
+  // `line-break: anywhere` would be the most destructive — its
+  // opportunities apply *inside* a nowrap run. The segment rules cover the
+  // licences an author rule grants closer to the break point than this
+  // (see SHEET_TEXT).
+  maskAuthorStyle(p, state, "overflow-wrap", "normal");
+  maskAuthorStyle(p, state, "word-break", "normal");
+  maskAuthorStyle(p, state, "line-break", "auto");
+  // Neutralize CSS `hyphens: auto`: the model chose every break, so
+  // auto-hyphenation has no work left in the enhanced DOM (the
+  // `hyphenate` option is the replacement) — and it makes Chromium's
+  // beside-float fit test stop hanging the trailing break space,
+  // dropping every line planned to wrap a drop cap below the float at
+  // its narrow measure. Written only when it changes the computed
+  // value: setting -webkit-hyphens at all (even to its initial
+  // `manual`) moves WebKit onto a text path with subtly different
+  // glyph advances. An author's `hyphens: auto !important` still wins,
+  // deliberately: like text-align above (and unlike text-size-adjust,
+  // where measurement integrity is at stake), enhancement never
+  // escalates against an explicit author override.
+  if (state.scan.specs[state.scan.baseSpec]!.hyphens === "auto") {
+    // Recorded as one group, because these two ARE one property (see
+    // maskAuthorStyles). From here on this paragraph's computed `hyphens` is
+    // justif's, so rescan() looks underneath it — and, unavoidably, a later author
+    // change to it no longer computes differently, which is how the drop-in
+    // notices a change at all. Neutralizing on the SEGMENTS instead would leave
+    // the author's value visible, and was tried: it brings back the Chromium
+    // beside-float bug this declaration exists to prevent (#4/#5), whose fit test
+    // reads the value from the paragraph.
+    maskAuthorStyles(p, state, [
+      ["hyphens", "manual"],
+      ["-webkit-hyphens", "manual"],
+    ]);
+  }
 }
