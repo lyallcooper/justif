@@ -5,8 +5,14 @@
  * the engine's own reflow of now-stale segments in the same rendering
  * update — the invalid intermediate never paints. Deferring even one frame
  * lets a width drag flash invalid layouts, most visibly a float paragraph's
- * prose thrown below its drop cap. Entries carry the content-box inline
- * size, so detection itself never forces a layout read.
+ * prose thrown below its drop cap.
+ *
+ * Entries carry the observed content-box inline size. That number is a CHANGE
+ * SIGNAL, not a measurement: it is in untransformed CSS pixels, so it cannot be
+ * compared against geometry read from client rects, and the caller re-reads any
+ * element it reports as changed. What it is good for is the common notification
+ * this observer delivers — a paragraph whose height moved and whose width did
+ * not — which it settles without forcing a layout read.
  *
  * A handler that mutates an observed element's size inside this delivery
  * would make the observer's loop guard report "ResizeObserver loop
@@ -28,6 +34,8 @@ export interface WidthObserver {
 }
 
 export function createWidthObserver(
+  /** Observed content-box inline size per element — a change signal only; see
+   * the module comment. */
   onWidths: (widths: ReadonlyMap<Element, number>) => void,
 ): WidthObserver {
   const suspended = new Set<Element>();

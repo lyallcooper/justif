@@ -63,9 +63,16 @@ test("the drop-in stays within its size budget", async ({ page }) => {
   // The drop-in is fetched from a CDN before first paint, so its weight is a
   // feature. Keep modest headroom over what it measures today: a dependency
   // landing in the bundle by accident is tens of kilobytes, not hundreds.
-  expect(size.auto.raw, "dist/auto.js bytes").toBeLessThan(148_000);
-  if (size.auto.gzip > 0) expect(size.auto.gzip, "dist/auto.js gzipped").toBeLessThan(59_000);
-  expect(size.index.raw, "dist/index.js bytes").toBeLessThan(160_000);
+  // `onSkip` reasons survive minification as literals, so they are the one
+  // thing here that grows with prose; a sentence an author can act on is worth
+  // its few hundred bytes.
+  expect(size.auto.raw, "dist/auto.js bytes").toBeLessThan(150_000);
+  if (size.auto.gzip > 0) expect(size.auto.gzip, "dist/auto.js gzipped").toBeLessThan(60_000);
+  // Applications normally fetch the API build through content encoding. Keep
+  // its transfer size bounded without making readable formatting the primary
+  // budget, while retaining a raw backstop when compression is unavailable.
+  expect(size.index.raw, "dist/index.js bytes").toBeLessThan(164_000);
+  if (size.index.gzip > 0) expect(size.index.gzip, "dist/index.js gzipped").toBeLessThan(42_000);
 });
 
 test("a re-read rebuilds only what changed", async ({ page }) => {
@@ -187,6 +194,45 @@ test("forced layout does not scale with the content", async ({ page, browserName
     6,
   );
   await page.evaluate(() => (window as never as { __c: { destroy: () => void } }).__c.destroy());
+});
+
+test("far paragraphs pay one width rect read each", async ({ page }) => {
+  const reads = async (count: number) =>
+    page.evaluate(
+      async ([fill, n]) => {
+        // eslint-disable-next-line no-eval
+        (0, eval)(`(${fill})`)(n);
+        const host = document.getElementById("host")!;
+        host.style.marginTop = "10000px";
+        const original = Element.prototype.getClientRects;
+        let widthReads = 0;
+        Element.prototype.getClientRects = function () {
+          if (this instanceof HTMLParagraphElement && this.hasAttribute("data-justif")) {
+            widthReads++;
+          }
+          return original.call(this);
+        };
+        try {
+          const controller = window.__justif.justify([...host.children], {
+            hyphenate: window.__justif.hyphenateEnUS,
+          });
+          await controller.ready;
+          controller.destroy();
+          return widthReads;
+        } finally {
+          Element.prototype.getClientRects = original;
+          host.style.marginTop = "";
+          host.replaceChildren();
+        }
+      },
+      [FILL.toString(), count] as const,
+    );
+
+  const small = await reads(100);
+  const large = await reads(300);
+  console.log(`far paragraph width rect reads: 100 paragraphs ${small}, 300 ${large}`);
+  expect(small).toBe(100);
+  expect(large).toBe(300);
 });
 
 test("memory stops growing once the caches are warm", async ({ page, browserName }) => {

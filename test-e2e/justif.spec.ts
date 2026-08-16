@@ -6462,6 +6462,502 @@ test("text autosizing is disabled before scanning and author styles are restored
   expect(r.restored).toEqual(r.original);
 });
 
+test("nowrap lines do not widen a paragraph in a fit-content grid column", async ({
+  page,
+}) => {
+  await openFixture(page);
+  const r = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    document.body.replaceChildren(host);
+    document.body.style.margin = "0";
+    // The reported case, and the narrowest reproduction of it: the paragraph
+    // sits DIRECTLY in a column sized to its own content, so its generated
+    // nowrap lines are what the column measures. WebKit reads their combined
+    // width where the other engines do not, and the column grows past its
+    // fit-content ceiling. A paragraph one wrapper deeper, or in a `1fr`
+    // column, is insulated and reproduces nothing.
+    host.style.cssText =
+      "display:grid;grid-template-columns:fit-content(180px) 1fr;gap:24px;" +
+      "width:900px;max-width:100%;";
+    const p = document.createElement("p");
+    p.textContent =
+      "Handling dynamic hotspots is one of the core experiences in a parametric model. " +
+      "The values remain editable in the viewport while their printed dimensions stay stable. " +
+      "That distinction becomes especially important when model space and paper space meet.";
+    const rail = document.createElement("aside");
+    host.replaceChildren(p, rail);
+
+    const widths = () => ({
+      host: host.getBoundingClientRect().width,
+      paragraph: p.getBoundingClientRect().width,
+      document: document.documentElement.scrollWidth,
+    });
+    const before = widths();
+    const controller = window.__justif.justify(p, {
+      protrusion: false,
+      expansion: false,
+      tracking: false,
+    });
+    await controller.ready;
+    const after = widths();
+    return {
+      before,
+      after,
+      enhanced: p.hasAttribute("data-justif"),
+      segments: p.querySelectorAll(".justif-seg").length,
+    };
+  });
+
+  expect(r.enhanced).toBe(true);
+  expect(r.segments).toBeGreaterThan(1);
+  expect(r.before.paragraph).toBeCloseTo(180, 1);
+  expect(r.after.paragraph).toBeCloseTo(r.before.paragraph, 1);
+  expect(r.after.host).toBeCloseTo(r.before.host, 1);
+  expect(r.after.document).toBe(r.before.document);
+});
+
+test("stable enhancement does not touch the paragraph's minimum size", async ({ page }) => {
+  await openFixture(page);
+  const r = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    host.replaceChildren();
+    const p = document.createElement("p");
+    p.style.width = "340px";
+    p.textContent =
+      "No intrinsic-size guard is needed when generated lines leave this deliberately fixed " +
+      "paragraph at exactly the measure it had while its native content was being scanned.";
+    host.append(p);
+    const controller = window.__justif.justify(p, {
+      protrusion: false,
+      expansion: false,
+      tracking: false,
+    });
+    await controller.ready;
+    return {
+      enhanced: p.hasAttribute("data-justif"),
+      inlineMinWidth: p.style.minWidth,
+      minWidth: getComputedStyle(p).minWidth,
+    };
+  });
+
+  expect(r.enhanced).toBe(true);
+  expect(r.inlineMinWidth).toBe("");
+  // Outside a flex or grid item there is no automatic minimum to drop, and the
+  // browsers report that by resolving `auto` to 0px.
+  expect(r.minWidth).toBe("0px");
+});
+
+test("rescan picks up an author minimum-size change", async ({ page }) => {
+  await openFixture(page);
+  const r = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    host.replaceChildren();
+    const style = document.createElement("style");
+    style.textContent = ".author-minimum{min-width:500px}";
+    document.head.append(style);
+    const p = document.createElement("p");
+    p.style.width = "340px";
+    p.textContent =
+      "A deliberate rescan must adopt a minimum size added by the author after this paragraph " +
+      "was enhanced, on the very property the intrinsic-size guard writes.";
+    host.append(p);
+    const controller = window.__justif.justify(p, {
+      protrusion: false,
+      expansion: false,
+      tracking: false,
+    });
+    await controller.ready;
+    p.classList.add("author-minimum");
+    const changed = controller.rescan([p]);
+    await controller.ready;
+    return {
+      changed: changed.includes(p),
+      minWidth: getComputedStyle(p).minWidth,
+      width: p.getBoundingClientRect().width,
+      enhanced: p.hasAttribute("data-justif"),
+    };
+  });
+
+  expect(r.changed).toBe(true);
+  expect(r.minWidth).toBe("500px");
+  expect(r.width).toBeCloseTo(500, 1);
+  expect(r.enhanced).toBe(true);
+});
+
+test("an author's own minimum size is never replaced by the guard", async ({ page }) => {
+  await openFixture(page);
+  const r = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    host.replaceChildren();
+    // The author has set this paragraph's floor themselves, so the enhancement
+    // is not what raised it and the guard has nothing to take away. Justif must
+    // break at the measure that minimum produces rather than overrule it.
+    const style = document.createElement("style");
+    style.textContent =
+      "@layer components{#author-minimum{width:340px;min-width:520px}}" +
+      "#author-minimum[data-justif]:not([style*='min-width']){width:620px}";
+    document.head.append(style);
+    const p = document.createElement("p");
+    p.id = "author-minimum";
+    p.textContent =
+      "An author supplied minimum size must retain precedence while this sufficiently long " +
+      "paragraph is enhanced into several deliberately selected and measured lines of prose.";
+    host.append(p);
+
+    const controller = window.__justif.justify(p, {
+      protrusion: false,
+      expansion: false,
+      tracking: false,
+    });
+    await controller.ready;
+    const rendered = {
+      enhanced: p.hasAttribute("data-justif"),
+      minWidth: getComputedStyle(p).minWidth,
+      inlineMinWidth: p.style.minWidth,
+      width: p.getBoundingClientRect().width,
+    };
+    controller.destroy();
+    return {
+      rendered,
+      restoredMinWidth: getComputedStyle(p).minWidth,
+      restoredStyle: p.getAttribute("style"),
+    };
+  });
+
+  expect(r.rendered.enhanced).toBe(true);
+  expect(r.rendered.minWidth).toBe("520px");
+  expect(r.rendered.inlineMinWidth).toBe("");
+  expect(r.rendered.width).toBeCloseTo(620, 1);
+  expect(r.restoredMinWidth).toBe("520px");
+  expect(r.restoredStyle).toBeNull();
+});
+
+test("re-breaks when an author-important minimum blocks the guard", async ({
+  page,
+  browserName,
+}) => {
+  // The real blowout, not a stand-in: only WebKit lets the generated lines'
+  // min-content contribution out into the track, so only WebKit can exercise a
+  // guard that is written, outranked, and then taken back off again.
+  test.skip(browserName !== "webkit", "only WebKit reproduces the blowout");
+  await openFixture(page);
+  const r = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    document.body.replaceChildren(host);
+    document.body.style.margin = "0";
+    host.style.cssText =
+      "display:grid;grid-template-columns:fit-content(180px) 1fr;gap:24px;width:900px";
+    // `!important` outranks the guard's own declaration, so the automatic
+    // minimum cannot be dropped. Justif takes its useless declaration back off
+    // and breaks at the measure it is actually given, rather than going native.
+    const style = document.createElement("style");
+    style.textContent = "#important-minimum{min-width:auto!important}";
+    document.head.append(style);
+    const p = document.createElement("p");
+    p.id = "important-minimum";
+    p.textContent =
+      "Handling dynamic hotspots is one of the core experiences in a parametric model. " +
+      "The values remain editable in the viewport while their printed dimensions stay stable. " +
+      "That distinction becomes especially important when model space and paper space meet.";
+    host.replaceChildren(p, document.createElement("aside"));
+    const reasons: string[] = [];
+
+    const before = p.getBoundingClientRect().width;
+    const controller = window.__justif.justify(p, {
+      protrusion: false,
+      expansion: false,
+      tracking: false,
+      onSkip(_paragraph: HTMLElement, why: string) {
+        reasons.push(why);
+      },
+    });
+    await controller.ready;
+    return {
+      before,
+      width: p.getBoundingClientRect().width,
+      enhanced: p.hasAttribute("data-justif"),
+      managed: controller.managed.includes(p),
+      inlineMinWidth: p.style.minWidth,
+      segments: p.querySelectorAll(".justif-seg").length,
+      reasons,
+    };
+  });
+
+  expect(r.before).toBeCloseTo(180, 1);
+  expect(r.enhanced).toBe(true);
+  expect(r.managed).toBe(true);
+  expect(r.segments).toBeGreaterThan(1);
+  // The floor stays, so the track stays open — but the useless declaration is
+  // gone and the lines are broken to the measure the paragraph really has.
+  expect(r.inlineMinWidth).toBe("");
+  expect(r.width).toBeGreaterThan(180);
+  expect(r.reasons).toEqual([]);
+});
+
+test("isolates a correction measurement failure to its paragraph", async ({ page }) => {
+  await openFixture(page);
+  const r = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    host.replaceChildren();
+    const bad = document.createElement("p");
+    bad.id = "bad-correction";
+    bad.style.width = "340px";
+    bad.textContent =
+      "A hostile geometry method should disable only this paragraph while every sibling in the " +
+      "same correction batch finishes its own enhancement normally.";
+    const good = document.createElement("p");
+    good.id = "good-correction";
+    good.style.width = "340px";
+    good.textContent =
+      "Independent measurement keeps this paragraph justified even when another paragraph throws " +
+      "during the shared geometry pass.";
+    host.append(bad, good);
+    const original = Element.prototype.getClientRects;
+    Element.prototype.getClientRects = function () {
+      if (this === bad && bad.hasAttribute("data-justif")) {
+        throw new Error("synthetic rect failure");
+      }
+      return original.call(this);
+    };
+    const reasons = new Map<string, string>();
+    try {
+      const controller = window.__justif.justify([bad, good], {
+        protrusion: false,
+        expansion: false,
+        tracking: false,
+        onSkip(paragraph: HTMLElement, why: string) {
+          reasons.set(paragraph.id, why);
+        },
+      });
+      await controller.ready;
+      return {
+        badEnhanced: bad.hasAttribute("data-justif"),
+        badManaged: controller.managed.includes(bad),
+        badReason: reasons.get(bad.id),
+        goodEnhanced: good.hasAttribute("data-justif"),
+        goodManaged: controller.managed.includes(good),
+      };
+    } finally {
+      Element.prototype.getClientRects = original;
+    }
+  });
+
+  expect(r.badEnhanced).toBe(false);
+  expect(r.badManaged).toBe(false);
+  expect(r.badReason).toBe("threw while measuring: synthetic rect failure");
+  expect(r.goodEnhanced).toBe(true);
+  expect(r.goodManaged).toBe(true);
+});
+
+test("repatches a sibling resized by an intrinsic-size guard", async ({ page }) => {
+  await openFixture(page);
+  const r = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    host.replaceChildren();
+    const style = document.createElement("style");
+    style.textContent =
+      "#host{display:grid}#guard-source,#guard-sibling{width:340px}" +
+      "#guard-source[data-justif]:not([style*='min-width']){width:620px}" +
+      "#host:has(#guard-source[style*='min-width']) #guard-sibling{width:420px}";
+    document.head.append(style);
+
+    const source = document.createElement("p");
+    source.id = "guard-source";
+    source.textContent =
+      "The first paragraph changes measure when enhanced, requiring the intrinsic-size guard " +
+      "before its selected line breaks can safely remain in the document.";
+    const sibling = document.createElement("p");
+    sibling.id = "guard-sibling";
+    sibling.textContent =
+      "The sibling begins with a stable measure, but the first paragraph's guard changes that " +
+      "measure and therefore requires the entire batch to be checked again.";
+    host.append(source, sibling);
+    const siblingMarkup = sibling.innerHTML;
+
+    const controller = window.__justif.justify([source, sibling], {
+      protrusion: false,
+      expansion: false,
+      tracking: false,
+    });
+    await controller.ready;
+    return {
+      source: {
+        enhanced: source.hasAttribute("data-justif"),
+        minWidth: source.style.minWidth,
+        width: source.getBoundingClientRect().width,
+      },
+      sibling: {
+        enhanced: sibling.hasAttribute("data-justif"),
+        managed: controller.managed.includes(sibling),
+        minWidth: sibling.style.minWidth,
+        markup: sibling.innerHTML,
+        width: sibling.getBoundingClientRect().width,
+      },
+    };
+  });
+
+  expect(r.source.enhanced).toBe(true);
+  expect(r.source.minWidth).toBe("0px");
+  expect(r.source.width).toBeCloseTo(340, 1);
+  expect(r.sibling.enhanced).toBe(true);
+  expect(r.sibling.managed).toBe(true);
+  expect(r.sibling.minWidth).toBe("");
+  expect(r.sibling.markup).toContain("justif-seg");
+  expect(r.sibling.width).toBeCloseTo(420, 1);
+});
+
+test("a cascade past the settling budget keeps every paragraph justified", async ({
+  page,
+}) => {
+  await openFixture(page);
+  const r = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    host.replaceChildren();
+    const chain = 8;
+    // Each paragraph goes unstable only once its predecessor's guard has been
+    // written, so the batch needs one settling pass per link.
+    const rules = [
+      "#host{display:grid}",
+      `${Array.from({ length: chain }, (_, i) => `#chain-${i}`).join(",")}{width:340px}`,
+      "#chain-0[data-justif]:not([style*='min-width']){width:620px}",
+      ...Array.from(
+        { length: chain - 1 },
+        (_, i) =>
+          `#host:has(#chain-${i}[style*='min-width']) ` +
+          `#chain-${i + 1}[data-justif]:not([style*='min-width']){width:620px}`,
+      ),
+    ];
+    const style = document.createElement("style");
+    style.textContent = rules.join("");
+    document.head.append(style);
+    const paragraphs = Array.from({ length: chain }, (_, index) => {
+      const p = document.createElement("p");
+      p.id = `chain-${index}`;
+      p.textContent =
+        `Paragraph ${index} becomes unstable only after the preceding intrinsic-size guard is ` +
+        "written, exercising the hard ceiling on synchronous stabilization passes.";
+      return p;
+    });
+    host.append(...paragraphs);
+    const reasons = new Map<string, string>();
+    const controller = window.__justif.justify(paragraphs, {
+      protrusion: false,
+      expansion: false,
+      tracking: false,
+      onSkip(paragraph: HTMLElement, why: string) {
+        reasons.set(paragraph.id, why);
+      },
+    });
+    await controller.ready;
+    return {
+      enhanced: paragraphs.map((p) => p.hasAttribute("data-justif")),
+      managed: paragraphs.map((p) => controller.managed.includes(p)),
+      widths: paragraphs.map((p) => p.getBoundingClientRect().width),
+      reasons: [...reasons],
+    };
+  });
+
+  // The budget covers the first five links, which are guarded and return to
+  // their own measure. The sixth overruns it and keeps the enhancement it has
+  // at the measure it has — running out of passes must not cost a page of
+  // prose its justification, so nothing here is handed back to the engine.
+  expect(r.enhanced).toEqual([true, true, true, true, true, true, true, true]);
+  expect(r.managed).toEqual([true, true, true, true, true, true, true, true]);
+  expect(r.reasons).toEqual([]);
+  for (const width of [...r.widths.slice(0, 5), ...r.widths.slice(6)]) {
+    expect(width).toBeCloseTo(340, 1);
+  }
+  expect(r.widths[5]).toBeCloseTo(620, 1);
+});
+
+test("a paragraph narrowed by enhancement is re-broken without a guard probe", async ({
+  page,
+}) => {
+  await openFixture(page);
+  const r = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    host.replaceChildren();
+    // Stands in for the real narrowing causes — a classic scrollbar appearing
+    // once the re-break changes the document height, a late image, a font swap.
+    const style = document.createElement("style");
+    style.textContent = "#narrowed{width:420px}#narrowed[data-justif]{width:260px}";
+    document.head.append(style);
+    const p = document.createElement("p");
+    p.id = "narrowed";
+    p.textContent =
+      "Generated lines can only ever raise a paragraph's intrinsic contribution, so a measure " +
+      "that gets narrower came from outside and dropping its minimum could not repair it.";
+    host.append(p);
+    const styleHistory: Array<string | null> = [];
+    const observer = new MutationObserver((records) => {
+      for (const record of records) styleHistory.push(record.oldValue);
+    });
+    observer.observe(p, { attributes: true, attributeFilter: ["style"], attributeOldValue: true });
+
+    const controller = window.__justif.justify(p, {
+      protrusion: false,
+      expansion: false,
+      tracking: false,
+    });
+    await controller.ready;
+    observer.disconnect();
+    return {
+      enhanced: p.hasAttribute("data-justif"),
+      managed: controller.managed.includes(p),
+      width: p.getBoundingClientRect().width,
+      minWidth: p.style.minWidth,
+      probed:
+        styleHistory.some((entry) => entry?.includes("min-width") === true) ||
+        p.style.minWidth !== "",
+    };
+  });
+
+  expect(r.enhanced).toBe(true);
+  expect(r.managed).toBe(true);
+  expect(r.width).toBeCloseTo(260, 1);
+  expect(r.minWidth).toBe("");
+  expect(r.probed).toBe(false);
+});
+
+test("repatches far-offscreen output when author CSS changes its width", async ({
+  page,
+}) => {
+  await openFixture(page);
+  const r = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    host.replaceChildren();
+    const spacer = document.createElement("div");
+    spacer.style.height = "300vh";
+    const style = document.createElement("style");
+    style.textContent = "#unstable:has(.justif-seg){width:620px!important}";
+    document.head.append(style);
+    const p = document.createElement("p");
+    p.id = "unstable";
+    p.style.width = "340px";
+    p.innerHTML =
+      "A renderer must never alter its own containing measure and leave the page in that " +
+      "self-induced state, however valid the generated line breaks might otherwise be.";
+    host.append(spacer, p);
+    const controller = window.__justif.justify(p, {
+      protrusion: false,
+      expansion: false,
+      tracking: false,
+    });
+    await controller.ready;
+    return {
+      enhanced: p.hasAttribute("data-justif"),
+      managed: controller.managed.includes(p),
+      width: p.getBoundingClientRect().width,
+      minWidth: p.style.minWidth,
+    };
+  });
+
+  expect(r.enhanced).toBe(true);
+  expect(r.managed).toBe(true);
+  expect(r.width).toBeCloseTo(620, 1);
+  expect(r.minWidth).toBe("");
+});
+
 test("enhances under a strict Content-Security-Policy (no inline styles)", async ({ page }) => {
   // fixture-csp.html serves style-src 'self': an injected <style> element
   // is blocked, so the segment rules must arrive via adoptedStyleSheets.
@@ -7508,6 +8004,64 @@ test("resize re-layouts through the ResizeObserver fast path", async ({ page }) 
         .toBeLessThan(0.5);
     }
   }
+});
+
+test("transformed resize measurements stay in one coordinate space", async ({ page }) => {
+  await openFixture(page);
+  const r = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    host.replaceChildren();
+    const wrapper = document.createElement("div");
+    wrapper.style.cssText = "transform:scale(1.5);transform-origin:top left";
+    const p = document.createElement("p");
+    p.style.cssText =
+      "box-sizing:border-box;width:400px;padding:10px;font:17px/1.4 Georgia,serif";
+    p.textContent =
+      "A transformed paragraph must keep ResizeObserver and correction geometry in the same " +
+      "coordinate space without acquiring an unrelated intrinsic-size guard after every resize.";
+    wrapper.append(p);
+    host.append(wrapper);
+    let relayouts = 0;
+    let resolveResize!: () => void;
+    const resized = new Promise<void>((resolve) => {
+      resolveResize = resolve;
+    });
+    const controller = window.__justif.justify(p, {
+      protrusion: false,
+      expansion: false,
+      tracking: false,
+      onRelayout() {
+        relayouts++;
+        if (relayouts === 2) resolveResize();
+      },
+    });
+    await controller.ready;
+    const styleHistory: Array<string | null> = [];
+    const observer = new MutationObserver((records) => {
+      for (const record of records) styleHistory.push(record.oldValue);
+    });
+    observer.observe(p, { attributes: true, attributeFilter: ["style"], attributeOldValue: true });
+    const before = p.getBoundingClientRect().width;
+    p.style.width = "360px";
+    await resized;
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    observer.disconnect();
+    return {
+      before,
+      after: p.getBoundingClientRect().width,
+      minWidth: getComputedStyle(p).minWidth,
+      inlineMinWidth: p.style.minWidth,
+      enhanced: p.hasAttribute("data-justif"),
+      probed: styleHistory.some((style) => style?.includes("min-width") === true),
+    };
+  });
+
+  expect(r.before).toBeCloseTo(600, 1);
+  expect(r.after).toBeCloseTo(540, 1);
+  expect(r.enhanced).toBe(true);
+  expect(r.minWidth).toBe("0px");
+  expect(r.inlineMinWidth).toBe("");
+  expect(r.probed).toBe(false);
 });
 
 test("observeResize:false applies wrap-guarantee corrections before returning", async ({

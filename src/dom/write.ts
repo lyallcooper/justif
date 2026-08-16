@@ -17,7 +17,7 @@
  */
 
 import { graphemes } from "../core/cjk.js";
-import { fragmentBoxesOf } from "./geometry.js";
+import { FRAGMENT_WIDTH_TOLERANCE_PX, fragmentBoxesOf } from "./geometry.js";
 import { endWithoutCollapsibleSpaces } from "./whitespace.js";
 
 export interface RenderSegment {
@@ -406,6 +406,9 @@ export interface PendingParagraph {
   /** Target width per line (index-aligned with lineElements): lines under
    * a text-indent have a different measure than the rest. */
   lineWidths: readonly number[];
+  /** Content width the paragraph had before its segment DOM was installed.
+   * Enhancement may change line breaks and height, never its own measure. */
+  contentWidth: number;
   /** Leading lines whose coordinate edge depends on a float. Correct these
    * from their measured physical width rather than the paragraph edge. */
   physicalFitLines: number;
@@ -419,6 +422,7 @@ export function writeParagraph(
   p: HTMLElement,
   contents: readonly RenderContent[],
   lineWidths: readonly number[],
+  contentWidth: number,
   physicalFitLines = 0,
   leadingFloat?: { source: Element; leadingTrivia: readonly Node[] },
   /** The float this paragraph is already rendering, from the previous patch.
@@ -685,6 +689,7 @@ export function writeParagraph(
     paragraph: p,
     lineElements,
     lineWidths,
+    contentWidth,
     physicalFitLines,
     renderedFloat,
   };
@@ -716,8 +721,10 @@ export interface CorrectionResult {
    * then the provisional wrap-safety pad keeps the lines safe.
    */
   hidden: number[];
-  /** Paragraph indices whose live fragments are not equal-width columns. */
-  invalid: Array<{ index: number; reason: string }>;
+  /** Paragraph indices whose generated DOM changed their own measure. */
+  resized: Array<[index: number, width: number, minWidth: string]>;
+  /** Paragraph indices that cannot be corrected safely. */
+  invalid: Array<[index: number, reason: string]>;
 }
 
 /** Pick the fragment containing a line's logical start. Horizontal distance
@@ -1026,156 +1033,184 @@ function distributeAdjustment(
  * lands. Pure reads (one forced layout for the whole batch, however many
  * paragraphs it spans); apply the result with `applyCorrections`.
  */
-export function measureCorrections(pending: readonly PendingParagraph[]): CorrectionResult {
+export function measureCorrections(
+  pending: readonly PendingParagraph[],
+  /** Whether each paragraph also needs detailed line correction. Width is
+   * always validated, including for far-offscreen entries. */
+  detailed?: readonly boolean[],
+): CorrectionResult {
   const corrections: Correction[] = [];
   const hidden: number[] = [];
-  const invalid: Array<{ index: number; reason: string }> = [];
+  const resized: Array<[number, number, string]> = [];
+  const invalid: Array<[number, string]> = [];
   let range: Range | null = null;
   for (let i = 0; i < pending.length; i++) {
-    const { doc, paragraph, lineElements, lineWidths, physicalFitLines } = pending[i]!;
-    // A pending whose nodes were detached (the paragraph was re-patched,
-    // restored, or replaced since it was queued) is stale: drop it before
-    // paying any geometry reads — detached nodes measure zero like skipped
-    // content, and classifying them "hidden" would park them forever.
-    const firstEntry = lineElements.find((l) => l.length > 0)?.[0];
-    if (firstEntry === undefined || !firstEntry.el.isConnected) continue;
-    range ??= doc.createRange();
-    const paragraphStyle = doc.defaultView?.getComputedStyle(paragraph);
-    const rtl = paragraphStyle?.direction === "rtl";
-    const fragments = fragmentBoxesOf(paragraph, paragraphStyle);
-    if (!fragments.ok) {
-      if (fragments.reason === "zero content width") hidden.push(i);
-      else invalid.push({ index: i, reason: fragments.reason });
-      continue;
-    }
-    let sawInk = false;
-    const paraCorrections: Correction[] = [];
-    for (let li = 0; li < lineElements.length; li++) {
-      const entries = lineElements[li]!;
-      if (entries.length === 0) continue;
-      if (foreignMutated(entries)) {
-        // Ink must still come from a real rect read (valid regardless of
-        // child mutation): asserting it would drop a layout-skipped
-        // paragraph out of the hidden re-park pipeline and lose its
-        // guaranteed reveal retry.
-        if (!sawInk) {
-          sawInk = entries.some(({ el }) => el.getBoundingClientRect().width > 0);
-        }
+    try {
+      const {
+        doc,
+        paragraph,
+        lineElements,
+        lineWidths,
+        contentWidth,
+        physicalFitLines,
+      } = pending[i]!;
+      // A pending whose nodes were detached (the paragraph was re-patched,
+      // restored, or replaced since it was queued) is stale: drop it before
+      // paying any geometry reads — detached nodes measure zero like skipped
+      // content, and classifying them "hidden" would park them forever.
+      const firstEntry = lineElements.find((l) => l.length > 0)?.[0];
+      if (firstEntry === undefined || !firstEntry.el.isConnected) continue;
+      range ??= doc.createRange();
+      const paragraphStyle = doc.defaultView?.getComputedStyle(paragraph);
+      const rtl = paragraphStyle?.direction === "rtl";
+      const fragments = fragmentBoxesOf(paragraph, paragraphStyle);
+      if (!fragments.ok) {
+        if (fragments.reason === "zero content width") hidden.push(i);
+        else invalid.push([i, fragments.reason]);
         continue;
       }
-      const availableWidth = lineWidths[li] ?? lineWidths[lineWidths.length - 1] ?? 0;
-      const { rectPx, modelPx, ownMargins, lineRect, unmeasurable } = measureLineExtent(
-        entries,
-        range,
-      );
-      // Skipped content (content-visibility: auto off-screen) measures
-      // zero rects; model widths and margins still parse, so the "is this
-      // paragraph actually rendered" test uses rect reads only.
-      if (rectPx !== 0) sawInk = true;
-      // Recorded as ink first: the paragraph is rendered, it is only this
-      // line's correction that cannot be derived.
-      if (unmeasurable) continue;
-      const layout = rectPx + modelPx;
-      const overflow = layout - availableWidth;
-      if (overflow > CORRECTION_WINDOW_PX) {
-        const textEntries = entries.filter(
-          (entry): entry is LineEntry & { seg: RenderSegment } => entry.seg !== null,
-        );
-        const endText = textEntries[textEntries.length - 1];
-        const rightHang = endText?.seg.rightHangPx ?? 0;
-        // Terminal-glyph and pseudo-hyphen removals are mutually exclusive
-        // (a line ends in one or the other); both mean "this much of
-        // rightHang is already out of the measured rects". A hung
-        // fixed-separator run spreads its removal over the run's segments,
-        // so the terminal side is a sum, not the last segment's share.
-        const physicalEndHang =
-          textEntries.reduce((sum, entry) => sum + (entry.seg.physicalEndHangPx ?? 0), 0) +
-          (endText?.seg.hyphenEndHangPx ?? 0);
-        // The wrap-safety pad shed from the terminal cluster is out of the
-        // measured rects exactly as the hang removals are, but it is not
-        // protrusion: it stays shed after correction (it is what keeps the
-        // corrected line safe too), so it comes off the target and not off
-        // the end margin below.
-        const physicalPad = textEntries.reduce(
-          (sum, entry) => sum + (entry.seg.physicalPadPx ?? 0),
-          0,
-        );
-        const deliberateOverflow = endText?.seg.overflowPx ?? 0;
-        const besideFloat = li < physicalFitLines;
-        // Set lines should PAINT at the modeled edge too. The former
-        // margin-only correction made their layout advance fit but left
-        // Firefox's Georgia glyphs visibly 2–3px outside the column. Away
-        // from a float we can read that coordinate directly. Beside a
-        // float (which may occupy either edge), correct the physical line
-        // width instead: content width = measure + intentional overhang,
-        // while the matching negative end margin removes that overhang
-        // from layout. The punctuation itself never moves away from its
-        // preceding glyph.
-        const physicalLayout = layout - ownMargins;
-        let adjustmentPx: number;
-        if (besideFloat) {
-          adjustmentPx =
-            physicalLayout -
-            (availableWidth -
-              FLOAT_WRAP_SPARE_PX +
-              rightHang -
-              physicalEndHang -
-              physicalPad +
-              deliberateOverflow);
-        } else {
-          const fragment = fragmentForLine(fragments.rects, lineRect!, rtl === true);
-          const contentEnd = contentEndOf(fragment, paragraphStyle, rtl === true);
-          const paintEndEntry = entries[entries.length - 1]!;
-          const painted = paintedEndOf(entries, endText, range, rtl === true);
-          if (painted === null) continue;
-          const paintRect = painted.rect;
-          // The hyphen carrier is the one line-end box the engine can move
-          // off this line on its own (an emergency break at its segment
-          // boundary — see the neutralizations in `justify`; a `!important`
-          // author licence still reaches it). A moved carrier reports the
-          // next line's start, or the next column's top, and correcting to
-          // that coordinate is what turns the deferred pass into a 50–75px
-          // word-spacing blowout. It shares a line box with the text it
-          // follows (same styling context, so same rect top) and the
-          // fragment that line was measured against; failing either, the
-          // line has re-wrapped and no correction can be measured — leave
-          // its provisional pad standing, as for a foreign-mutated line.
-          if (paintEndEntry.seg === null && endText !== undefined) {
-            const textRect = endText.el.getBoundingClientRect();
-            if (
-              Math.abs(paintRect.top - textRect.top) > 0.5 ||
-              fragmentForLine(fragments.rects, paintRect, rtl === true) !== fragment
-            ) {
-              continue;
-            }
-          }
-          const desiredEnd = (rtl ? -contentEnd : contentEnd) + rightHang + deliberateOverflow;
-          adjustmentPx = painted.value - desiredEnd;
-        }
-        const spacing = distributeAdjustment(textEntries, adjustmentPx);
-        // With no legitimate spacing recipient, keep the provisional wrap
-        // margin instead of changing an author no-break-space box. This is
-        // the only faithful fallback for a line made solely of fixed boxes.
-        if (Math.abs(adjustmentPx) > 0.001 && spacing.length === 0) continue;
-        const lineEndEntry = entries[entries.length - 1]!;
-        paraCorrections.push({
-          el: lineEndEntry.el,
-          marginEl: lineEndEntry.marginEndEl,
-          // Spacing now puts the measured painted edge at the requested
-          // optical position. Its matching layout exclusion is therefore
-          // exactly the intentional hang/overfull amount; deriving this
-          // margin again from summed DOM widths lets engine-specific inline
-          // rounding leak back in (notably Firefox's persistent 1.5px).
-          marginPx:
-            -(rightHang - (besideFloat ? physicalEndHang : 0) + deliberateOverflow),
-          spacing: spacing.length > 0 ? spacing : undefined,
-        });
+      if (Math.abs(fragments.contentWidth - contentWidth) > FRAGMENT_WIDTH_TOLERANCE_PX) {
+        resized.push([i, fragments.contentWidth, paragraphStyle?.minWidth ?? "auto"]);
+        continue;
       }
+      if (detailed?.[i] === false) continue;
+      let sawInk = false;
+      const paraCorrections: Correction[] = [];
+      for (let li = 0; li < lineElements.length; li++) {
+        const entries = lineElements[li]!;
+        if (entries.length === 0) continue;
+        if (foreignMutated(entries)) {
+          // Ink must still come from a real rect read (valid regardless of
+          // child mutation): asserting it would drop a layout-skipped
+          // paragraph out of the hidden re-park pipeline and lose its
+          // guaranteed reveal retry.
+          if (!sawInk) {
+            sawInk = entries.some(({ el }) => el.getBoundingClientRect().width > 0);
+          }
+          continue;
+        }
+        const availableWidth = lineWidths[li] ?? lineWidths[lineWidths.length - 1] ?? 0;
+        const { rectPx, modelPx, ownMargins, lineRect, unmeasurable } = measureLineExtent(
+          entries,
+          range,
+        );
+        // Skipped content (content-visibility: auto off-screen) measures
+        // zero rects; model widths and margins still parse, so the "is this
+        // paragraph actually rendered" test uses rect reads only.
+        if (rectPx !== 0) sawInk = true;
+        // Recorded as ink first: the paragraph is rendered, it is only this
+        // line's correction that cannot be derived.
+        if (unmeasurable) continue;
+        const layout = rectPx + modelPx;
+        const overflow = layout - availableWidth;
+        if (overflow > CORRECTION_WINDOW_PX) {
+          const textEntries = entries.filter(
+            (entry): entry is LineEntry & { seg: RenderSegment } => entry.seg !== null,
+          );
+          const endText = textEntries[textEntries.length - 1];
+          const rightHang = endText?.seg.rightHangPx ?? 0;
+          // Terminal-glyph and pseudo-hyphen removals are mutually exclusive
+          // (a line ends in one or the other); both mean "this much of
+          // rightHang is already out of the measured rects". A hung
+          // fixed-separator run spreads its removal over the run's segments,
+          // so the terminal side is a sum, not the last segment's share.
+          const physicalEndHang =
+            textEntries.reduce((sum, entry) => sum + (entry.seg.physicalEndHangPx ?? 0), 0) +
+            (endText?.seg.hyphenEndHangPx ?? 0);
+          // The wrap-safety pad shed from the terminal cluster is out of the
+          // measured rects exactly as the hang removals are, but it is not
+          // protrusion: it stays shed after correction (it is what keeps the
+          // corrected line safe too), so it comes off the target and not off
+          // the end margin below.
+          const physicalPad = textEntries.reduce(
+            (sum, entry) => sum + (entry.seg.physicalPadPx ?? 0),
+            0,
+          );
+          const deliberateOverflow = endText?.seg.overflowPx ?? 0;
+          const besideFloat = li < physicalFitLines;
+          // Set lines should PAINT at the modeled edge too. The former
+          // margin-only correction made their layout advance fit but left
+          // Firefox's Georgia glyphs visibly 2–3px outside the column. Away
+          // from a float we can read that coordinate directly. Beside a
+          // float (which may occupy either edge), correct the physical line
+          // width instead: content width = measure + intentional overhang,
+          // while the matching negative end margin removes that overhang
+          // from layout. The punctuation itself never moves away from its
+          // preceding glyph.
+          const physicalLayout = layout - ownMargins;
+          let adjustmentPx: number;
+          if (besideFloat) {
+            adjustmentPx =
+              physicalLayout -
+              (availableWidth -
+                FLOAT_WRAP_SPARE_PX +
+                rightHang -
+                physicalEndHang -
+                physicalPad +
+                deliberateOverflow);
+          } else {
+            const fragment = fragmentForLine(fragments.rects, lineRect!, rtl === true);
+            const contentEnd = contentEndOf(fragment, paragraphStyle, rtl === true);
+            const paintEndEntry = entries[entries.length - 1]!;
+            const painted = paintedEndOf(entries, endText, range, rtl === true);
+            if (painted === null) continue;
+            const paintRect = painted.rect;
+            // The hyphen carrier is the one line-end box the engine can move
+            // off this line on its own (an emergency break at its segment
+            // boundary — see the neutralizations in `justify`; a `!important`
+            // author licence still reaches it). A moved carrier reports the
+            // next line's start, or the next column's top, and correcting to
+            // that coordinate is what turns the deferred pass into a 50–75px
+            // word-spacing blowout. It shares a line box with the text it
+            // follows (same styling context, so same rect top) and the
+            // fragment that line was measured against; failing either, the
+            // line has re-wrapped and no correction can be measured — leave
+            // its provisional pad standing, as for a foreign-mutated line.
+            if (paintEndEntry.seg === null && endText !== undefined) {
+              const textRect = endText.el.getBoundingClientRect();
+              if (
+                Math.abs(paintRect.top - textRect.top) > 0.5 ||
+                fragmentForLine(fragments.rects, paintRect, rtl === true) !== fragment
+              ) {
+                continue;
+              }
+            }
+            const desiredEnd = (rtl ? -contentEnd : contentEnd) + rightHang + deliberateOverflow;
+            adjustmentPx = painted.value - desiredEnd;
+          }
+          const spacing = distributeAdjustment(textEntries, adjustmentPx);
+          // With no legitimate spacing recipient, keep the provisional wrap
+          // margin instead of changing an author no-break-space box. This is
+          // the only faithful fallback for a line made solely of fixed boxes.
+          if (Math.abs(adjustmentPx) > 0.001 && spacing.length === 0) continue;
+          const lineEndEntry = entries[entries.length - 1]!;
+          paraCorrections.push({
+            el: lineEndEntry.el,
+            marginEl: lineEndEntry.marginEndEl,
+            // Spacing now puts the measured painted edge at the requested
+            // optical position. Its matching layout exclusion is therefore
+            // exactly the intentional hang/overfull amount; deriving this
+            // margin again from summed DOM widths lets engine-specific inline
+            // rounding leak back in (notably Firefox's persistent 1.5px).
+            marginPx:
+              -(rightHang - (besideFloat ? physicalEndHang : 0) + deliberateOverflow),
+            spacing: spacing.length > 0 ? spacing : undefined,
+          });
+        }
+      }
+      if (!sawInk) hidden.push(i);
+      else corrections.push(...paraCorrections);
+    } catch (error) {
+      // This paragraph's own reads failed. The shared range may have been left
+      // pointing into its nodes, so drop it rather than carry it to the next.
+      range = null;
+      invalid.push([
+        i,
+        `threw while measuring: ${error instanceof Error ? error.message : String(error)}`,
+      ]);
     }
-    if (!sawInk) hidden.push(i);
-    else corrections.push(...paraCorrections);
   }
-  return { corrections, hidden, invalid };
+  return { corrections, hidden, resized, invalid };
 }
 
 /** Write phase of the wrap guarantee. The corrective margin lands on the

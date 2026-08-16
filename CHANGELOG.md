@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fixed a paragraph in a content-sized Grid or Flex track growing wider when
+  Justif enhanced it, in Safari. Justified paragraphs now keep the exact
+  measure the page gave them, and re-break correctly when something else on
+  the page changes that measure.
 - A quote or other mark ending a line beside a drop cap no longer drifts away
   from the character before it.
 - Fixed a small word-spacing error on lines beside a drop cap.

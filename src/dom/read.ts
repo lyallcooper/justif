@@ -140,6 +140,7 @@ export function paragraphStyleKey(style: CSSStyleDeclaration): string {
     style.textTransform,
     style.writingMode,
     style.lineHeight,
+    style.minWidth,
   ].join(" ");
 }
 
@@ -1653,7 +1654,17 @@ export function readParagraph(p: HTMLElement, batch?: ScanBatch): ParagraphScan 
   };
 }
 
-/** Content-box width of one equal-width fragment (one rect in normal flow). */
+/**
+ * Content-box width of one equal-width fragment (one rect in normal flow).
+ *
+ * THE definition of a paragraph's measure: everything that stores, compares or
+ * breaks to a width — the initial scan, resize handling, the correction pass's
+ * own validation — has to get it from here or from `fragmentBoxesOf` beneath
+ * it. Client rects are transformed by any ancestor `transform`, so a width
+ * sourced anywhere else (a ResizeObserver entry's inline size, most temptingly)
+ * silently disagrees with this one by the scale factor, and every comparison
+ * between them reads as a layout change that never happened.
+ */
 export function contentWidthOf(p: HTMLElement): number | string {
   const view = p.ownerDocument.defaultView;
   if (view === null) return "zero content width";

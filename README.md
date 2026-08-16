@@ -138,10 +138,10 @@ Container width changes and newly loaded web fonts are handled automatically.
 `refresh()` forces a re-measure for changes Justif cannot observe, for
 example a container width change with `observeResize: false`. After changing the
 CSS of paragraphs already justified—`hyphens`, the font, `letter-spacing`,
-`line-height`, `text-indent`—call `rescan()`, which re-reads author CSS and
-re-lays out only the paragraphs whose styling actually changed. Paragraphs it
-previously declined are reconsidered too. If paragraph *content* changes, call
-`destroy()` and run `justify()` again.
+`line-height`, `text-indent`, `min-width`—call `rescan()`, which re-reads author
+CSS and re-lays out only the paragraphs whose styling actually changed.
+Paragraphs it previously declined are reconsidered too. If paragraph *content*
+changes, call `destroy()` and run `justify()` again.
 
 `justify()` accepts one `Element` or any iterable of elements. The returned
 controller exposes `ready`, `refresh()`, `rescan()`, `destroy()`, the selected
@@ -300,6 +300,8 @@ Firefox 129) won't update automatically. And paragraphs that have their own
 `transition` property but don't declare the property in question will also not be
 updated, since Justif uses transitions internally to track updates. In either case
 you can use `window.justif.reconfigure()` to apply changes manually as needed.
+Changes to `min-width` also require `reconfigure()`, because browsers do not
+emit the transition signal Justif uses to observe that property.
 
 ### Protrusion and hanging punctuation
 
