@@ -9,7 +9,9 @@
   on the page changes that measure. Fixes #16.
 - Hyphenation downloads are about a third smaller. German drops from 119 KB to
   80 KB compressed, Hungarian from 205 KB to 126 KB, Dutch from 40 KB to 27 KB,
-  and the drop-in script itself is 4 KB smaller.
+  and the drop-in script itself is 4 KB smaller. If you build your own
+  hyphenator with `createHyphenator`, `patterns` is now optional beside the new
+  `packed` form — passing your own TeX patterns works exactly as before.
 - A quote or other mark ending a line beside a drop cap no longer drifts away
   from the character before it.
 - Fixed a small word-spacing error on lines beside a drop cap.
