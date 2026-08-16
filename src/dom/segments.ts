@@ -1,39 +1,31 @@
 /**
- * Pure functions bridging a paragraph scan and the core's Line output to
- * the DOM writer's segment model (write.ts does the actual DOM emission).
- * No lifecycle, no state — index.ts stays plumbing.
+ * Turning the core's chosen Lines into the segment model the DOM writer
+ * emits.
+ *
+ * This is where an abstract line — a range of items with a glue ratio and a
+ * stretch — becomes concrete runs of text with the word-spacing,
+ * letter-spacing and font-stretch that will make it set to exactly its
+ * measure. It also decides everything about a line's EDGES: which characters
+ * hang past them and how far, what the break between two lines is made of,
+ * how a hyphen is carried, and what the trailing margin has to be so the
+ * engine's own wrap breaks where the model chose.
+ *
+ * Pure and stateless. It reads the same width helpers the run metrics were
+ * priced with, deliberately: a space measured one way for pricing and another
+ * for rendering is the drift the wrap guarantee then has to correct.
  */
 import { CJK_CHAR } from "../core/cjk.js";
 import { breakEndBox } from "../core/items.js";
-import { opticalCandidates, opticalFontKey, opticalProtrusion } from "./optical.js";
-import {
-  composeProtrusion,
-  type HangingCharacters,
-  type HangingPunctuationMode,
-  latinProtrusion,
-} from "../core/protrusion.js";
-import { fontProtrusion } from "../core/protrusion-fonts.js";
 import {
   type Box,
-  type ExpansionOptions,
   ItemType,
   type Line,
-  type Measure,
   type ParagraphItems,
-  type ProtrusionTable,
   type RunMetrics,
-  type RunText,
 } from "../core/types.js";
-import { calibrateStretch, NO_EXPANSION } from "./calibrate.js";
-import {
-  type FontSpec,
-  isMonospace,
-  measureInkBearings,
-  measureWidth,
-  requiresDomMeasurement,
-  transformedText,
-} from "./measure.js";
+import { type FontSpec, measureWidth, transformedText } from "./measure.js";
 import type { ParagraphScan } from "./read.js";
+import { separatorWidthIn, spaceWidthIn } from "./run-metrics.js";
 import {
   endWithoutCollapsibleSpaces,
   leadingCollapsibleSpaces,
@@ -69,62 +61,6 @@ function trackingFeatureSettings(spec: FontSpec, active: boolean): string | unde
   if (!LIGA_EXPLICITLY_OFF.test(spec.featureSettings)) settings.push('"liga" 1');
   if (!CLIG_EXPLICITLY_OFF.test(spec.featureSettings)) settings.push('"clig" 1');
   return settings.length > 0 ? settings.join(", ") : undefined;
-}
-
-/**
- * Rendered advance of the inter-word space in a run containing `runText`.
- * When the author's font stack lacks a script's glyphs the engine renders
- * words in a FALLBACK font — and in Blink/WebKit the spaces BETWEEN those
- * words take the fallback font's advance too, not the first stack font's,
- * so `measureText(" ")` (which sees only the stack font) overstates every
- * gap by a fraction of a pixel. Canvas agrees with the DOM when the space
- * is measured in script context, so RTL runs probe "X X" − 2·"X" with a
- * letter of their own script (space-adjacent fallback is exactly how their
- * fixture words render). LTR paragraphs cannot reach this path with RTL
- * text (they bail), and keep the one-glyph measurement unchanged.
- */
-function spaceWidthIn(spec: FontSpec, context: () => string): number {
-  return separatorWidthIn(spec, context, " ");
-}
-
-/** `spaceWidthIn` for an arbitrary word-separator character. */
-function separatorWidthIn(spec: FontSpec, context: () => string, separator: string): number {
-  // `context` is a thunk: only the paths below that actually probe in script
-  // or letter context need the text, and materializing a paragraph-wide
-  // string for the ordinary case was pure waste. Memoized because an RTL spec
-  // in neither Arabic nor Hebrew falls through to the variant path and would
-  // otherwise rebuild it twice.
-  let text: string | undefined;
-  const runText = (): string => (text ??= context());
-  if (spec.direction === "rtl") {
-    const probe = /\p{Script=Arabic}/u.test(runText())
-      ? "ل" // Arabic lam
-      : /\p{Script=Hebrew}/u.test(runText())
-        ? "א" // Hebrew alef
-        : null;
-    if (probe !== null) {
-      return (
-        measureWidth(`${probe}${separator}${probe}`, spec) - 2 * measureWidth(probe, spec)
-      );
-    }
-  }
-  if (requiresDomMeasurement(spec) && spec.variantPosition === "normal") {
-    // Variant-bearing runs measure spaces IN LETTER CONTEXT for the same
-    // reason: engines that SYNTHESIZE a variant can scale a run's interior
-    // spaces along with its letters (GTK WebKit renders all-small-caps at
-    // ~0.7x, spaces included), while a lone space carries nothing to case
-    // and measures full-size — every modeled gap then overshoots the
-    // rendered one and lines come out short. variant-position runs are the
-    // exception BOTH ways: the renderer isolates each of their words and
-    // spaces into its own shaping segment (Firefox shapes sub/super
-    // contextually across a run), so their spaces really do render alone
-    // and the lone-space measurement is the matching one.
-    const letter = /\p{L}/u.exec(runText())?.[0] ?? "n";
-    return (
-      measureWidth(`${letter}${separator}${letter}`, spec) - 2 * measureWidth(letter, spec)
-    );
-  }
-  return measureWidth(separator, spec);
 }
 
 /**
@@ -227,251 +163,6 @@ function tightenLine(
   for (let i = first; i < segments.length; i++) {
     if (countAt(i) > 0) segments[i]!.wordSpacingPx -= delta;
   }
-}
-
-/** Core Measure implementation backed by the canvas cache. */
-export function measureFor(specByKey: Map<string, FontSpec>): Measure {
-  return {
-    width: (text, run) => measureWidth(text, specByKey.get(run.fontKey)!),
-    charAdvance: (ch, run) => measureWidth(ch, specByKey.get(run.fontKey)!),
-    inkBearings: (ch, run) => measureInkBearings(ch, specByKey.get(run.fontKey)!),
-  };
-}
-
-/** The core's RunText input, aligned index-for-index with scan.runs. */
-export function runTexts(scan: ParagraphScan): RunText[] {
-  return scan.runs.map((r, i) => ({
-    text: r.text,
-    run: i,
-    flowExclusion: r.flowExclusion,
-    boxStartProtrusionPx: r.boxStartProtrusionPx,
-    boxEndProtrusionPx: r.boxEndProtrusionPx,
-    padStartPx: r.padStartPx,
-    padEndPx: r.padEndPx,
-    atomicKey: r.atomicKey,
-  }));
-}
-
-/**
- * Per-family protrusion tables under one controller's protrusion settings.
- * Keyed by the CSS family list; the cache is invalidated whenever the
- * settings object identity changes, which happens once per controller.
- */
-export interface ProtrusionSettings {
-  enabled: boolean;
-  /** The protrusion model contributes a base table. With it off, the hang
-   * overlays compose over an empty base: flush glyphs, hanging marks. */
-  model: boolean;
-  measured: boolean;
-  user: ProtrusionTable | null;
-  hang: HangingPunctuationMode;
-  characters: HangingCharacters;
-}
-type ComposedTables =
-  | { rest: ProtrusionTable; first?: ProtrusionTable; credit?: ProtrusionTable }
-  | null;
-/** Weakly keyed on the settings object, so two live controllers don't evict
- * each other and a destroyed one's tables are collectable. */
-let composedBySettings = new WeakMap<ProtrusionSettings, Map<string, ComposedTables>>();
-
-/**
- * Drop every composed table. Needed alongside `clearOpticalCache` on a font
- * change: these are built FROM measured tables, and a controller's settings
- * object outlives the fonts, so clearing only the measurement would leave the
- * stale composition in front of it.
- */
-export function clearComposedProtrusionCache(): void {
-  composedBySettings = new WeakMap();
-}
-
-/**
- * The generic table minus every character the raster pass forms an opinion
- * about — i.e. exactly the entries a measured table can never contain, such
- * as the Arabic and Hebrew stops. Computed once; the two tables are module
- * constants.
- */
-let unmeasured: ProtrusionTable | undefined;
-function unmeasuredProtrusion(): ProtrusionTable {
-  if (unmeasured !== undefined) return unmeasured;
-  const considered = new Set(opticalCandidates);
-  unmeasured = Object.fromEntries(
-    Object.entries(latinProtrusion).filter(([ch]) => !considered.has(ch)),
-  );
-  return unmeasured;
-}
-
-function composedForFamily(
-  spec: FontSpec,
-  settings: ProtrusionSettings | undefined,
-): ComposedTables {
-  if (settings === undefined || !settings.enabled) return null;
-  let composedCache = composedBySettings.get(settings);
-  if (composedCache === undefined) {
-    composedCache = new Map();
-    composedBySettings.set(settings, composedCache);
-  }
-  const family = spec.family;
-  // Measured tables describe a GLYPH SET, not a family: small caps, italics and
-  // weights are different shapes and measure differently, so this cache must
-  // key on everything the measurement keys on or it serves one variant's table
-  // for another.
-  const key = opticalFontKey(spec);
-  const hit = composedCache.get(key);
-  if (hit !== undefined) return hit;
-  // Measured values describe THIS font, so within the range the measurement
-  // CONSIDERED they replace the generic table and the per-font configs both —
-  // a zero there means "this glyph needs no hang", not "no opinion", and must
-  // not be back-filled from a table tuned for other faces. Characters the
-  // measurement never looked at are a different matter: the generic table
-  // carries entries the raster pass has no candidate for, notably the Arabic
-  // and Hebrew stops that make pure-RTL paragraphs work.
-  //
-  // A user table deliberately selects the table-backed path instead: generic
-  // values, then the matching hand-tuned font table, then the user's
-  // overrides. Besides being an escape hatch for faces where hand tuning wins,
-  // this avoids canvas pixel readback and keeps the chosen values stable across
-  // browser engines.
-  //
-  // With the model off (`protrusion: false`) there is no base at all: only the
-  // hang overlays land, so ordinary glyphs sit exactly flush while the eligible
-  // marks still hang. Nothing here measures in that case — the raster pass is
-  // the model's, and skipping it is most of what `protrusion: false` buys.
-  let base: ProtrusionTable = {};
-  if (settings.model) {
-    // Pure-RTL paragraphs take the table-backed path: every character the raster
-    // pass forms an opinion about is Latin, so measuring buys such a paragraph
-    // nothing — while the script-specific stops it does NOT examine are exactly
-    // what the built-in tables carry for it. Measured on CI, where `serif`
-    // resolves to a face with no Arabic at all: the measured path left an Arabic
-    // question mark sitting inside the margin.
-    const measured =
-      settings.measured && spec.direction !== "rtl" ? opticalProtrusion(spec) : undefined;
-    base =
-      measured !== undefined
-        ? { ...unmeasuredProtrusion(), ...measured }
-        : { ...latinProtrusion, ...fontProtrusion(family) };
-  }
-  const composed = composeProtrusion(base, settings.user, settings.hang, settings.characters);
-  const tables: ComposedTables = {
-    rest: composed.rest,
-    first: composed.first !== composed.rest ? composed.first : undefined,
-    credit: composed.credit,
-  };
-  composedCache.set(key, tables);
-  return tables;
-}
-
-export function buildRunMetrics(
-  scan: ParagraphScan,
-  expansion: ExpansionOptions | false,
-  spacing: { stretch: number; shrink: number; pull?: number },
-  protrusion?: ProtrusionSettings,
-): RunMetrics[] {
-  // Base-space context is the whole paragraph: the base font's spaces sit
-  // between whatever script the paragraph is written in. Materialized LAZILY —
-  // spaceWidthIn ignores its text for the ordinary LTR, variant-free spec, so
-  // the common paragraph never pays for a copy of its own text.
-  const baseSpec = scan.specs[scan.baseSpec]!;
-  const baseSpaceWidth = spaceWidthIn(baseSpec, () =>
-    scan.runs.map((r) => r.text).join(" "),
-  );
-  const pull = spacing.pull ?? 0.7;
-  // Every quantized stretch value the layout can emit gets its own
-  // measurement (linear interpolation between the endpoints errs by
-  // whole pixels per line for some variable fonts).
-  const samplePcts: number[] = [];
-  if (expansion !== false && expansion.step > 0) {
-    const stepPct = 100 * expansion.step;
-    for (let q = stepPct; q <= 100 * expansion.max + 1e-9; q += stepPct) {
-      samplePcts.push(Math.round((100 + q) * 1000) / 1000);
-    }
-    for (let q = stepPct; q <= 100 * expansion.shrink + 1e-9; q += stepPct) {
-      samplePcts.push(Math.round((100 - q) * 1000) / 1000);
-    }
-  }
-  return scan.runs.map((run) => {
-    const spec = scan.specs[run.spec]!;
-    // Hand-tuned microtype config for this run's font, when one exists.
-    // Precedence: generic table < per-font config < hang overlays (side-
-    // and position-scoped) < user overrides. Memoized per family: composing
-    // it spreads the generic table and builds two overlays, and it was
-    // repeated for every run of every paragraph even though the user table
-    // and hang mode are fixed for the controller.
-    const perFontTables = composedForFamily(spec, protrusion);
-    const perFont = perFontTables?.rest;
-    const perFontFirst = perFontTables?.first;
-    const perFontCredit = perFontTables?.credit;
-    const naturalSpace = spaceWidthIn(spec, () => run.text);
-    // Oversized secondary-font spaces (monospace inline code — a full cell
-    // wide) get downward pressure toward the paragraph's base space: the
-    // line's rhythm is set by the base font, and a raw cell-space reads as
-    // a hole in it. `pull` dials the pressure: 0 = each font's natural,
-    // 1 = full convergence to the base (risks dissolving word boundaries in
-    // loose-fitting fonts). Flexibility is likewise capped at the base
-    // (TeX's typewriter fonts declare rigid spaces for the same reason).
-    // An all-monospace paragraph is unaffected — its base space IS the
-    // cell. The renderer emits the width difference as negative
-    // word-spacing, so measurement and rendering agree.
-    const spaceWidth =
-      naturalSpace > baseSpaceWidth
-        ? naturalSpace + (baseSpaceWidth - naturalSpace) * pull
-        : naturalSpace;
-    // The flex basis follows the same dial: pull 0 = each font's own flex
-    // (TeX semantics), pull 1 = base-font flex.
-    const flexWidth =
-      naturalSpace + (Math.min(naturalSpace, baseSpaceWidth) - naturalSpace) * pull;
-    const calibration =
-      expansion === false
-        ? NO_EXPANSION
-        : calibrateStretch(
-            spec,
-            100 + 100 * expansion.max,
-            100 - 100 * expansion.shrink,
-            samplePcts,
-            run.text,
-          );
-    return {
-      fontKey: spec.key,
-      space: {
-        width: spaceWidth,
-        stretch: flexWidth * spacing.stretch,
-        shrink: flexWidth * spacing.shrink,
-      },
-      hyphenWidth: measureWidth("-", spec),
-      ratioAtMax: calibration.ratioAtMax,
-      ratioAtMin: calibration.ratioAtMin,
-      expansionRatios: calibration.ratios,
-      // RTL paragraphs never hyphenate: Arabic cursive joining makes the
-      // prefix-incremental fragment measurement in buildItems invalid
-      // (splitting changes the glyphs on both sides of the cut), and
-      // Hebrew convention breaks without hyphens if at all. noHyphens
-      // also strips soft hyphens and keeps the hyphenate callback from
-      // ever being called for these runs.
-      noHyphens: spec.hyphens === "none" || scan.direction === "rtl",
-      // Word spaces between different font FAMILIES lose their shrink
-      // (BuildOptions.boundaryShrink): chips and pills live at those
-      // boundaries. Style/weight/size changes within a family (<em>,
-      // <strong>) are not boundaries.
-      familyKey: spec.family,
-      // Monospace cells carry huge side bearings; advance-relative protrusion
-      // codes would hang the ink visibly past the margin — but only when the
-      // mono run sits INSIDE another font's prose (inline code), where the
-      // hang reads as overflow against the base font's margin rhythm. A
-      // paragraph set in a mono font owns its margin: it protrudes like any
-      // other font (full cells hang under a hanging-punctuation mode — the
-      // typewriter-tradition grid behavior).
-      protrudeInkOnly: isMonospace(spec) && spec.key !== baseSpec.key,
-      // Glyph identity for protrusion lookups only; every width this run
-      // carries was already measured with the property applied.
-      textTransform:
-        spec.textTransform === "uppercase" || spec.textTransform === "lowercase"
-          ? spec.textTransform
-          : undefined,
-      protrusion: perFont,
-      protrusionFirst: perFontFirst,
-      protrusionCredit: perFontCredit,
-    };
-  });
 }
 
 export function buildRenderSegments(

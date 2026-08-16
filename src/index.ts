@@ -35,7 +35,7 @@ import {
   styleKeyNow,
   suppressAutosizingForScan,
 } from "./dom/reread.js";
-import { clearComposedProtrusionCache } from "./dom/segments.js";
+import { clearComposedProtrusionCache } from "./dom/protrusion-tables.js";
 import { writeParagraph } from "./dom/write.js";
 import {
   type JustifyOptions,

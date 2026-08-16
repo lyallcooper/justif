@@ -28,12 +28,8 @@ import { collectDomMeasurements, type FontSpec, requiresDomMeasurement } from ".
 import { type ParaPart, type ParaState, states } from "./paragraph-state.js";
 import { type HardBreak, type ParagraphScan } from "./read.js";
 import type { AdoptionRecord } from "./reread.js";
-import {
-  buildRunMetrics,
-  measureFor,
-  type ProtrusionSettings,
-  runTexts,
-} from "./segments.js";
+import type { ProtrusionSettings } from "./protrusion-tables.js";
+import { buildRunMetrics, measureFor, runTexts } from "./run-metrics.js";
 
 /** The settings every derived number here depends on. Taken at use time: a
  * live controller can be reconfigured, and the next build must use the new

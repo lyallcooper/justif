@@ -34,7 +34,7 @@ import {
   type ProtrusionTable,
   type TrackingOptions,
 } from "./core/types.js";
-import type { ProtrusionSettings } from "./dom/segments.js";
+import type { ProtrusionSettings } from "./dom/protrusion-tables.js";
 
 export interface JustifyOptions {
   /** Word splitter, e.g. `hyphenateEnUS` from "justif/hyphenate/en-us".
