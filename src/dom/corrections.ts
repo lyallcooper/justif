@@ -11,6 +11,7 @@
 
 import { contentWidthOf, type ElementFloatIntrusion, renderedElementFloatIntrusionOf } from "./read.js";
 import { describeError } from "../core/errors.js";
+import type { DrainQueues } from "./drain.js";
 import {
   maskAuthorStyle,
   type ParaState,
@@ -42,8 +43,6 @@ export type NoteRelayout = (p: HTMLElement) => void;
  */
 export interface CorrectionHost {
   ownedState(p: HTMLElement): ParaState | undefined;
-  /** Forget every queued re-layout and correction for this paragraph. */
-  dropQueued(p: HTMLElement): void;
   /** Leave the paragraph in its author DOM for good, telling user code why.
    * Returns whether its rendering changed. */
   bailToNative(p: HTMLElement, reason: string): boolean;
@@ -56,20 +55,14 @@ export interface CorrectionHost {
   seedNearViewport(batch: readonly PatchEntry[]): void;
   /** Re-order the drain queue around newly queued paragraphs and run it. */
   restartPendingOrder(): void;
-  /** Corrections parked until their paragraph is laid out again. */
-  readonly hiddenCorrections: Map<HTMLElement, PendingParagraph>;
-  /** Paragraphs the viewport observers currently report as near. */
-  readonly nearViewport: Set<Element>;
-  /** Paragraphs whose float geometry has changed under them. */
-  readonly pendingFloatRelayout: Set<HTMLElement>;
-  /** Paragraphs with a width change already queued: their current geometry
-   * describes a layout that is about to be replaced. */
-  readonly pendingWidths: Map<HTMLElement, number>;
-  /** Null when the environment has no IntersectionObserver, in which case
-   * every paragraph is corrected in full. */
-  viewObserver(): IntersectionObserver | null;
-  /** False until the observer has supplied the passive viewport state. */
-  viewObserverReady(): boolean;
+  /** The drain's queues: this pass parks what it cannot measure and queues
+   * the float re-layouts it discovers. */
+  readonly queues: DrainQueues;
+  /** False when the environment has no IntersectionObserver, in which case
+   * nothing is ever parked and every paragraph is corrected in full. */
+  readonly tracksViewport: boolean;
+  /** False until the observers have supplied the passive viewport state. */
+  viewportReady(): boolean;
 }
 
 export interface PatchEntry {
@@ -103,7 +96,7 @@ export function createCorrectionPass(host: CorrectionHost) {
   /** Hand one entry of a correction batch back to the engine for good. */
   const rejectPatch = (entry: PatchEntry, reason: string, note: NoteRelayout): void => {
     if (host.ownedState(entry.p) === undefined) return;
-    host.dropQueued(entry.p);
+    host.queues.drop(entry.p);
     if (host.bailToNative(entry.p, reason)) note(entry.p);
   };
 
@@ -133,7 +126,7 @@ export function createCorrectionPass(host: CorrectionHost) {
     // IntersectionObserver cannot populate nearViewport synchronously. Until
     // its first report, classify this batch directly so visible corrections
     // land in the same task as their initial patch.
-    if (host.viewObserver() !== null && !host.viewObserverReady()) host.seedNearViewport(batch);
+    if (host.tracksViewport && !host.viewportReady()) host.seedNearViewport(batch);
     let active = batch.filter((entry) => entry.p.isConnected);
     // Terminates on the filter below: past SETTLE_PASSES a mismatch is left
     // alone rather than negotiated, so a further pass can only be triggered by
@@ -148,7 +141,7 @@ export function createCorrectionPass(host: CorrectionHost) {
       // observers promote them on approach. Without an IntersectionObserver
       // everything is corrected directly.
       const detailed = active.map(
-        (entry) => host.viewObserver() === null || host.nearViewport.has(entry.p),
+        (entry) => !host.tracksViewport || host.queues.nearViewport.has(entry.p),
       );
       let outcomes: ParagraphOutcome[];
       try {
@@ -245,7 +238,7 @@ export function createCorrectionPass(host: CorrectionHost) {
       // reverting paragraphs that measured cleanly.
       try {
         applyCorrections(corrections);
-        for (const entry of park) host.hiddenCorrections.set(entry.p, entry.pending);
+        for (const entry of park) host.queues.hiddenCorrections.set(entry.p, entry.pending);
         verifyElementFloats(measured);
       } catch (error) {
         console.error("justif: correction write threw", error);
@@ -370,7 +363,7 @@ export function createCorrectionPass(host: CorrectionHost) {
       // Unmeasurable is not a verdict: the paragraph keeps the geometry it
       // has, exactly as the resize observer leaves an unrendered float alone.
       if (refreshElementFloat(p, state, intrusion) !== "changed") continue;
-      host.pendingFloatRelayout.add(p);
+      host.queues.pendingFloatRelayout.add(p);
       queued = true;
     }
     if (queued) host.restartPendingOrder();
@@ -410,7 +403,7 @@ export function createCorrectionPass(host: CorrectionHost) {
     intrusion: ElementFloatIntrusion,
     source?: Element,
   ): "unchanged" | "changed" | "unmeasurable" | "stale" => {
-    if (host.pendingWidths.has(p)) return "stale";
+    if (host.queues.pendingWidths.has(p)) return "stale";
     const widthNow = contentWidthOf(p);
     if (typeof widthNow !== "number" || Math.abs(widthNow - state.width) > 0.05) {
       return "stale";

@@ -30,11 +30,8 @@ import {
   restoreManagedOutput,
 } from "./paragraph-state.js";
 import type { PatchOutcome } from "./corrections.js";
-import {
-  type PendingParagraph,
-  type RenderContent,
-  writeParagraph,
-} from "./write.js";
+import type { DrainQueues } from "./drain.js";
+import { type RenderContent, writeParagraph } from "./write.js";
 
 /** A float that leaves less than this beside it has no usable line box. */
 const MIN_FLOAT_LINE_WIDTH_PX = 1;
@@ -58,17 +55,14 @@ export interface PartsLayout {
  */
 export interface PatchHost {
   ownedState(p: HTMLElement): ParaState | undefined;
-  /** Forget every queued re-layout and correction for this paragraph. */
-  dropQueued(p: HTMLElement): void;
   readonly breakOpts: BreakOptions;
   readonly buildOpts: BuildOptions;
   /** The clamped public `lastLineMinWidth`, shared by breaker pricing and the
    * layout floor so the two cannot disagree. */
   readonly lastLineMinWidth: number;
-  /** Corrections queued for a paragraph, dropped when it is re-patched. */
-  readonly pendingCorrections: Map<HTMLElement, PendingParagraph>;
-  /** Corrections parked until their paragraph is laid out again. */
-  readonly hiddenCorrections: Map<HTMLElement, PendingParagraph>;
+  /** The drain's queues: a patch drops what it supersedes and queues the
+   * correction its own write is owed. */
+  readonly queues: DrainQueues;
 }
 
 /** Bind the patch pipeline to one controller. */
@@ -243,7 +237,7 @@ export function createPatchPass(host: PatchHost) {
     if (state === undefined) return { changed: false, pending: null };
     const widths = lineWidthsFor(state);
     if (widths === null) {
-      host.dropQueued(p);
+      host.queues.drop(p);
       return { changed: restoreManagedOutput(p, state), pending: null };
     }
     // `justify-all` is the CSS-level rectangular mode: it requests that
@@ -257,7 +251,7 @@ export function createPatchPass(host: PatchHost) {
       state.scan.hardBreaks.length === 0 &&
       oneLineStaysNative(layout, paragraphMinWidth)
     ) {
-      host.dropQueued(p);
+      host.queues.drop(p);
       const nativeIndent = nativeHangIndent(state, layout.onlyLine?.leftHang ?? 0);
       // Avoid dismantling and rebuilding byte-identical native output. In
       // particular, restoreManagedOutput clears state.nativeIndent, so calling
@@ -294,8 +288,8 @@ export function createPatchPass(host: PatchHost) {
     // This re-patch detaches any previous segment DOM: corrections queued
     // for the old nodes are stale and must never be measured or parked. A
     // queued WIDTH stays — it describes the element, not the old nodes.
-    host.pendingCorrections.delete(p);
-    host.hiddenCorrections.delete(p);
+    host.queues.pendingCorrections.delete(p);
+    host.queues.hiddenCorrections.delete(p);
     // Per-line target widths: an indented first line has its own measure,
     // and the wrap-guarantee corrections must compare against it.
     const elementFloat =
