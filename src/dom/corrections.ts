@@ -22,8 +22,8 @@ import {
   type Correction,
   measureCorrections,
   type ParagraphOutcome,
-  type PendingParagraph,
-} from "./write.js";
+} from "./line-corrections.js";
+import type { PendingParagraph } from "./write.js";
 
 /** What one call to the patch writer did. */
 export interface PatchOutcome {
