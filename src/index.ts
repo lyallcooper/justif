@@ -34,6 +34,7 @@ import {
   type RunMetrics,
   type TrackingOptions,
 } from "./core/types.js";
+import { describeError } from "./core/errors.js";
 import { clearCalibrationCache } from "./dom/calibrate.js";
 import { clearOpticalCache } from "./dom/optical.js";
 import {
@@ -69,7 +70,8 @@ import {
 } from "./dom/segments.js";
 import {
   applyCorrections,
-  type CorrectionResult,
+  type Correction,
+  type ParagraphOutcome,
   disableTextAutosizing,
   TEXT_AUTOSIZING_DECLARATIONS,
   measureCorrections,
@@ -444,7 +446,7 @@ interface ParaState {
   /**
    * Inline declarations of justif's that sit on a property `rescan()`'s
    * comparison reads—`hyphens`, a one-line hang's `text-indent`, and an
-   * intrinsic-size guard's `min-width`. An inline declaration outranks the
+   * intrinsic-size repair's `min-width` or `contain`. An inline declaration outranks the
    * author's stylesheet, so the author's current value is invisible until each
    * of these is lifted (`authorStyleKeys`).
    */
@@ -480,7 +482,13 @@ function restoreStyleAttribute(el: HTMLElement, style: string | null): void {
  * consistently, and lifting it would both dirty layout and make the two sides
  * disagree.
  */
-const KEY_PROPERTIES = new Set(["hyphens", "-webkit-hyphens", "text-indent", "min-width"]);
+const KEY_PROPERTIES = new Set([
+  "hyphens",
+  "-webkit-hyphens",
+  "text-indent",
+  "min-width",
+  "contain",
+]);
 
 /** Selects the rule in justif's stylesheet that turns transitions off for the
  * duration of a re-read (see `suppressTransitions`). */
@@ -666,6 +674,17 @@ function applyNativeHang(
   return true;
 }
 
+/** Add inline-axis size containment without discarding any containment the
+ * author already requested. The shorthand aliases cannot be combined with
+ * other values, so expand `content` before adding the missing component. */
+function withInlineSizeContainment(authorContain: string): string {
+  if (authorContain === "strict" || authorContain.includes("size")) return authorContain;
+  if (authorContain === "content") return "inline-size layout style paint";
+  return !authorContain || authorContain === "none"
+    ? "inline-size"
+    : `${authorContain} inline-size`;
+}
+
 /** Put a managed paragraph back into its exact author DOM without releasing
  * its measurements or controller ownership. A one-line paragraph uses this
  * native state while ResizeObserver keeps watching for a narrower measure
@@ -761,12 +780,6 @@ function withOverrides<T extends object>(defaults: T, overrides: Partial<T>): T 
     if (value !== undefined) merged[key] = value;
   }
   return merged;
-}
-
-/** Message for an `onSkip` reason: anything can be thrown, including
- * non-Errors from hostile content. */
-function describeError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /** Everything the option object decides before any paragraph is touched.
@@ -1424,7 +1437,7 @@ export function justify(
   /**
    * The AUTHOR's key for each paragraph — what `styleKeyNow` would read if justif
    * had never touched it. Justif's own `hyphens`, one-line `text-indent`, and
-   * intrinsic-size `min-width` declarations can mask properties the key describes.
+   * intrinsic-size `min-width`/`contain` declarations can mask key properties.
    * An inline declaration outranks the author's stylesheet, so on those
    * paragraphs the author's current value is otherwise invisible.
    *
@@ -1939,12 +1952,14 @@ export function justify(
   interface PatchEntry {
     p: HTMLElement;
     pending: PendingParagraph;
-    /** How far this paragraph has got with the intrinsic-size guard during
-     * THIS flush: "live" while it is installed on trial, "cleared" once it
-     * proved not to be the cause and was taken off again. Absent on a
-     * paragraph whose guard was installed by an earlier flush — that one is
-     * simply author containment as far as this flush is concerned. */
+    /** How far this paragraph has got with the intrinsic-size repair during
+     * THIS flush: "live" while one is installed on trial, "cleared" once it
+     * proved not to be the cause and was taken back off. Absent on a paragraph
+     * repaired by an earlier flush — that one is simply author styling as far
+     * as this flush is concerned. */
     guard?: "live" | "cleared";
+    /** Which property the live repair wrote, so it can be taken back off. */
+    guardProperty?: string;
   }
 
   /**
@@ -2012,14 +2027,14 @@ export function justify(
       const detailed = active.map(
         (entry) => viewObserver === null || nearViewport.has(entry.p),
       );
-      let result: CorrectionResult;
+      let outcomes: ParagraphOutcome[];
       try {
-        result = measureCorrections(
+        outcomes = measureCorrections(
           active.map((entry) => entry.pending),
           detailed,
         );
       } catch (error) {
-        // A paragraph that cannot be measured normally arrives in `invalid`.
+        // A paragraph that cannot be measured reports that as its own outcome.
         // Reaching here means the read pass itself could not run, so nothing
         // in this batch has a trustworthy measure and native rendering is the
         // only state that cannot strand a provisional margin or stale float
@@ -2029,34 +2044,73 @@ export function justify(
         for (const entry of active) rejectPatch(entry, reason, noteRelayout);
         return;
       }
-      for (const [index, reason] of result.invalid) {
-        rejectPatch(active[index]!, reason, noteRelayout);
-      }
-      let wrote = result.invalid.length > 0;
-      for (const [index, width, minWidth] of result.resized) {
-        const entry = active[index]!;
-        const state = ownedState(entry.p);
-        if (state === undefined) {
-          // Not ours any more; the filter below drops it.
-          wrote = true;
-          continue;
+      // A repair or a re-break can resize a shared Grid/Flex ancestor, so any
+      // write means every correction read in this layout describes a layout
+      // that no longer exists: collect them, and discard the lot if anything
+      // was written.
+      let wrote = false;
+      const corrections: Correction[] = [];
+      const park: PatchEntry[] = [];
+      const measured: PatchEntry[] = [];
+      for (let i = 0; i < active.length; i++) {
+        const entry = active[i]!;
+        const outcome = outcomes[i]!;
+        switch (outcome.status) {
+          case "stale":
+            break;
+          case "hidden":
+            park.push(entry);
+            break;
+          case "corrected":
+            corrections.push(...outcome.corrections);
+            measured.push(entry);
+            break;
+          case "invalid":
+            rejectPatch(entry, outcome.reason, noteRelayout);
+            wrote = true;
+            break;
+          case "collapsed":
+            wrote = true;
+            if (entry.guard === "live") {
+              // Justif's own repair took the paragraph's width to nothing —
+              // what inline-size containment does to an ancestor that is sized
+              // FROM the paragraph rather than merely floored by it. Undo it
+              // and read again.
+              revertGuard(entry);
+            } else {
+              rejectPatch(entry, "content width collapsed to zero", noteRelayout);
+            }
+            break;
+          case "resized": {
+            const state = ownedState(entry.p);
+            if (state === undefined) {
+              // Not ours any more; the filter below drops it.
+              wrote = true;
+              break;
+            }
+            if (pass >= SETTLE_PASSES) {
+              // Out of settling budget: something outside this paragraph keeps
+              // moving its measure, and no repair available here reaches it.
+              // Leave it enhanced at the measure it last broke to, with its
+              // provisional wrap-safety pad standing — loose, but justified and
+              // laid out — rather than hand a page of prose back to the engine
+              // because one ancestor will not hold still.
+              break;
+            }
+            wrote = true;
+            settleWidth(
+              entry,
+              state,
+              outcome.width,
+              outcome.minWidth,
+              outcome.contain,
+              noteRelayout,
+            );
+            break;
+          }
         }
-        if (pass >= SETTLE_PASSES) {
-          // Out of settling budget: something outside this paragraph keeps
-          // moving its measure, and no repair available here reaches it. Leave
-          // it enhanced at the measure it last broke to, with its provisional
-          // wrap-safety pad standing — loose, but justified and laid out —-
-          // rather than hand a page of prose back to the engine because one
-          // ancestor will not hold still.
-          continue;
-        }
-        wrote = true;
-        settleWidth(entry, state, width, minWidth, noteRelayout);
       }
       if (wrote) {
-        // A guard or a re-break can resize a shared Grid/Flex ancestor.
-        // Discard every correction from this layout and validate all live
-        // siblings again.
         active = active.filter(
           (entry) => entry.p.isConnected && ownedState(entry.p)?.enhanced === true,
         );
@@ -2067,20 +2121,48 @@ export function justify(
       // its provisional wrap-safety pad, loose but laid out — is better than
       // reverting paragraphs that measured cleanly.
       try {
-        applyCorrections(result.corrections);
-        for (const index of result.hidden) detailed[index] = false;
-        const measure: PatchEntry[] = [];
-        for (let i = 0; i < active.length; i++) {
-          const entry = active[i]!;
-          if (!detailed[i]) hiddenCorrections.set(entry.p, entry.pending);
-          else measure.push(entry);
-        }
-        verifyElementFloats(measure);
+        applyCorrections(corrections);
+        for (const entry of park) hiddenCorrections.set(entry.p, entry.pending);
+        verifyElementFloats(measured);
       } catch (error) {
         console.error("justif: correction write threw", error);
       }
       return;
     }
+  };
+
+  /**
+   * The repair for a paragraph whose generated lines have pushed it wider,
+   * chosen from what the paragraph's own computed style says about WHERE that
+   * growth escaped to. Returns null when neither repair is available.
+   */
+  const intrinsicRepair = (
+    minWidth: string,
+    contain: string,
+  ): { property: string; value: string } | null => {
+    // `auto` computes only on a flex or grid item, and only there does a box
+    // have an automatic minimum size — which IS its min-content contribution.
+    // The paragraph's own track is what grew, so drop that floor and nothing
+    // else: the max-content contribution, and so the track's own result, stays
+    // exactly what it was before the patch.
+    if (minWidth === "auto") return { property: "min-width", value: "0px" };
+    // An ordinary block has no automatic minimum to drop; its contribution has
+    // travelled up to whichever ancestor IS an item, and nothing writable on
+    // the paragraph reaches that ancestor's minimum. So stop the contribution
+    // at its source instead. This is the blunter instrument — it suppresses the
+    // max-content contribution too, which collapses an ancestor sized FROM the
+    // paragraph — so the result is read back and reverted if it did harm.
+    const guarded = withInlineSizeContainment(contain);
+    return guarded === contain ? null : { property: "contain", value: guarded };
+  };
+
+  /** Take a trial repair back off, leaving the author's own value behind. */
+  const revertGuard = (entry: PatchEntry): void => {
+    const state = ownedState(entry.p);
+    if (state !== undefined && entry.guardProperty !== undefined) {
+      unmaskAuthorStyle(entry.p, state, entry.guardProperty);
+    }
+    entry.guard = "cleared";
   };
 
   /**
@@ -2094,50 +2176,47 @@ export function justify(
    * The first has one mechanism. Every generated line is `white-space: nowrap`,
    * which raises the paragraph's min-content contribution from its longest WORD
    * to its longest LINE — measured in WebKit, 88px to 185px for an ordinary
-   * paragraph. A grid or flex item's automatic minimum size IS that
-   * contribution, so a track sized to its own content (`fit-content()`, `auto`)
-   * is floored open by the enhancement and the paragraph ends up wider than the
-   * author's layout asked for. Replacing that automatic minimum with zero
-   * removes the floor and nothing else: the max-content contribution, and so
-   * the track's own result, is exactly what it was before the patch.
+   * paragraph. A flex or grid item's automatic minimum size IS that
+   * contribution, so a track sized to its own content is floored open and the
+   * paragraph ends up wider than the author's layout asked for. Where the
+   * paragraph is not itself the item, the same contribution travels up to
+   * whichever ancestor is. `intrinsicRepair` answers both.
    *
-   * Note what this must NOT be: `contain: inline-size` suppresses BOTH
-   * contributions, so a track sized from the paragraph collapses to zero
-   * instead of returning to its old measure.
-   *
-   * One reading cannot tell the two causes apart, so a GROWN measure is probed:
-   * write the floor, and if the width does not come back it was never ours to
-   * fix. A SHRUNK measure is never probed — `nowrap` content can only ever
-   * RAISE an intrinsic contribution, so a narrower measure (a classic scrollbar
-   * appearing, a lazily loaded image, a font swap) is external by construction.
+   * One reading cannot tell the two causes apart, so a GROWN measure is
+   * probed: write the repair, and if the width does not come back it was never
+   * ours to fix. A SHRUNK measure is never probed — `nowrap` content can only
+   * ever RAISE an intrinsic contribution, so a narrower measure (a classic
+   * scrollbar appearing, a lazily loaded image, a font swap) is external by
+   * construction.
    */
   const settleWidth = (
     entry: PatchEntry,
     state: ParaState,
     width: number,
     minWidth: string,
+    contain: string,
     note: NoteRelayout,
   ): void => {
     if (entry.guard === undefined) {
-      // `auto` is the only value that can be justif's own doing, and the only
-      // one justif may replace: an author who has set a minimum has chosen this
-      // paragraph's floor themselves, and generated lines did not raise it.
-      if (width > entry.pending.contentWidth && minWidth === "auto") {
-        maskAuthorStyle(entry.p, state, "min-width", "0px");
-        entry.guard = "live";
-        return;
+      if (width > entry.pending.contentWidth) {
+        const repair = intrinsicRepair(minWidth, contain);
+        if (repair !== null) {
+          maskAuthorStyle(entry.p, state, repair.property, repair.value);
+          entry.guard = "live";
+          entry.guardProperty = repair.property;
+          return;
+        }
       }
     } else if (entry.guard === "live") {
-      // The floor was dropped and the measure is still wrong, so the generated
-      // lines were not the cause (or an author `!important` outranks the
-      // declaration). Put the author's minimum back and read again — restoring
-      // it moves the width once more, so the break waits for that pass.
-      unmaskAuthorStyle(entry.p, state, "min-width");
-      entry.guard = "cleared";
+      // The repair is in force and the measure is still wrong, so justif's own
+      // content was not the cause (or an author `!important` outranks the
+      // declaration). Take it off and read again — removing it moves the width
+      // once more, so the break has to wait for that pass.
+      revertGuard(entry);
       return;
     }
-    // An external measure: an author minimum was already in force, the probe
-    // has been cleared, or a shrink was never ours to begin with.
+    // An external measure: no repair applied here, the trial has been cleared,
+    // or a shrink was never ours to begin with.
     state.width = width;
     state.lastPatch = "";
     const outcome = safePatch(entry.p);

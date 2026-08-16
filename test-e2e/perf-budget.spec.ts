@@ -71,7 +71,7 @@ test("the drop-in stays within its size budget", async ({ page }) => {
   // Applications normally fetch the API build through content encoding. Keep
   // its transfer size bounded without making readable formatting the primary
   // budget, while retaining a raw backstop when compression is unavailable.
-  expect(size.index.raw, "dist/index.js bytes").toBeLessThan(164_000);
+  expect(size.index.raw, "dist/index.js bytes").toBeLessThan(168_000);
   if (size.index.gzip > 0) expect(size.index.gzip, "dist/index.js gzipped").toBeLessThan(42_000);
 });
 

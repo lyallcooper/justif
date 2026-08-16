@@ -6516,6 +6516,74 @@ test("nowrap lines do not widen a paragraph in a fit-content grid column", async
   expect(r.after.document).toBe(r.before.document);
 });
 
+test("nowrap lines do not widen a block nested inside a grid item", async ({
+  page,
+  browserName,
+}) => {
+  // The shape of the reported case: the paragraphs are ordinary blocks several
+  // levels inside the element that is the grid item, so nothing writable on a
+  // paragraph reaches that item's automatic minimum. Their min-content
+  // contribution travels up to it instead, and because each justified
+  // paragraph widens the track the next one is measured against, the overflow
+  // ratchets — every paragraph comes out wider than the one before.
+  test.skip(browserName !== "webkit", "only WebKit lets the contribution escape");
+  await openFixture(page);
+  const r = await page.evaluate(async () => {
+    const host = document.getElementById("host")!;
+    document.body.replaceChildren(host);
+    document.body.style.margin = "0";
+    // The grid's own padding makes its content box narrower than the item's
+    // max-width, and that gap is the room the automatic minimum expands into.
+    // Without it the item is already at its ceiling and nothing can grow.
+    host.style.cssText = "display:grid;width:390px;box-sizing:border-box;padding:0 22.5px";
+    const main = document.createElement("main");
+    main.style.cssText = "max-width:390px";
+    const article = document.createElement("article");
+    const paragraphs = Array.from({ length: 6 }, (_, index) => {
+      const p = document.createElement("p");
+      p.style.margin = "0 0 1em";
+      p.textContent =
+        `Paragraph ${index} handles dynamic hotspots, one of the core experiences in a ` +
+        "parametric model. The values remain editable in the viewport while their printed " +
+        "dimensions stay stable, which matters when model space and paper space meet.";
+      return p;
+    });
+    article.append(...paragraphs);
+    main.append(article);
+    host.replaceChildren(main);
+
+    const before = {
+      document: document.documentElement.scrollWidth,
+      paragraph: +paragraphs[0]!.getBoundingClientRect().width.toFixed(1),
+    };
+    const controller = window.__justif.justify(paragraphs, {
+      protrusion: false,
+      expansion: false,
+      tracking: false,
+    });
+    await controller.ready;
+    return {
+      before,
+      after: {
+        document: document.documentElement.scrollWidth,
+        paragraph: +paragraphs[0]!.getBoundingClientRect().width.toFixed(1),
+      },
+      widths: paragraphs.map((p) => +p.getBoundingClientRect().width.toFixed(1)),
+      enhanced: paragraphs.filter((p) => p.hasAttribute("data-justif")).length,
+      segments: document.querySelectorAll(".justif-seg").length,
+    };
+  });
+
+  // Justified, and at the measure the page gave them — not a native fallback,
+  // which would also produce no overflow while losing the feature entirely.
+  expect(r.enhanced).toBe(6);
+  expect(r.segments).toBeGreaterThan(6);
+  expect(r.after.document).toBe(r.before.document);
+  expect(r.after.paragraph).toBeCloseTo(r.before.paragraph, 1);
+  // No ratchet: every paragraph ends on the same measure as the first.
+  for (const width of r.widths) expect(width).toBeCloseTo(r.widths[0]!, 1);
+});
+
 test("stable enhancement does not touch the paragraph's minimum size", async ({ page }) => {
   await openFixture(page);
   const r = await page.evaluate(async () => {

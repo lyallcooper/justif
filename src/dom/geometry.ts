@@ -19,7 +19,15 @@ export interface FragmentBoxes {
 
 export interface UnsupportedFragmentBoxes {
   ok: false;
-  reason: "zero content width" | "fragment boxes have unequal widths";
+  /**
+   * "not rendered" and "zero content width" are deliberately separate answers
+   * to the same reading of nothing. An element with NO boxes at all is not
+   * being laid out — `display: none`, a closed `<details>`, a detached
+   * subtree — and will measure again when it is. An element that HAS boxes
+   * and still measures zero has been collapsed while rendered, which is a
+   * condition someone has to be told about rather than wait out.
+   */
+  reason: "not rendered" | "zero content width" | "fragment boxes have unequal widths";
 }
 
 export type FragmentBoxResult = FragmentBoxes | UnsupportedFragmentBoxes;
@@ -29,9 +37,11 @@ export function fragmentBoxesOf(
   style?: CSSStyleDeclaration,
 ): FragmentBoxResult {
   const view = el.ownerDocument.defaultView;
-  if (view === null) return { ok: false, reason: "zero content width" };
+  if (view === null) return { ok: false, reason: "not rendered" };
   const cs = style ?? view.getComputedStyle(el);
-  const rects = [...el.getClientRects()].filter((rect) => rect.width > 0);
+  const all = el.getClientRects();
+  if (all.length === 0) return { ok: false, reason: "not rendered" };
+  const rects = [...all].filter((rect) => rect.width > 0);
   if (rects.length === 0) return { ok: false, reason: "zero content width" };
 
   const borderBoxWidth = rects[0]!.width;

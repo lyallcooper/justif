@@ -141,6 +141,7 @@ export function paragraphStyleKey(style: CSSStyleDeclaration): string {
     style.writingMode,
     style.lineHeight,
     style.minWidth,
+    style.contain,
   ].join(" ");
 }
 

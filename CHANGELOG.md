@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fixed justified text pushing the page wider in Safari, seen most often as a
+  sideways scroll on iPhone. Justified paragraphs now keep the exact measure
+  the page gave them — whether the paragraph is itself a Grid or Flex item or
+  sits several levels inside one — and re-break correctly when something else
+  on the page changes that measure. Fixes #16.
 - Hyphenation downloads are about a third smaller. German drops from 119 KB to
   80 KB compressed, Hungarian from 205 KB to 126 KB, Dutch from 40 KB to 27 KB,
   and the drop-in script itself is 4 KB smaller.

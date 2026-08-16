@@ -17,6 +17,7 @@
  */
 
 import { graphemes } from "../core/cjk.js";
+import { describeError } from "../core/errors.js";
 import { FRAGMENT_WIDTH_TOLERANCE_PX, fragmentBoxesOf } from "./geometry.js";
 import { endWithoutCollapsibleSpaces } from "./whitespace.js";
 
@@ -711,21 +712,39 @@ export interface Correction {
   spacing?: SpacingCorrection[];
 }
 
-export interface CorrectionResult {
-  corrections: Correction[];
+/**
+ * What the correction pass concluded about ONE paragraph. Returned one per
+ * input, in input order, so no caller has to keep parallel index arrays in
+ * step — the alignment that used to have to be re-verified by hand.
+ */
+export type ParagraphOutcome =
+  /** Its segment DOM is no longer in the document: it was re-patched,
+   * restored or replaced since it was queued. Nothing to do. */
+  | { status: "stale" }
   /**
-   * Indices into `pending` of paragraphs whose content is currently
-   * layout-skipped (`content-visibility: auto` off-screen): every glyph
-   * run measured zero, so no correction can be computed. Callers should
-   * re-queue these and retry when the paragraph becomes visible; until
-   * then the provisional wrap-safety pad keeps the lines safe.
+   * Content currently skipped by layout (`content-visibility: auto`
+   * off-screen): every glyph run measured zero, so no correction can be
+   * computed. Re-queue and retry when the paragraph nears the viewport;
+   * until then the provisional wrap-safety pad keeps the lines safe.
    */
-  hidden: number[];
-  /** Paragraph indices whose generated DOM changed their own measure. */
-  resized: Array<[index: number, width: number, minWidth: string]>;
-  /** Paragraph indices that cannot be corrected safely. */
-  invalid: Array<[index: number, reason: string]>;
-}
+  | { status: "hidden" }
+  /**
+   * Measured zero, but nothing about this paragraph licenses being skipped.
+   * Something has collapsed it — including, possibly, a repair the caller
+   * itself just applied — and silently parking it would strand it invisible.
+   */
+  | { status: "collapsed" }
+  /**
+   * The patch changed the paragraph's own measure. Carries the live measure
+   * and the two computed values a repair has to be chosen from: `min-width`,
+   * whose `auto` says the paragraph is itself a flex or grid item, and
+   * `contain`, which any repair must compose with rather than replace.
+   */
+  | { status: "resized"; width: number; minWidth: string; contain: string }
+  /** Cannot be corrected safely; the paragraph should go back to the engine. */
+  | { status: "invalid"; reason: string }
+  /** Correctable. `corrections` may be empty when no line needed one. */
+  | { status: "corrected"; corrections: readonly Correction[] };
 
 /** Pick the fragment containing a line's logical start. Horizontal distance
  * distinguishes adjacent columns; vertical distance also handles fragments
@@ -1038,11 +1057,8 @@ export function measureCorrections(
   /** Whether each paragraph also needs detailed line correction. Width is
    * always validated, including for far-offscreen entries. */
   detailed?: readonly boolean[],
-): CorrectionResult {
-  const corrections: Correction[] = [];
-  const hidden: number[] = [];
-  const resized: Array<[number, number, string]> = [];
-  const invalid: Array<[number, string]> = [];
+): ParagraphOutcome[] {
+  const outcomes: ParagraphOutcome[] = [];
   let range: Range | null = null;
   for (let i = 0; i < pending.length; i++) {
     try {
@@ -1055,25 +1071,41 @@ export function measureCorrections(
         physicalFitLines,
       } = pending[i]!;
       // A pending whose nodes were detached (the paragraph was re-patched,
-      // restored, or replaced since it was queued) is stale: drop it before
+      // restored, or replaced since it was queued) is stale: say so before
       // paying any geometry reads — detached nodes measure zero like skipped
       // content, and classifying them "hidden" would park them forever.
       const firstEntry = lineElements.find((l) => l.length > 0)?.[0];
-      if (firstEntry === undefined || !firstEntry.el.isConnected) continue;
+      if (firstEntry === undefined || !firstEntry.el.isConnected) {
+        outcomes.push({ status: "stale" });
+        continue;
+      }
       range ??= doc.createRange();
       const paragraphStyle = doc.defaultView?.getComputedStyle(paragraph);
       const rtl = paragraphStyle?.direction === "rtl";
       const fragments = fragmentBoxesOf(paragraph, paragraphStyle);
       if (!fragments.ok) {
-        if (fragments.reason === "zero content width") hidden.push(i);
-        else invalid.push([i, fragments.reason]);
+        outcomes.push(
+          fragments.reason === "not rendered"
+            ? { status: "hidden" }
+            : fragments.reason === "zero content width"
+              ? { status: "collapsed" }
+              : { status: "invalid", reason: fragments.reason },
+        );
         continue;
       }
       if (Math.abs(fragments.contentWidth - contentWidth) > FRAGMENT_WIDTH_TOLERANCE_PX) {
-        resized.push([i, fragments.contentWidth, paragraphStyle?.minWidth ?? "auto"]);
+        outcomes.push({
+          status: "resized",
+          width: fragments.contentWidth,
+          minWidth: paragraphStyle?.minWidth ?? "auto",
+          contain: paragraphStyle?.contain ?? "none",
+        });
         continue;
       }
-      if (detailed?.[i] === false) continue;
+      if (detailed?.[i] === false) {
+        outcomes.push({ status: "hidden" });
+        continue;
+      }
       let sawInk = false;
       const paraCorrections: Correction[] = [];
       for (let li = 0; li < lineElements.length; li++) {
@@ -1198,19 +1230,20 @@ export function measureCorrections(
           });
         }
       }
-      if (!sawInk) hidden.push(i);
-      else corrections.push(...paraCorrections);
+      // No ink anywhere while the paragraph's own box measures fine is the
+      // signature of layout-skipped content (`content-visibility: auto`
+      // off-screen), which is waited out rather than acted on.
+      outcomes.push(
+        sawInk ? { status: "corrected", corrections: paraCorrections } : { status: "hidden" },
+      );
     } catch (error) {
       // This paragraph's own reads failed. The shared range may have been left
       // pointing into its nodes, so drop it rather than carry it to the next.
       range = null;
-      invalid.push([
-        i,
-        `threw while measuring: ${error instanceof Error ? error.message : String(error)}`,
-      ]);
+      outcomes.push({ status: "invalid", reason: `threw while measuring: ${describeError(error)}` });
     }
   }
-  return { corrections, hidden, resized, invalid };
+  return outcomes;
 }
 
 /** Write phase of the wrap guarantee. The corrective margin lands on the
