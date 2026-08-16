@@ -35,14 +35,19 @@ import { clearOpticalCache } from "./dom/optical.js";
 import {
   clearMeasureCache,
   collectDomMeasurements,
-  ctxFontOf,
   type FontSpec,
-  probeAdvance,
   requiresDomMeasurement,
   supportsSpec,
 } from "./dom/measure.js";
 import { createCorrectionPass, type PatchEntry, type PatchOutcome } from "./dom/corrections.js";
+import { joinClipboardCleanup } from "./dom/clipboard.js";
 import { createDrain, createDrainQueues } from "./dom/drain.js";
+import {
+  collectFontProbes,
+  type FontProbe,
+  probesChanged,
+  reprobeBaselines,
+} from "./dom/font-probes.js";
 import { createWidthObserver, type WidthObserver } from "./dom/observe.js";
 import { createPatchPass } from "./dom/patch.js";
 import {
@@ -636,263 +641,6 @@ function suppressAutosizingForScan(paragraphs: readonly HTMLElement[]): () => vo
   };
 }
 
-/** Block-level tags whose boundaries become blank lines in a plain-text copy. */
-const BLOCKY_TAGS =
-  /^(?:P|DIV|LI|UL|OL|BLOCKQUOTE|H[1-6]|PRE|TABLE|TR|SECTION|ARTICLE|HEADER|FOOTER|FIGURE|FIGCAPTION)$/;
-
-/**
- * text/plain for a copied fragment. Taken from the cloned nodes rather than
- * Selection.toString(): Firefox's toString() folds NBSP to a plain space,
- * which would drop the very author NBSPs the cleanup guard exists to
- * preserve.
- */
-function plainTextOf(node: Node): string {
-  if (node.nodeType === Node.TEXT_NODE) return node.nodeValue ?? "";
-  let out = "";
-  for (let c = node.firstChild; c !== null; c = c.nextSibling) out += plainTextOf(c);
-  if (node.nodeType === Node.ELEMENT_NODE) {
-    const tag = (node as Element).tagName;
-    if (tag === "BR") out += "\n";
-    else if (BLOCKY_TAGS.test(tag)) out += "\n\n";
-  }
-  return out;
-}
-
-/** Text nodes that contribute at least one character to a live selection
- * range, in document order. Empty endpoint slices are deliberately omitted:
- * the first non-empty node is the one that determines whether a copied
- * fragment starts with a layout-only joint, even when the range starts at the
- * end of the preceding text node. */
-function nonEmptyTextNodesInRange(range: Range): Text[] {
-  const root = range.commonAncestorContainer;
-  const out: Text[] = [];
-  const visit = (node: Node): void => {
-    if (node.nodeType !== Node.TEXT_NODE) return;
-    const text = node as Text;
-    if (!range.intersectsNode(text)) return;
-    const start = text === range.startContainer ? range.startOffset : 0;
-    const end = text === range.endContainer ? range.endOffset : text.data.length;
-    if (start < end) out.push(text);
-  };
-  if (root.nodeType === Node.TEXT_NODE) visit(root);
-  else {
-    const walker = root.ownerDocument!.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-      visit(node);
-    }
-  }
-  return out;
-}
-
-/** The only ordinary whitespace text node the enhanced DOM emits outside a
- * `.justif-seg`: the literal space that carries a real soft-wrap joint.
- * Author whitespace is inside a segment, so this remains safe even when a
- * selection crosses non-enhanced content before or after a managed paragraph.
- */
-function isJustifBoundaryJoint(node: Text): boolean {
-  const parent = node.parentElement;
-  return (
-    node.data === " " &&
-    parent !== null &&
-    parent.closest(".justif-seg") === null &&
-    parent.closest("[data-justif]") !== null
-  );
-}
-
-/** Clone-side counterpart to isJustifBoundaryJoint(). The cloned fragment no
- * longer has the enhanced paragraph ancestor, so only its segment boundary
- * shape can be checked there; the live-node check already established the
- * paragraph provenance. */
-function isClonedBoundaryJoint(node: Text): boolean {
-  const parent = node.parentElement;
-  return node.data === " " && (parent === null || parent.closest(".justif-seg") === null);
-}
-
-/** Remove leading/trailing layout-only joints from one copied range. The live
- * range identifies the first and last included text nodes before cloning;
- * cloneContents() may add empty endpoint text clones, so the corresponding
- * clone is found by its first/last NON-EMPTY text position instead. */
-function removeCopiedBoundaryJoints(range: Range, fragment: DocumentFragment): void {
-  const included = nonEmptyTextNodesInRange(range);
-  if (included.length === 0) return;
-  const trimLeading = isJustifBoundaryJoint(included[0]!);
-  const trimTrailing = isJustifBoundaryJoint(included[included.length - 1]!);
-  if (!trimLeading && !trimTrailing) return;
-
-  const cloned = nonEmptyTextNodesInRange(
-    // A detached fragment is not a live selection range, so collect its text
-    // nodes directly rather than reusing the range helper above.
-    (() => {
-      const cloneRange = fragment.ownerDocument!.createRange();
-      cloneRange.selectNodeContents(fragment);
-      return cloneRange;
-    })(),
-  );
-  const remove = new Set<Text>();
-  const first = cloned[0];
-  const last = cloned[cloned.length - 1];
-  if (trimLeading && first !== undefined && isClonedBoundaryJoint(first)) {
-    remove.add(first);
-  }
-  if (trimTrailing && last !== undefined && isClonedBoundaryJoint(last)) {
-    remove.add(last);
-  }
-  for (const node of remove) node.remove();
-}
-
-/** One entry per ctx font the content needs. `sample` holds every distinct
- * code point set in that font — faces are matched by unicode-range against
- * concrete text, so both the load() await and the change probe must carry the
- * scripts the content really uses (document.fonts.load() defaults to U+0020; a
- * fixed Latin sentinel is blind to a Greek/CJK/symbol subset face).
- * `kernSample` is a slice of RAW run text: real letter sequences, so a face
- * that differs from its fallback only in kerning/shaping of adjacent pairs —
- * metric-clone families, size-adjust-tuned fallbacks — still moves a probe
- * even when per-glyph advances match. Baselines are the advances as of the
- * last commit/re-measure. */
-interface FontProbe {
-  font: string;
-  sample: string;
-  kernSample: string;
-  baseline: number;
-  kernBaseline: number;
-}
-
-const KERN_SAMPLE_MAX = 256;
-
-/**
- * Per-font samples: every DISTINCT code point the content sets in that font,
- * spaces included (they size the glue), plus a raw-text kerning slice. No
- * injected seed — foreign-script filler would force unrelated subset faces to
- * download — and no cap on the code points: discarding later ones would blind
- * both the load() await and the change probe to exactly the scripts it dropped
- * (CJK documents, aggressively partitioned unicode-range families).
- * Distinctness bounds the sample; probeAdvance measures in chunks, so cost
- * stays flat even for ideographic content.
- */
-function collectFontProbes(
-  scans: readonly ParagraphScan[],
-  hyphenating: boolean,
-): FontProbe[] {
-  const fontSample = new Map<
-    string,
-    { chars: Set<string>; ascii: Uint8Array; kern: string }
-  >();
-  for (const scan of scans) {
-    for (const spec of scan.specs) {
-      const font = ctxFontOf(spec);
-      if (!fontSample.has(font)) {
-        fontSample.set(font, { chars: new Set(), ascii: new Uint8Array(128), kern: "" });
-      }
-    }
-    for (const run of scan.runs) {
-      const s = fontSample.get(ctxFontOf(scan.specs[run.spec]!))!;
-      // ASCII — nearly every code unit of a Latin document — is screened by a
-      // flat table first: this walk covers every character of every run, and
-      // hashing the same 70-odd strings into a Set was most of its cost.
-      const text = run.text;
-      for (let i = 0; i < text.length; i++) {
-        const code = text.charCodeAt(i);
-        if (code < 128) {
-          if (s.ascii[code] === 1) continue;
-          s.ascii[code] = 1;
-          s.chars.add(text[i]!);
-        } else {
-          // Non-ASCII: take the whole code point, so a surrogate pair enters
-          // the set as one character exactly as the string iterator gave it.
-          const cp = String.fromCodePoint(text.codePointAt(i)!);
-          s.chars.add(cp);
-          i += cp.length - 1;
-        }
-      }
-      if (s.kern.length < KERN_SAMPLE_MAX) {
-        s.kern += run.text.slice(0, KERN_SAMPLE_MAX - s.kern.length);
-      }
-      // Hyphenatable content renders a "-" the runs may not contain (the
-      // break glyph is measured per spec and painted via ::after) — a face
-      // serving U+002D must be awaited and watched too.
-      if (hyphenating || run.text.includes("\u00AD")) s.chars.add("-");
-    }
-  }
-  // A font no run draws from (a base spec whose text all sits in inline
-  // children) still sizes the paragraph's word spaces — its space glyph is
-  // the one piece of it the layout consumes.
-  return [...fontSample].map(([font, s]) => ({
-    font,
-    sample: s.chars.size === 0 ? " " : [...s.chars].join(""),
-    kernSample: s.kern,
-    baseline: 0,
-    kernBaseline: 0,
-  }));
-}
-
-/**
- * Clipboard cleanup is a DOCUMENT-level concern, so all controllers share one
- * listener: registering per controller meant a page that re-justifies without
- * destroying accumulated handlers, each one cloning the whole selection on
- * every copy, and whichever ran last decided the NBSP question for everyone —
- * so an author NBSP in one controller's paragraph could be normalized away by
- * another's handler. One listener, unioning every participant, removes both.
- */
-interface ClipboardParticipant {
-  /** Enhanced paragraphs this controller owns, with their scans. */
-  enhanced(): Iterable<readonly [HTMLElement, ParagraphScan]>;
-}
-
-const clipboardParticipants = new Set<ClipboardParticipant>();
-
-const onDocumentCopy = (e: ClipboardEvent): void => {
-  if (e.clipboardData === null) return;
-  const sel = document.getSelection();
-  if (sel === null || sel.rangeCount === 0 || sel.isCollapsed) return;
-  let touches = false;
-  let authorNbsp = false;
-  for (const participant of clipboardParticipants) {
-    for (const [p, scan] of participant.enhanced()) {
-      if (!sel.containsNode(p, true)) continue;
-      touches = true;
-      if (scan.authorHasNbsp) authorNbsp = true;
-    }
-  }
-  if (!touches) return;
-
-  const clean = (v: string): string => {
-    const noWj = v.replace(/\u2060/g, "");
-    return authorNbsp ? noWj : noWj.replace(/\u00A0/g, " ");
-  };
-  const html = document.createElement("div");
-  let plain = "";
-  for (let i = 0; i < sel.rangeCount; i++) {
-    const range = sel.getRangeAt(i);
-    const frag = range.cloneContents();
-    removeCopiedBoundaryJoints(range, frag);
-    const walker = document.createTreeWalker(frag, NodeFilter.SHOW_TEXT);
-    for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
-      n.nodeValue = clean(n.nodeValue ?? "");
-    }
-    plain += plainTextOf(frag);
-    html.append(frag);
-  }
-  e.clipboardData.setData("text/plain", plain.replace(/\n+$/, ""));
-  e.clipboardData.setData("text/html", html.innerHTML);
-  e.preventDefault();
-};
-
-/** Join the shared copy handler; returns the leave function. The document
- * listener exists only while at least one controller wants cleanup. */
-function joinClipboardCleanup(participant: ClipboardParticipant): () => void {
-  if (clipboardParticipants.size === 0) {
-    document.addEventListener("copy", onDocumentCopy);
-  }
-  clipboardParticipants.add(participant);
-  return () => {
-    if (!clipboardParticipants.delete(participant)) return;
-    if (clipboardParticipants.size === 0) {
-      document.removeEventListener("copy", onDocumentCopy);
-    }
-  };
-}
-
 export function justify(
   targets: Element | Iterable<Element>,
   options: JustifyOptions = {},
@@ -1297,18 +1045,6 @@ export function justify(
    * settled-font metrics that a future controller may safely reuse. */
   let fontsConverged = false;
 
-  const reprobeBaselines = (): void => {
-    for (const f of fontProbes) {
-      f.baseline = probeAdvance(f.font, f.sample);
-      f.kernBaseline = probeAdvance(f.font, f.kernSample);
-    }
-  };
-  const probesChanged = (): boolean =>
-    fontProbes.some(
-      (f) =>
-        Math.abs(probeAdvance(f.font, f.sample) - f.baseline) > 0.01 ||
-        Math.abs(probeAdvance(f.font, f.kernSample) - f.kernBaseline) > 0.01,
-    );
 
   const refreshFloatIntrusions = (): boolean => {
     let changed = false;
@@ -1400,7 +1136,7 @@ export function justify(
       // webfont arrived describes the fallback's letterforms.
       clearOpticalCache();
       clearComposedProtrusionCache();
-      reprobeBaselines();
+      reprobeBaselines(fontProbes);
     }
     const mine = paragraphs.filter((p) => ownedState(p) !== undefined);
     // All width reads first, then all patches, then one correction flush —
@@ -1518,7 +1254,7 @@ export function justify(
   };
 
   const onFontsLoaded = (): void => {
-    const metricsChanged = probesChanged();
+    const metricsChanged = probesChanged(fontProbes);
     const floatChanged = metricsChanged
       ? refreshNativeFloatIntrusions()
       : refreshFloatIntrusions();
@@ -1659,7 +1395,7 @@ export function justify(
   let ready: Promise<void>;
   try {
     adopt(paragraphs);
-    reprobeBaselines();
+    reprobeBaselines(fontProbes);
     attachObservers();
     // `ready` keeps its contract — it resolves only once the needed faces
     // settled (loaded or failed) and the layout converged on them. The
@@ -1773,7 +1509,7 @@ export function justify(
         drain.observe(p);
       }
     }
-  reprobeBaselines();
+  reprobeBaselines(fontProbes);
   return stale;
   };
 
