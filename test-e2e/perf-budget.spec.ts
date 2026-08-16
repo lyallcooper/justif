@@ -60,25 +60,18 @@ test("the drop-in stays within its size budget", async ({ page }) => {
   // Logged, because the number is the interesting part when this fails.
   console.log(`dist/auto.js ${size.auto.raw} bytes, ${size.auto.gzip} gzipped`);
   console.log(`dist/index.js ${size.index.raw} bytes, ${size.index.gzip} gzipped`);
-  // SLACK, deliberately, for the run of structural extractions in progress:
-  // each named host interface costs real bytes in documentation, and a budget
-  // that has to be nudged in every other commit stops being a signal. These go
-  // back to measured-plus-headroom once that work settles. Until then they
-  // still do the job that matters most — an accidental dependency in the
-  // bundle is tens of kilobytes, not hundreds, and would blow straight
-  // through them.
-  //
   // The drop-in is fetched from a CDN before first paint, so its weight is a
-  // feature.
-  expect(size.auto.raw, "dist/auto.js bytes").toBeLessThan(160_000);
-  if (size.auto.gzip > 0) expect(size.auto.gzip, "dist/auto.js gzipped").toBeLessThan(60_000);
+  // feature. Keep modest headroom over what it measures today: a dependency
+  // landing in the bundle by accident is tens of kilobytes, not hundreds.
+  expect(size.auto.raw, "dist/auto.js bytes").toBeLessThan(151_000);
+  if (size.auto.gzip > 0) expect(size.auto.gzip, "dist/auto.js gzipped").toBeLessThan(58_000);
   // The API build ships unminified, so its raw size answers to comment and
   // formatting changes as much as to code and is the looser of its two
   // budgets; the gzipped figure is what an application actually fetches. Both
   // are kept, so an accidental dependency is caught even where the server
   // reports no compressed size.
-  expect(size.index.raw, "dist/index.js bytes").toBeLessThan(185_000);
-  if (size.index.gzip > 0) expect(size.index.gzip, "dist/index.js gzipped").toBeLessThan(46_000);
+  expect(size.index.raw, "dist/index.js bytes").toBeLessThan(175_000);
+  if (size.index.gzip > 0) expect(size.index.gzip, "dist/index.js gzipped").toBeLessThan(44_000);
 });
 
 test("a re-read rebuilds only what changed", async ({ page }) => {
