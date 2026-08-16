@@ -46,7 +46,31 @@ import {
   requiresDomMeasurement,
   supportsSpec,
 } from "./dom/measure.js";
+import {
+  createCorrectionPass,
+  type NoteRelayout,
+  type PatchEntry,
+  type PatchOutcome,
+} from "./dom/corrections.js";
 import { createWidthObserver, type WidthObserver } from "./dom/observe.js";
+import {
+  applyNativeHang,
+  authorRewroteStyleAttribute,
+  clearNativeHang,
+  firstLineIndentPx,
+  maskAuthorStyle,
+  maskAuthorStyles,
+  nativeHangIndent,
+  NO_TRANSITION_CLASS,
+  type ParaPart,
+  type ParaState,
+  restoreManagedOutput,
+  restoreStyleAttribute,
+  states,
+  unmaskAuthorStyle,
+  withInlineSizeContainment,
+} from "./dom/paragraph-state.js";
+
 import {
   beginScanBatch,
   contentWidthOf,
@@ -389,339 +413,8 @@ export interface JustifyController {
   readonly managed: readonly HTMLElement[];
 }
 
-interface ParaPart {
-  para: ParagraphItems;
-  breakAfter: HardBreak | null;
-}
 
-/** One property justif has written over, with what the author had there. */
-interface MaskedDeclaration {
-  property: string;
-  /**
-   * Does the style key read this property? Only those have to be lifted to
-   * compare against the author's value, and lifting is not free: writing
-   * `text-align` or the autosizing opt-out back and forth dirties layout, so a
-   * check that lifted everything cost a forced layout and ~10ms per 400
-   * paragraphs where the reads alone cost 0.3ms.
-   */
-  inKey: boolean;
-  /** The value justif wrote, so a later author write can be recognized: if the
-   * property no longer holds this, the author has taken it back and there is
-   * nothing left to lift. */
-  ours: string;
-  /** Priority justif wrote it with — "important" for the autosizing opt-out,
-   * whose whole point is that no author rule may override it after
-   * measurement. Putting it back without this would quietly demote it. */
-  oursPriority: string;
-  /** The author's own inline declaration, "" when they had none. */
-  author: string;
-  authorPriority: string;
-}
-
-interface ParaState {
-  /** The controller that owns this enhancement (guards zombie observers). */
-  owner: symbol;
-  original: DocumentFragment;
-  originalStyleAttr: string | null;
-  scan: ParagraphScan;
-  runsMetrics: RunMetrics[];
-  specByKey: Map<string, FontSpec>;
-  parts: ParaPart[];
-  width: number;
-  /** Fingerprint of the last patch, to skip no-op re-renders. */
-  lastPatch: string;
-  enhanced: boolean;
-  /** Live clone of an authored leading float while enhanced. */
-  renderedFloat: Element | null;
-  /** The `text-indent` px value written while this paragraph sets natively on
-   * one line (author indent minus its line-start hang); null when none is
-   * applied. Stored as WRITTEN, so a percentage indent re-resolving across a
-   * resize is caught even though the hang itself is unchanged. */
-  nativeIndent: number | null;
-  /** Last inline size the ResizeObserver reported for this paragraph, so a
-   * notification carrying no inline-size change costs nothing to dismiss.
-   * Untransformed CSS pixels: only ever compared with its own previous value,
-   * never with a measure (see `contentWidthOf`). */
-  observedInline?: number;
-  /**
-   * Inline declarations of justif's that sit on a property `rescan()`'s
-   * comparison reads—`hyphens`, a one-line hang's `text-indent`, and an
-   * intrinsic-size repair's `min-width` or `contain`. An inline declaration outranks the
-   * author's stylesheet, so the author's current value is invisible until each
-   * of these is lifted (`authorStyleKeys`).
-   */
-  masked: MaskedDeclaration[];
-}
-
-/** Enhancement state is shared so unjustify() works from anywhere; each
- * state carries the owner of the controller that created it. */
-const states = new WeakMap<HTMLElement, ParaState>();
-
-/** Restore an inline style attribute exactly after CSSOM writes. Chromium can
- * rematerialize `style=""` when an element whose CSSStyleDeclaration handled
- * text-size-adjust is later cloned, even after removeAttribute(). Resetting
- * the attribute first severs that stale declaration before removal. */
-function restoreStyleAttribute(el: HTMLElement, style: string | null): void {
-  if (style === null) {
-    el.setAttribute("style", "");
-    el.removeAttribute("style");
-  } else {
-    el.setAttribute("style", style);
-  }
-}
-
-/**
- * Of the declarations the enhancement writes, the ones `paragraphStyleKey` and
- * `styleKeyNow` read — so the ones whose author value has to be uncovered before
- * a comparison means anything. Everything else justif writes is invisible to the
- * key, and lifting it would be pure cost.
- *
- * `text-size-adjust` is deliberately NOT here even though it can move a computed
- * `font-size` on engines that autosize text: it is written on every enhanced
- * paragraph and read back on every check, so both sides of the comparison see it
- * consistently, and lifting it would both dirty layout and make the two sides
- * disagree.
- */
-const KEY_PROPERTIES = new Set([
-  "hyphens",
-  "-webkit-hyphens",
-  "text-indent",
-  "min-width",
-  "contain",
-]);
-
-/** Selects the rule in justif's stylesheet that turns transitions off for the
- * duration of a re-read (see `suppressTransitions`). */
-const NO_TRANSITION_CLASS = "justif-no-transition";
-
-/**
- * Write an inline declaration that covers an author value `rescan()` reads,
- * remembering what was underneath. Re-writing a property justif already owns
- * (a one-line hang whose indent changed) updates what to recognize later,
- * without forgetting the author's original.
- */
-function maskAuthorStyle(
-  p: HTMLElement,
-  state: ParaState,
-  property: string,
-  value: string,
-  priority = "",
-): void {
-  maskAuthorStyles(p, state, [[property, value]], priority);
-}
-
-/**
- * The same, for declarations that have to be recorded as a GROUP: every author
- * value is read before any of them is written.
- *
- * That ordering is the whole point where two of the properties are one property.
- * `-webkit-hyphens` and `hyphens` are aliases, so masking them one after the other
- * reads the first write back as the author's own value for the second — and the
- * comparison then puts justif's value back as though the author had asked for it,
- * leaving native hyphenation on and the paragraph unable to notice its own state.
- */
-function maskAuthorStyles(
-  p: HTMLElement,
-  state: ParaState,
-  declarations: ReadonlyArray<readonly [property: string, value: string]>,
-  priority = "",
-): void {
-  const authored = declarations.map(([property]) => ({
-    author: p.style.getPropertyValue(property),
-    authorPriority: p.style.getPropertyPriority(property),
-  }));
-  for (const [index, [property, value]] of declarations.entries()) {
-    const existing = state.masked.find((mask) => mask.property === property);
-    if (existing === undefined) {
-      state.masked.push({
-        property,
-        inKey: KEY_PROPERTIES.has(property),
-        ours: value,
-        oursPriority: priority,
-        ...authored[index]!,
-      });
-    } else {
-      existing.ours = value;
-      existing.oursPriority = priority;
-    }
-    p.style.setProperty(property, value, priority);
-  }
-}
-
-/**
- * Has the author written to this paragraph's style attribute since justif saved a
- * copy of it? Asked once justif's own declarations are off, and compared as
- * SERIALIZATIONS: the saved copy is the author's original text, which need not
- * equal its own round trip, so comparing it to the live attribute directly would
- * call every paragraph edited.
- */
-function authorRewroteStyleAttribute(p: HTMLElement, saved: string | null): boolean {
-  const probe = p.ownerDocument.createElement("span");
-  if (saved !== null) probe.setAttribute("style", saved);
-  return declarationSet(probe.style) !== declarationSet(p.style);
-}
-
-/**
- * A style attribute's declarations as one order-independent string.
- *
- * Not its serialization: re-setting a property moves it to the end of the list, so
- * taking justif's declarations off — which puts an author value back where there
- * was one — reorders what it touched, and comparing text would then report every
- * such paragraph as rewritten.
- */
-function declarationSet(style: CSSStyleDeclaration): string {
-  const declarations: string[] = [];
-  for (let index = 0; index < style.length; index++) {
-    const property = style.item(index);
-    declarations.push(
-      `${property}:${style.getPropertyValue(property)}:${style.getPropertyPriority(property)}`,
-    );
-  }
-  return declarations.sort().join(";");
-}
-
-/**
- * Undo justif's own inline declarations, one property at a time, leaving every
- * other declaration exactly as it stands — including any the author has written
- * since the enhancement landed. When `property` is provided, remove only that
- * temporary probe and retain ownership records for every other declaration.
- *
- * The alternative, restoring the whole style attribute from the saved copy, is
- * what `destroy()` wants (byte-for-byte, so a fallback declaration pair or a
- * property the engine does not parse survives) but not what a re-read wants: it
- * would revert an author's later inline edit rather than honour it.
- */
-function unmaskAuthorStyle(p: HTMLElement, state: ParaState, property?: string): void {
-  const kept: MaskedDeclaration[] = [];
-  for (const mask of state.masked) {
-    if (property && mask.property !== property) {
-      kept.push(mask);
-      continue;
-    }
-    // Already the author's again: they have written this property since, so
-    // there is nothing of ours here to take back.
-    if (p.style.getPropertyValue(mask.property) !== mask.ours) continue;
-    if (mask.author === "") p.style.removeProperty(mask.property);
-    else p.style.setProperty(mask.property, mask.author, mask.authorPriority);
-  }
-  state.masked = kept;
-}
-
-/** The author's own first-line indent in px. Percentage indents resolve
- * against the LIVE width (a scan-time resolution goes stale across
- * resizes). */
-function firstLineIndentPx(state: ParaState): number {
-  return state.scan.textIndentPct !== null
-    ? state.scan.textIndentPct * state.width
-    : state.scan.textIndent;
-}
-
-/** Forget a native one-line hang. Undoing the declarations themselves is the
- * caller's, by whichever route it restores author styling. */
-function forgetNativeHang(state: ParaState): boolean {
-  if (state.nativeIndent === null) return false;
-  state.nativeIndent = null;
-  return true;
-}
-
-/** Drop the inline `text-indent` hang written for a native one-line
- * paragraph, restoring the author's style attribute byte-for-byte. Only ever
- * applied while `enhanced` is false, so this restoration cannot clobber the
- * enhancement's own declarations — promotion clears it first. */
-function clearNativeHang(p: HTMLElement, state: ParaState): boolean {
-  if (!forgetNativeHang(state)) return false;
-  state.masked = [];
-  restoreStyleAttribute(p, state.originalStyleAttr);
-  return true;
-}
-
-/**
- * Hanging punctuation for a paragraph left in native rendering: its opening
- * mark still owes the margin its hang — a paragraph whose opener sits flush
- * beside neighbours whose openers hang reads as a ragged left edge (issue
- * #14) — and a negative `text-indent` buys exactly that without the DOM
- * rewrite the one-line fast path exists to avoid. `text-indent` is line-START
- * relative, hanging into the right margin in an RTL paragraph, and it must
- * carry the author's own first-line indent because an inline declaration
- * replaces it. The same computed hang is used by the enhanced path.
- */
-function nativeHangIndent(state: ParaState, hangPx: number): number | null {
-  // This hang costs an inline style on the author's own element, so it has to
-  // earn it: measured protrusion gives most letters a fraction of a pixel, which
-  // no reader can see at a line start but which would rewrite the style
-  // attribute of every short paragraph on the page. It applies to fallback
-  // values too, where it drops the 50‰ letters (an 'A' at 16px is ~0.55px):
-  // the threshold is about what a reader can see, not where the number came
-  // from.
-  if (hangPx < state.scan.specs[state.scan.baseSpec]!.sizePx * 0.04) {
-    return null;
-  }
-  return Number((firstLineIndentPx(state) - hangPx).toFixed(3));
-}
-
-function applyNativeHang(
-  p: HTMLElement,
-  state: ParaState,
-  indent: number | null,
-): boolean {
-  if (indent === null) return clearNativeHang(p, state);
-  if (indent === state.nativeIndent) return false;
-  state.nativeIndent = indent;
-  maskAuthorStyle(p, state, "text-indent", `${indent}px`);
-  // Neutralized for the same reason as in beginEnhancement: a CSS
-  // hanging-punctuation hang would compound with this one.
-  maskAuthorStyle(p, state, "hanging-punctuation", "none");
-  return true;
-}
-
-/** Add inline-axis size containment without discarding any containment the
- * author already requested. The shorthand aliases cannot be combined with
- * other values, so expand `content` before adding the missing component. */
-function withInlineSizeContainment(authorContain: string): string {
-  if (authorContain === "strict" || authorContain.includes("size")) return authorContain;
-  if (authorContain === "content") return "inline-size layout style paint";
-  return !authorContain || authorContain === "none"
-    ? "inline-size"
-    : `${authorContain} inline-size`;
-}
-
-/** Put a managed paragraph back into its exact author DOM without releasing
- * its measurements or controller ownership. A one-line paragraph uses this
- * native state while ResizeObserver keeps watching for a narrower measure
- * that makes total-fit line breaking useful again. */
-function restoreManagedOutput(
-  p: HTMLElement,
-  state: ParaState,
-  /**
-   * How to give the author their inline styling back. "restore" puts the saved
-   * attribute back verbatim, which is what teardown wants: byte-for-byte, so a
-   * fallback declaration pair or a property this engine does not parse survives.
-   * "keep" leaves the live attribute alone, for a caller that has already taken
-   * justif's own declarations off it one property at a time
-   * (`unmaskAuthorStyle`) — a re-read, which must not revert an author's later
-   * inline edit along with them.
-   */
-  styleAttribute: "restore" | "keep" = "restore",
-): boolean {
-  // The native one-line hang is the one inline declaration justif writes
-  // WITHOUT enhancing, so it has to be undone before that early return —
-  // otherwise destroy(), unjustify() and a bail would all leak it.
-  const clearedHang =
-    styleAttribute === "restore" ? clearNativeHang(p, state) : forgetNativeHang(state);
-  if (!state.enhanced) return clearedHang;
-  p.replaceChildren(state.original);
-  if (styleAttribute === "restore") {
-    restoreStyleAttribute(p, state.originalStyleAttr);
-    // The author's style attribute is back, so nothing of justif's covers it.
-    state.masked = [];
-  }
-  p.removeAttribute("data-justif");
-  p.removeAttribute("data-justif-dropcap");
-  state.lastPatch = "";
-  state.enhanced = false;
-  state.renderedFloat = null;
-  return true;
-}
+// Paragraph state and author-style masking: ./dom/paragraph-state.js.
 
 const DEFAULT_EXPANSION: ExpansionOptions = { max: 0.02, shrink: 0.02, step: 0.005 };
 const DEFAULT_SPACING = { stretch: 0.5, shrink: 1 / 3, pull: 0.7, boundaryShrink: 0 };
@@ -1949,360 +1642,6 @@ export function justify(
     };
   };
 
-  interface PatchEntry {
-    p: HTMLElement;
-    pending: PendingParagraph;
-    /** How far this paragraph has got with the intrinsic-size repair during
-     * THIS flush: "live" while one is installed on trial, "cleared" once it
-     * proved not to be the cause and was taken back off. Absent on a paragraph
-     * repaired by an earlier flush — that one is simply author styling as far
-     * as this flush is concerned. */
-    guard?: "live" | "cleared";
-    /** Which property the live repair wrote, so it can be taken back off. */
-    guardProperty?: string;
-  }
-
-  /**
-   * Width-negotiation passes a batch may spend before a paragraph that still
-   * disagrees with its own measure is handed back to the engine. Three cover
-   * the longest sequence one paragraph can legitimately need — install the
-   * guard, take it off again, break at the external measure — and the rest is
-   * headroom for a cascade, where each paragraph's guard resizes the next and
-   * every link costs a further pass.
-   */
-  const SETTLE_PASSES = 5;
-
-  /** Where a correction pass announces a paragraph whose rendering it changed;
-   * `flushPatches` supplies one that respects its caller's own batching. */
-  type NoteRelayout = (p: HTMLElement) => void;
-
-  /** Hand one entry of a correction batch back to the engine for good. */
-  const rejectPatch = (entry: PatchEntry, reason: string, note: NoteRelayout): void => {
-    if (ownedState(entry.p) === undefined) return;
-    dropQueued(entry.p);
-    if (bailToNative(entry.p, reason)) note(entry.p);
-  };
-
-  /**
-   * One read pass + one write pass for a batch of patched paragraphs.
-   * Paragraphs whose content is layout-skipped (`content-visibility: auto`
-   * off-screen) cannot be measured; their corrections are parked in
-   * `hiddenCorrections` and retried when the IntersectionObserver reports
-   * them near the viewport. Until then the provisional wrap-safety pad
-   * keeps their lines from re-wrapping.
-   *
-   * A paragraph whose own measure moved under the patch is negotiated first
-   * (`settleWidth`) and the whole batch re-read, since one paragraph's repair
-   * can resize a shared ancestor.
-   */
-  const flushPatches = (
-    batch: readonly PatchEntry[],
-    /** A caller that is already collecting relayout notifications for this
-     * turn. Paragraphs re-broken or given back here join that set instead of
-     * notifying immediately, so one paragraph is never announced twice. */
-    changed?: Set<HTMLElement>,
-  ): void => {
-    if (batch.length === 0) return;
-    const noteRelayout = (p: HTMLElement): void => {
-      if (changed === undefined) emitRelayout(p);
-      else changed.add(p);
-    };
-    // IntersectionObserver cannot populate nearViewport synchronously. Until
-    // its first report, classify this batch directly so visible corrections
-    // land in the same task as their initial patch.
-    if (viewObserver !== null && !viewObserverReady) seedNearViewport(batch);
-    let active = batch.filter((entry) => entry.p.isConnected);
-    // Terminates on the filter below: past SETTLE_PASSES a mismatch is left
-    // alone rather than negotiated, so a further pass can only be triggered by
-    // an invalid or disowned paragraph — and both leave `active`, making each
-    // such pass strictly shorter than the last.
-    for (let pass = 0; active.length > 0; pass++) {
-      // Only paragraphs near the viewport get line-by-line correction: the
-      // rects of a content-visibility-skipped paragraph read as zeros but
-      // still cost ~0.1ms each in WebKit, which at hundreds of off-screen
-      // paragraphs would dominate the drain. Far paragraphs are parked after
-      // the one paragraph-level read their own measure needs, and the viewport
-      // observers promote them on approach. Without an IntersectionObserver
-      // everything is corrected directly.
-      const detailed = active.map(
-        (entry) => viewObserver === null || nearViewport.has(entry.p),
-      );
-      let outcomes: ParagraphOutcome[];
-      try {
-        outcomes = measureCorrections(
-          active.map((entry) => entry.pending),
-          detailed,
-        );
-      } catch (error) {
-        // A paragraph that cannot be measured reports that as its own outcome.
-        // Reaching here means the read pass itself could not run, so nothing
-        // in this batch has a trustworthy measure and native rendering is the
-        // only state that cannot strand a provisional margin or stale float
-        // geometry.
-        console.error("justif: correction measurement threw", error);
-        const reason = `correction measurement failed: ${describeError(error)}`;
-        for (const entry of active) rejectPatch(entry, reason, noteRelayout);
-        return;
-      }
-      // A repair or a re-break can resize a shared Grid/Flex ancestor, so any
-      // write means every correction read in this layout describes a layout
-      // that no longer exists: collect them, and discard the lot if anything
-      // was written.
-      let wrote = false;
-      const corrections: Correction[] = [];
-      const park: PatchEntry[] = [];
-      const measured: PatchEntry[] = [];
-      for (let i = 0; i < active.length; i++) {
-        const entry = active[i]!;
-        const outcome = outcomes[i]!;
-        switch (outcome.status) {
-          case "stale":
-            break;
-          case "hidden":
-            park.push(entry);
-            break;
-          case "corrected":
-            corrections.push(...outcome.corrections);
-            measured.push(entry);
-            break;
-          case "invalid":
-            rejectPatch(entry, outcome.reason, noteRelayout);
-            wrote = true;
-            break;
-          case "collapsed":
-            wrote = true;
-            if (entry.guard === "live") {
-              // Justif's own repair took the paragraph's width to nothing —
-              // what inline-size containment does to an ancestor that is sized
-              // FROM the paragraph rather than merely floored by it. Undo it
-              // and read again.
-              revertGuard(entry);
-            } else {
-              rejectPatch(entry, "content width collapsed to zero", noteRelayout);
-            }
-            break;
-          case "resized": {
-            const state = ownedState(entry.p);
-            if (state === undefined) {
-              // Not ours any more; the filter below drops it.
-              wrote = true;
-              break;
-            }
-            if (pass >= SETTLE_PASSES) {
-              // Out of settling budget: something outside this paragraph keeps
-              // moving its measure, and no repair available here reaches it.
-              // Leave it enhanced at the measure it last broke to, with its
-              // provisional wrap-safety pad standing — loose, but justified and
-              // laid out — rather than hand a page of prose back to the engine
-              // because one ancestor will not hold still.
-              break;
-            }
-            wrote = true;
-            settleWidth(
-              entry,
-              state,
-              outcome.width,
-              outcome.minWidth,
-              outcome.contain,
-              noteRelayout,
-            );
-            break;
-          }
-        }
-      }
-      if (wrote) {
-        active = active.filter(
-          (entry) => entry.p.isConnected && ownedState(entry.p)?.enhanced === true,
-        );
-        continue;
-      }
-      // Isolated separately from the read pass: a throw here has already
-      // applied part of the batch, and the degraded state — every line keeping
-      // its provisional wrap-safety pad, loose but laid out — is better than
-      // reverting paragraphs that measured cleanly.
-      try {
-        applyCorrections(corrections);
-        for (const entry of park) hiddenCorrections.set(entry.p, entry.pending);
-        verifyElementFloats(measured);
-      } catch (error) {
-        console.error("justif: correction write threw", error);
-      }
-      return;
-    }
-  };
-
-  /**
-   * The repair for a paragraph whose generated lines have pushed it wider,
-   * chosen from what the paragraph's own computed style says about WHERE that
-   * growth escaped to. Returns null when neither repair is available.
-   */
-  const intrinsicRepair = (
-    minWidth: string,
-    contain: string,
-  ): { property: string; value: string } | null => {
-    // `auto` computes only on a flex or grid item, and only there does a box
-    // have an automatic minimum size — which IS its min-content contribution.
-    // The paragraph's own track is what grew, so drop that floor and nothing
-    // else: the max-content contribution, and so the track's own result, stays
-    // exactly what it was before the patch.
-    if (minWidth === "auto") return { property: "min-width", value: "0px" };
-    // An ordinary block has no automatic minimum to drop; its contribution has
-    // travelled up to whichever ancestor IS an item, and nothing writable on
-    // the paragraph reaches that ancestor's minimum. So stop the contribution
-    // at its source instead. This is the blunter instrument — it suppresses the
-    // max-content contribution too, which collapses an ancestor sized FROM the
-    // paragraph — so the result is read back and reverted if it did harm.
-    const guarded = withInlineSizeContainment(contain);
-    return guarded === contain ? null : { property: "contain", value: guarded };
-  };
-
-  /** Take a trial repair back off, leaving the author's own value behind. */
-  const revertGuard = (entry: PatchEntry): void => {
-    const state = ownedState(entry.p);
-    if (state !== undefined && entry.guardProperty !== undefined) {
-      unmaskAuthorStyle(entry.p, state, entry.guardProperty);
-    }
-    entry.guard = "cleared";
-  };
-
-  /**
-   * Reconcile one paragraph whose own measure moved between the patch that
-   * wrote its segments and the layout that read them back. Enhancement may
-   * change a paragraph's line breaks and height but never its own measure, so
-   * a mismatch has exactly two causes: justif's own generated lines pushing
-   * the paragraph wider, or a change from outside, which is simply the new
-   * measure to break at.
-   *
-   * The first has one mechanism. Every generated line is `white-space: nowrap`,
-   * which raises the paragraph's min-content contribution from its longest WORD
-   * to its longest LINE — measured in WebKit, 88px to 185px for an ordinary
-   * paragraph. A flex or grid item's automatic minimum size IS that
-   * contribution, so a track sized to its own content is floored open and the
-   * paragraph ends up wider than the author's layout asked for. Where the
-   * paragraph is not itself the item, the same contribution travels up to
-   * whichever ancestor is. `intrinsicRepair` answers both.
-   *
-   * One reading cannot tell the two causes apart, so a GROWN measure is
-   * probed: write the repair, and if the width does not come back it was never
-   * ours to fix. A SHRUNK measure is never probed — `nowrap` content can only
-   * ever RAISE an intrinsic contribution, so a narrower measure (a classic
-   * scrollbar appearing, a lazily loaded image, a font swap) is external by
-   * construction.
-   */
-  const settleWidth = (
-    entry: PatchEntry,
-    state: ParaState,
-    width: number,
-    minWidth: string,
-    contain: string,
-    note: NoteRelayout,
-  ): void => {
-    if (entry.guard === undefined) {
-      if (width > entry.pending.contentWidth) {
-        const repair = intrinsicRepair(minWidth, contain);
-        if (repair !== null) {
-          maskAuthorStyle(entry.p, state, repair.property, repair.value);
-          entry.guard = "live";
-          entry.guardProperty = repair.property;
-          return;
-        }
-      }
-    } else if (entry.guard === "live") {
-      // The repair is in force and the measure is still wrong, so justif's own
-      // content was not the cause (or an author `!important` outranks the
-      // declaration). Take it off and read again — removing it moves the width
-      // once more, so the break has to wait for that pass.
-      revertGuard(entry);
-      return;
-    }
-    // An external measure: no repair applied here, the trial has been cleared,
-    // or a shrink was never ours to begin with.
-    state.width = width;
-    state.lastPatch = "";
-    const outcome = safePatch(entry.p);
-    if (outcome.pending !== null) entry.pending = outcome.pending;
-    if (outcome.changed) note(entry.p);
-  };
-
-  /**
-   * Second look at an element float's intrusion, from the layout the patch
-   * just produced. The first reading after a width change is taken while the
-   * paragraph still holds the PREVIOUS break's segments; when those no longer
-   * fit beside the float the engine pushes them under it, and the tail rects
-   * then say the float overlaps a single line — an answer that would stick,
-   * since re-breaking to it changes the float's own box not at all.
-   *
-   * Measuring again here breaks that: this layout was built from the geometry
-   * it is being measured against, so a differing answer means the first
-   * reading was the stale one. The pair converges (the corrected break puts
-   * text beside the float, which measures back the same), and the equality
-   * test is what ends it.
-   */
-  const verifyElementFloats = (batch: readonly PatchEntry[]): void => {
-    let queued = false;
-    for (const { p } of batch) {
-      const state = ownedState(p);
-      const intrusion = state?.scan.floatIntrusion;
-      if (state === undefined || intrusion?.kind !== "element") continue;
-      // Unmeasurable is not a verdict: the paragraph keeps the geometry it
-      // has, exactly as the resize observer leaves an unrendered float alone.
-      if (refreshElementFloat(p, state, intrusion) !== "changed") continue;
-      pendingFloatRelayout.add(p);
-      queued = true;
-    }
-    if (queued) restartPendingOrder();
-  };
-
-  /** Sub-pixel noise in a live rect read must not count as a geometry
-   * change, or every remeasure would invalidate every float paragraph. */
-  const floatGeometryEquals = (
-    a: { inlineSize: number; lines: number },
-    b: { inlineSize: number; lines: number },
-  ): boolean => Math.abs(a.inlineSize - b.inlineSize) <= 0.05 && a.lines === b.lines;
-
-  /**
-   * The one second look at an element float's geometry, shared by every path
-   * that re-reads it (post-patch verification, remeasures, the float's own
-   * resize notifications): measure the rendered float, compare with the
-   * shared tolerance, and on a real change store the new intrusion and
-   * invalidate the paragraph's last patch so the next layout uses it.
-   *
-   * "unmeasurable" is deliberately not acted on here: the caller decides
-   * whether an unreadable float means "wait" (an unrendered float keeps the
-   * geometry on record) or "bail" (the resize observer, for a float that is
-   * painted yet cannot be read).
-   *
-   * "stale" protects the geometry on record from a layout that is no
-   * layout at all. Mid-drag, the segments on screen were built for a width
-   * the paragraph no longer has — the engine has already reflowed them, and
-   * commonly pushed the ones that no longer fit beside the float under it —
-   * so rects read now describe a rendering the model never chose. Writing
-   * an intrusion measured from one (observed count 0, the vertical
-   * prediction collapsed) is how a resize could leave a tall drop cap with
-   * one narrowed line and a paragraph-sized hole beside it.
-   */
-  const refreshElementFloat = (
-    p: HTMLElement,
-    state: ParaState,
-    intrusion: ElementFloatIntrusion,
-    source?: Element,
-  ): "unchanged" | "changed" | "unmeasurable" | "stale" => {
-    if (pendingWidths.has(p)) return "stale";
-    const widthNow = contentWidthOf(p);
-    if (typeof widthNow !== "number" || Math.abs(widthNow - state.width) > 0.05) {
-      return "stale";
-    }
-    const next = renderedElementFloatIntrusionOf(
-      p,
-      source ?? state.renderedFloat ?? intrusion.source,
-      intrusion,
-    );
-    if (next === null) return "unmeasurable";
-    if (floatGeometryEquals(next, intrusion)) return "unchanged";
-    state.scan.floatIntrusion = next;
-    state.lastPatch = "";
-    return "changed";
-  };
 
   /** Re-order the drain queue around a newly queued paragraph and run it.
    * Entries already dealt with delete their own queue slots, so replaying the
@@ -2550,6 +1889,31 @@ export function justify(
       } else nearViewport.delete(p);
     }
   };
+
+  // The correction pass and its width negotiation live in ./dom/corrections.js;
+  // `CorrectionHost` there is the whole of what they need from this controller.
+  const {
+    flushPatches,
+    floatGeometryEquals,
+    refreshElementFloat,
+    rejectPatch,
+    verifyElementFloats,
+  } =
+    createCorrectionPass({
+      ownedState: (p) => ownedState(p),
+      dropQueued: (p) => dropQueued(p),
+      bailToNative: (p, reason) => bailToNative(p, reason),
+      emitRelayout: (p) => emitRelayout(p),
+      safePatch: (p) => safePatch(p),
+      seedNearViewport: (batch) => seedNearViewport(batch),
+      restartPendingOrder: () => restartPendingOrder(),
+      hiddenCorrections,
+      nearViewport,
+      pendingFloatRelayout,
+      pendingWidths,
+      viewObserver: () => viewObserver,
+      viewObserverReady: () => viewObserverReady,
+    });
   const viewObserver =
     typeof IntersectionObserver === "undefined"
       ? null

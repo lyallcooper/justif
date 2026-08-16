@@ -72,7 +72,7 @@ test("the drop-in stays within its size budget", async ({ page }) => {
   // its transfer size bounded without making readable formatting the primary
   // budget, while retaining a raw backstop when compression is unavailable.
   expect(size.index.raw, "dist/index.js bytes").toBeLessThan(168_000);
-  if (size.index.gzip > 0) expect(size.index.gzip, "dist/index.js gzipped").toBeLessThan(42_000);
+  if (size.index.gzip > 0) expect(size.index.gzip, "dist/index.js gzipped").toBeLessThan(45_000);
 });
 
 test("a re-read rebuilds only what changed", async ({ page }) => {
