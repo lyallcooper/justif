@@ -257,7 +257,7 @@ export function runTexts(scan: ParagraphScan): RunText[] {
  * Keyed by the CSS family list; the cache is invalidated whenever the
  * settings object identity changes, which happens once per controller.
  */
-interface ProtrusionSettings {
+export interface ProtrusionSettings {
   enabled: boolean;
   /** The protrusion model contributes a base table. With it off, the hang
    * overlays compose over an empty base: flush glyphs, hanging marks. */

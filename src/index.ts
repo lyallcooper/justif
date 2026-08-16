@@ -8,7 +8,7 @@
  * (Bringhurst's ±3%). Resize re-runs arithmetic only; `destroy()` restores
  * the original DOM.
  */
-import { buildItems } from "./core/items.js";
+
 import {
   composeProtrusion,
   type HangingCharacters,
@@ -23,22 +23,14 @@ import {
   defaultBreakOptions,
   defaultBuildOptions,
   type ExpansionOptions,
-  ItemType,
   type Line,
   type ProtrusionTable,
-  type RunMetrics,
   type TrackingOptions,
 } from "./core/types.js";
 import { describeError } from "./core/errors.js";
 import { clearCalibrationCache } from "./dom/calibrate.js";
 import { clearOpticalCache } from "./dom/optical.js";
-import {
-  clearMeasureCache,
-  collectDomMeasurements,
-  type FontSpec,
-  requiresDomMeasurement,
-  supportsSpec,
-} from "./dom/measure.js";
+import { clearMeasureCache, supportsSpec } from "./dom/measure.js";
 import { joinClipboardCleanup } from "./dom/clipboard.js";
 import { createCorrectionPass, type PatchEntry, type PatchOutcome } from "./dom/corrections.js";
 import { createDrain, createDrainQueues } from "./dom/drain.js";
@@ -50,18 +42,13 @@ import {
   reprobeBaselines,
 } from "./dom/font-probes.js";
 import { createWidthObserver, type WidthObserver } from "./dom/observe.js";
-import {
-  type ParaPart,
-  type ParaState,
-  restoreManagedOutput,
-  states,
-} from "./dom/paragraph-state.js";
+import { createMetricsPass } from "./dom/metrics.js";
+import { type ParaState, restoreManagedOutput, states } from "./dom/paragraph-state.js";
 import { createPatchPass } from "./dom/patch.js";
 import {
   beginScanBatch,
   contentWidthOf,
   endScanBatch,
-  type HardBreak,
   type ParagraphScan,
   readParagraph,
   type ScanBatch,
@@ -72,12 +59,7 @@ import {
   styleKeyNow,
   suppressAutosizingForScan,
 } from "./dom/reread.js";
-import {
-  buildRunMetrics,
-  clearComposedProtrusionCache,
-  measureFor,
-  runTexts,
-} from "./dom/segments.js";
+import { buildRunMetrics, clearComposedProtrusionCache } from "./dom/segments.js";
 import { writeParagraph } from "./dom/write.js";
 
 export { kinsokuNotAtLineEnd, kinsokuNotAtLineStart } from "./core/cjk.js";
@@ -703,110 +685,6 @@ export function justify(
     return true;
   };
 
-  const buildParts = (
-    scan: ParagraphScan,
-    runsMetrics: RunMetrics[],
-    specByKey: Map<string, FontSpec>,
-  ): ParaPart[] => {
-    // RTL paragraphs never letterspace: tracking inside Arabic cursive
-    // joining is typographically wrong, and engines disagree on whether
-    // joined pairs receive letter-spacing at all — the width model would
-    // drift by pixels per word. (Hyphenation is likewise suppressed, via
-    // noHyphens in buildRunMetrics.)
-    const opts = scan.direction === "rtl" ? { ...buildOpts, tracking: false as const } : buildOpts;
-    const texts = runTexts(scan);
-    const measure = measureFor(specByKey);
-    const parts: ParaPart[] = [];
-    let startRun = 0;
-    const append = (endRun: number, breakAfter: HardBreak | null): void => {
-      const para = buildItems(texts.slice(startRun, endRun), runsMetrics, opts, measure);
-      // First-line protrusion is a property of the CSS paragraph, not of
-      // each independently optimized hard-break segment. A leading <br>
-      // consumes that first formatted line too, so every later segment
-      // uses ordinary line-start protrusion from its first box onward.
-      if (parts.length > 0) {
-        for (const item of para.items) {
-          if (item.type === ItemType.Box) item.lpFirst = item.lp;
-        }
-      }
-      parts.push({ para, breakAfter });
-      startRun = endRun;
-    };
-    for (const hardBreak of scan.hardBreaks) {
-      append(hardBreak.afterRun, hardBreak);
-    }
-    append(texts.length, null);
-    return parts;
-  };
-
-  /**
-   * Pre-shape every string that needs real DOM measurement, in ONE hidden
-   * batch: variant-bearing runs (small-caps and friends) can't be measured on
-   * canvas, and discovering them one paragraph at a time would pay a hidden
-   * layout each. The build results are thrown away — the pass that follows
-   * reads the exact cached widths. Throws are swallowed: the real pass owns
-   * the per-paragraph fail-safe and will bail that paragraph alone.
-   */
-  const warmDomWidths = (
-    entries: readonly { scan: ParagraphScan; specByKey: Map<string, FontSpec> }[],
-  ): void => {
-    collectDomMeasurements(() => {
-      for (const { scan, specByKey } of entries) {
-        if (!scan.specs.some(requiresDomMeasurement)) continue;
-        try {
-          buildParts(scan, buildRunMetrics(scan, expansion, spacing, protrusionCtx), specByKey);
-        } catch {
-          /* deliberately ignored; see above */
-        }
-      }
-    });
-  };
-
-  /** Phase 2: measurement + item building, against the fonts currently
-   * rendering (still-loading faces measure as their fallbacks and
-   * converge later). */
-  const prepare = (p: HTMLElement): boolean => {
-    if (states.get(p)?.enhanced) {
-      scanned.delete(p); // another controller won the race; drop our scan
-      return true;
-    }
-    const scan = scanned.get(p);
-    if (scan === undefined) return false;
-    scanned.delete(p);
-
-    try {
-      // Keyed on the MEASUREMENT key, so specs that differ only in a
-      // key-excluded field (`hyphens`) collapse to one entry — deliberately:
-      // they measure identically. See FontSpec.key.
-      const specByKey = new Map<string, FontSpec>();
-      for (const spec of scan.specs) specByKey.set(spec.key, spec);
-      const runsMetrics = buildRunMetrics(scan, expansion, spacing, protrusionCtx);
-      states.set(p, {
-        owner,
-        original: document.createDocumentFragment(),
-        originalStyleAttr: carriedStyleAttr.has(p)
-          ? (carriedStyleAttr.get(p) ?? null)
-          : p.getAttribute("style"),
-        scan,
-        runsMetrics,
-        specByKey,
-        parts: buildParts(scan, runsMetrics, specByKey),
-        width: scan.contentWidth,
-        lastPatch: "",
-        enhanced: false,
-        renderedFloat: null,
-        nativeIndent: null,
-        masked: [],
-      });
-    } catch (error) {
-      // Same fail-safe as the scan: this paragraph stays native.
-      bailed.add(p);
-      emitSkip(p, `threw while measuring: ${describeError(error)}`);
-      return false;
-    }
-    return true;
-  };
-
   /**
    * patchOne with the per-paragraph fail-safe: an unexpected throw while
    * breaking/laying out/writing restores the paragraph's original DOM and
@@ -884,14 +762,7 @@ export function justify(
    * the probe guard in onFontsLoaded.
    */
   const commit = (scannable: readonly HTMLElement[]): void => {
-    warmDomWidths(
-      scannable.flatMap((p) => {
-        const scan = scanned.get(p);
-        return scan === undefined || !scan.specs.some(requiresDomMeasurement)
-          ? []
-          : [{ scan, specByKey: new Map(scan.specs.map((spec) => [spec.key, spec])) }];
-      }),
-    );
+    warmDomWidths(domWidthEntriesFor(scannable));
     const batch: PatchEntry[] = [];
     const changed = new Set<HTMLElement>();
     for (const p of scannable) {
@@ -953,8 +824,7 @@ export function justify(
         if (bailToNative(p, width)) changed.add(p);
         continue;
       }
-      state.runsMetrics = buildRunMetrics(state.scan, expansion, spacing, protrusionCtx);
-      state.parts = buildParts(state.scan, state.runsMetrics, state.specByKey);
+      rebuildMetrics(state);
       state.width = width;
       state.lastPatch = "";
       const outcome = safePatch(p);
@@ -964,6 +834,13 @@ export function justify(
     flushPatches(batch, changed);
     for (const p of changed) emitRelayout(p);
   };
+
+  // Scan → per-run metrics → breaker items lives in ./dom/metrics.js.
+  const { domWidthEntriesFor, prepare, rebuildMetrics, warmDomWidths } = createMetricsPass(record, {
+    layoutOptions: () => ({ buildOpts, expansion, spacing, protrusionCtx }),
+    owner,
+    emitSkip: (p, reason) => emitSkip(p, reason),
+  });
 
   // Line measures, breaking and the segment write live in ./dom/patch.js.
   const { lineWidthsFor, layoutParts, patchOne } = createPatchPass({
