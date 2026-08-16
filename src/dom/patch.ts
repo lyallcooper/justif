@@ -55,11 +55,19 @@ export interface PartsLayout {
  */
 export interface PatchHost {
   ownedState(p: HTMLElement): ParaState | undefined;
-  readonly breakOpts: BreakOptions;
-  readonly buildOpts: BuildOptions;
-  /** The clamped public `lastLineMinWidth`, shared by breaker pricing and the
-   * layout floor so the two cannot disagree. */
-  readonly lastLineMinWidth: number;
+  /**
+   * The controller's layout configuration as it stands right now — a call,
+   * not a snapshot, because `applyLayoutOptions()` replaces all three objects
+   * on a live controller and every break after it must use the new ones.
+   *
+   * `lastLineMinWidth` is the clamped public value, shared by breaker pricing
+   * and the layout floor so the two cannot disagree.
+   */
+  layoutOptions(): {
+    breakOpts: BreakOptions;
+    buildOpts: BuildOptions;
+    lastLineMinWidth: number;
+  };
   /** The drain's queues: a patch drops what it supersedes and queues the
    * correction its own write is owed. */
   readonly queues: DrainQueues;
@@ -108,14 +116,15 @@ export function createPatchPass(host: PatchHost) {
     widths: LineWidths,
     paragraphMinWidth: number,
   ): PartsLayout => {
+    const { breakOpts, buildOpts, lastLineMinWidth } = host.layoutOptions();
     const paragraphBreakOpts =
-      paragraphMinWidth === host.lastLineMinWidth
-        ? host.breakOpts
-        : { ...host.breakOpts, lastLineMinWidth: paragraphMinWidth };
+      paragraphMinWidth === lastLineMinWidth
+        ? breakOpts
+        : { ...breakOpts, lastLineMinWidth: paragraphMinWidth };
     const paragraphBuildOpts =
-      paragraphMinWidth === host.lastLineMinWidth
-        ? host.buildOpts
-        : { ...host.buildOpts, lastLineMinWidth: paragraphMinWidth };
+      paragraphMinWidth === lastLineMinWidth
+        ? buildOpts
+        : { ...buildOpts, lastLineMinWidth: paragraphMinWidth };
     const widthAt = (line: number): number =>
       typeof widths === "number" ? widths : (widths[Math.min(line, widths.length - 1)] ?? 0);
     const widthsFrom = (line: number): LineWidths =>
@@ -243,7 +252,7 @@ export function createPatchPass(host: PatchHost) {
     // `justify-all` is the CSS-level rectangular mode: it requests that
     // even the final (or only) line fill the measure. The ordinary public
     // default remains 0.33 for multi-line endings only.
-    const paragraphMinWidth = state.scan.justifyAll ? 1 : host.lastLineMinWidth;
+    const paragraphMinWidth = state.scan.justifyAll ? 1 : host.layoutOptions().lastLineMinWidth;
     const layout = layoutParts(state, widths, paragraphMinWidth);
 
     if (

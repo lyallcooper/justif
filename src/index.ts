@@ -1433,9 +1433,7 @@ export function justify(
   // Line measures, breaking and the segment write live in ./dom/patch.js.
   const { lineWidthsFor, layoutParts, patchOne } = createPatchPass({
     ownedState: (p) => ownedState(p),
-    breakOpts,
-    buildOpts,
-    lastLineMinWidth,
+    layoutOptions: () => ({ breakOpts, buildOpts, lastLineMinWidth }),
     queues,
   });
 

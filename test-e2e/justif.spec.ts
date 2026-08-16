@@ -4242,6 +4242,50 @@ test("applyLayoutOptions re-lays out in place, keeping what it does not own", as
   expect(result.relayoutsAfter).toBeGreaterThan(result.relayoutsBefore);
 });
 
+/**
+ * Everything the breaker itself is configured by has to reach it, not just
+ * the settings the run metrics are rebuilt from. Only `lastLineMinWidth`
+ * moves here — the spacing pool is identical either side — so a rendering
+ * that does not change is a reconfiguration the line breaking never saw.
+ */
+test("applyLayoutOptions reaches the line breaker, not only the metrics", async ({ page }) => {
+  const config = {
+    protrusion: false,
+    hangingPunctuation: "none",
+    expansion: false,
+    tracking: false,
+    spacing: { stretch: 1, shrink: 1 / 3 },
+  };
+  await page.evaluate(async (config) => {
+    const j = window.__justif;
+    j.controller?.destroy();
+    j.controller = j.justify(document.querySelectorAll("#host p"), {
+      ...config,
+      hyphenate: j.hyphenateEnUS,
+      lastLineMinWidth: 0,
+    });
+    await j.controller.ready;
+  }, config);
+  await waitForQuiescence(page);
+
+  const endingGap = () =>
+    page.evaluate(() => {
+      const g = window.__justifLines(document.getElementById("p1")!);
+      return +(g.contentRight - g.lines[g.lines.length - 1]!.right).toFixed(2);
+    });
+
+  const before = await endingGap();
+  await page.evaluate((config) => {
+    window.__justif.controller!.applyLayoutOptions({ ...config, lastLineMinWidth: 1 });
+  }, config);
+  await waitForQuiescence(page);
+  const after = await endingGap();
+
+  // Ragged at 0, rectangular at 1.
+  expect(before).toBeGreaterThan(1);
+  expect(after).toBeLessThan(1);
+});
+
 test("applyLayoutOptions keeps the hyphenator it was constructed with", async ({ page }) => {
   const result = await page.evaluate(async () => {
     const host = document.getElementById("host")!;
