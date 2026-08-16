@@ -63,16 +63,15 @@ test("the drop-in stays within its size budget", async ({ page }) => {
   // The drop-in is fetched from a CDN before first paint, so its weight is a
   // feature. Keep modest headroom over what it measures today: a dependency
   // landing in the bundle by accident is tens of kilobytes, not hundreds.
-  // `onSkip` reasons survive minification as literals, so they are the one
-  // thing here that grows with prose; a sentence an author can act on is worth
-  // its few hundred bytes.
-  expect(size.auto.raw, "dist/auto.js bytes").toBeLessThan(150_000);
-  if (size.auto.gzip > 0) expect(size.auto.gzip, "dist/auto.js gzipped").toBeLessThan(60_000);
-  // Applications normally fetch the API build through content encoding. Keep
-  // its transfer size bounded without making readable formatting the primary
-  // budget, while retaining a raw backstop when compression is unavailable.
-  expect(size.index.raw, "dist/index.js bytes").toBeLessThan(168_000);
-  if (size.index.gzip > 0) expect(size.index.gzip, "dist/index.js gzipped").toBeLessThan(45_000);
+  expect(size.auto.raw, "dist/auto.js bytes").toBeLessThan(148_000);
+  if (size.auto.gzip > 0) expect(size.auto.gzip, "dist/auto.js gzipped").toBeLessThan(57_000);
+  // The API build ships unminified, so its raw size answers to comment and
+  // formatting changes as much as to code and is the looser of its two
+  // budgets; the gzipped figure is what an application actually fetches. Both
+  // are kept, so an accidental dependency is caught even where the server
+  // reports no compressed size.
+  expect(size.index.raw, "dist/index.js bytes").toBeLessThan(170_000);
+  if (size.index.gzip > 0) expect(size.index.gzip, "dist/index.js gzipped").toBeLessThan(43_000);
 });
 
 test("a re-read rebuilds only what changed", async ({ page }) => {
