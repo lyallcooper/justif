@@ -9,6 +9,37 @@ describe("Liang engine", () => {
     expect(hyphenate("abcd")).toEqual(["ab", "cd"]);
   });
 
+  it("reads front-coded patterns identically to spelled-out ones", () => {
+    // Each token's first character says how many leading characters to reuse
+    // from the pattern before it, so these three spell "a1b", "a1bc", "ab1c".
+    const packed = createHyphenator({
+      packed: "0a1b 3c 1b1c",
+      leftmin: 1,
+      rightmin: 1,
+    });
+    const spelled = createHyphenator({
+      patterns: "a1b a1bc ab1c",
+      leftmin: 1,
+      rightmin: 1,
+    });
+    for (const word of ["abcd", "abc", "xabcy", "ab", "zzz"]) {
+      expect(packed(word)).toEqual(spelled(word));
+    }
+    // Not a vacuous comparison: this set really does break the word.
+    expect(packed("abcd").length).toBeGreaterThan(1);
+  });
+
+  it("prefers packed patterns when both forms are supplied", () => {
+    const hyphenate = createHyphenator({
+      patterns: "z1z",
+      packed: "0b1c",
+      leftmin: 1,
+      rightmin: 1,
+    });
+    expect(hyphenate("abcd")).toEqual(["ab", "cd"]);
+    expect(hyphenate("azzd")).toEqual(["azzd"]);
+  });
+
   it("lets higher even digits suppress breaks", () => {
     const hyphenate = createHyphenator({ patterns: "b1c ab2c", leftmin: 1, rightmin: 1 });
     expect(hyphenate("abcd")).toEqual(["abcd"]);

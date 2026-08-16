@@ -82,15 +82,16 @@
  */
 import { createHyphenator } from "./liang.js";
 
-const patterns =
-  ".a3p2n .anti1 .anti3m2n .bio1 .ca4p3s .circu2m1 .contro1 .di2s3cine .e2x1eu .fran2k3 .free3 .li3p2sa .narco1 .opto1 .orto3p2 .para1 .ph2l .ph2r .poli3p2 .pre1 .p2s .re1i2scr .sha2re3 .tran2s3c .tran2s3d .tran2s3l .tran2s3n .tran2s3p .tran2s3r .tran2s3t .su2b3lu .su2b3r .wa2g3n .wel2t1 2'2 a1ia a1ie a1io a1iu a1uo a1ya 2at. e1iu e2w o1ia o1ie o1io o1iu 1b 2bb 2bc 2bd 2bf 2bm 2bn 2bp 2bs 2bt 2bv b2l b2r 2b. 2b' 1c 2cb 2cc 2cd 2cf 2ck 2cm 2cn 2cq 2cs 2ct 2cz 2chh c2h 2ch. 2ch'. 2ch''. 2chb ch2r 2chn c2l c2r 2c. 2c' .c2 1d 2db 2dd 2dg 2dl 2dm 2dn 2dp d2r 2ds 2dt 2dv 2dw 2d. 2d' .d2 1f 2fb 2fg 2ff 2fn f2l f2r 2fs 2ft 2f. 2f' 1g 2gb 2gd 2gf 2gg g2h g2l 2gm g2n 2gp g2r 2gs 2gt 2gv 2gw 2gz 2gh2t 2g. 2g' .h2 1h 2hb 2hd 2hh hi3p2n h2l 2hm 2hn 2hr 2hv 2h. 2h' .j2 1j 2j. 2j' .k2 1k 2kg 2kf k2h 2kk k2l 2km k2r 2ks 2kt 2k. 2k' 1l 2lb 2lc 2ld 2l3f2 2lg l2h l2j 2lk 2ll 2lm 2ln 2lp 2lq 2lr 2ls 2lt 2lv 2lw 2lz 2l. 2l'. 2l'' 1m 2mb 2mc 2mf 2ml 2mm 2mn 2mp 2mq 2mr 2ms 2mt 2mv 2mw 2m. 2m' 1n 2nb 2nc 2nd 2nf 2ng 2nk 2nl 2nm 2nn 2np 2nq 2nr 2ns n2s3fer 2nt 2nv 2nz n2g3n 2nheit 2n. 2n' 1p 2pd p2h p2l 2pn 3p2ne 2pp p2r 2ps 3p2sic 2pt 2pz 2p. 2p' 1q 2qq 2q. 2q' 1r 2rb 2rc 2rd 2rf r2h 2rg 2rk 2rl 2rm 2rn 2rp 2rq 2rr 2rs 2rt r2t2s3 2rv 2rx 2rw 2rz 2r. 2r' 1s2 2shm 2sh. 2sh' 2s3s s4s3m 2s3p2n 2stb 2stc 2std 2stf 2stg 2stm 2stn 2stp 2sts 2stt 2stv 2sz 4s. 4s'. 4s'' .t2 1t 2tb 2tc 2td 2tf 2tg t2h 2th. t2l 2tm 2tn 2tp t2r t2s 3t2sch 2tt t2t3s 2tv 2tw t2z 2tzk tz2s 2t. 2t'. 2t'' 1v 2vc v2l v2r 2vv 2v. 2v'. 2v'' 1w w2h wa2r 2w1y 2w. 2w' 1x 2xb 2xc 2xf 2xh 2xm 2xp 2xt 2xw 2x. 2x' y1ou y1i 1z 2zb 2zd 2zl 2zn 2zp 2zt 2zs 2zv 2zz 2z. 2z'. 2z'' .z2";
+/** The patterns, sorted and front-coded; see `packed` in liang.ts. */
+const packed =
+  "0.a3p2n 2nti1 53m2n 1bio1 1c2 2a4p3s 2ircu2m1 2ontro1 1d2 2i2s3cine 1e2x1eu 1fran2k3 3ee3 1h2 1j2 1k2 1li3p2sa 1narco1 1opto1 2rto3p2 1p2s 2ara1 2h2l 4r 2oli3p2 2re1 1re1i2scr 1sha2re3 2u2b3lu 6r 1t2 2ran2s3c 8d 8l 8n 8p 8r 8t 1wa2g3n 2el2t1 1z2 01b 1c 1d 1f 1g 1h 1j 1k 1l 1m 1n 1p 1q 1r 1s2 1t 1v 1w 1x 1z 02'2 1at. 1b' 2. 2b 2c 2d 2f 2m 2n 2p 2s 2t 2v 1c' 2. 2b 2c 2d 2f 2h''. 4. 3. 3b 3h 3n 2k 2m 2n 2q 2s 2t 2z 1d' 2. 2b 2d 2g 2l 2m 2n 2p 2s 2t 2v 2w 1f' 2. 2b 2f 2g 2n 2s 2t 1g' 2. 2b 2d 2f 2g 2h2t 2m 2p 2s 2t 2v 2w 2z 1h' 2. 2b 2d 2h 2m 2n 2r 2v 1j' 2. 1k' 2. 2f 2g 2k 2m 2s 2t 1l'' 3. 2. 23f2 2b 2c 2d 2g 2k 2l 2m 2n 2p 2q 2r 2s 2t 2v 2w 2z 1m' 2. 2b 2c 2f 2l 2m 2n 2p 2q 2r 2s 2t 2v 2w 1n' 2. 2b 2c 2d 2f 2g 2heit 2k 2l 2m 2n 2p 2q 2r 2s 2t 2v 2z 1p' 2. 2d 2n 2p 2s 2t 2z 1q' 2. 2q 1r' 2. 2b 2c 2d 2f 2g 2k 2l 2m 2n 2p 2q 2r 2s 2t 2v 2w 2x 2z 1s3p2n 3s 2h' 3. 3m 2tb 3c 3d 3f 3g 3m 3n 3p 3s 3t 3v 2z 1t'' 3. 2. 2b 2c 2d 2f 2g 2h. 2m 2n 2p 2t 2v 2w 2zk 1v'' 3. 2. 2c 2v 1w' 2. 21y 1x' 2. 2b 2c 2f 2h 2m 2p 2t 2w 1z'' 3. 2. 2b 2d 2l 2n 2p 2s 2t 2v 2z 03p2ne 3sic 1t2sch 04s'' 3. 2. 0a1ia 3e 3o 3u 2uo 2ya 0b2l 2r 0c2h 2l 2r 1h2r 0d2r 0e1iu 12w 0f2l 2r 0g2h 2l 2n 2r 0h2l 1i3p2n 0k2h 2l 2r 0l2h 2j 0n2g3n 2s3fer 0o1ia 3e 3o 3u 0p2h 2l 2r 0r2h 2t2s3 0s4s3m 0t2h 2l 2r 2s 2t3s 2z 1z2s 0v2l 2r 0w2h 1a2r 0y1i 2ou";
 
 const exceptions = "";
 
 /** `hyphenate` function for Italian (leftmin 2, rightmin 2),
  * for the `hyphenate` option of justify(). Compiles lazily on first use. */
 export const hyphenateIt: (word: string) => string[] = createHyphenator({
-  patterns,
+  packed,
   exceptions,
   leftmin: 2,
   rightmin: 2,

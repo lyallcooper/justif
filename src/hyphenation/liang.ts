@@ -5,8 +5,21 @@
  */
 
 export interface PatternData {
-  /** Space-separated TeX patterns, e.g. ".ach4 .ad4der 4ab. …". */
-  patterns: string;
+  /**
+   * Space-separated TeX patterns, e.g. ".ach4 .ad4der 4ab. …".
+   * Supply either this or `packed`; `packed` wins if both are present.
+   */
+  patterns?: string;
+  /**
+   * The same patterns, sorted and front-coded: tokens are separated by one
+   * space, and each starts with a character giving how many leading
+   * characters the pattern shares with its predecessor (that count added to
+   * `"0"`, capped at 31), followed by the rest of the pattern. Sorting makes
+   * those shared prefixes long, so this form is about a third smaller than
+   * `patterns` once compressed. The bundled language modules use it; it is
+   * otherwise interchangeable, and `tools/gen-hyphenation.mjs` produces it.
+   */
+  packed?: string;
   /** Space-separated exception words with hyphens at the break points. */
   exceptions?: string;
   /** Minimum letters before the first / after the last break. */
@@ -34,30 +47,46 @@ export function createHyphenator(data: PatternData): (word: string) => string[] 
   let root: TrieNode | null = null;
   let exceptionMap: Map<string, string[]> | null = null;
 
+  function add(pattern: string): void {
+    const codes: number[] = [];
+    const points: number[] = [0];
+    for (const ch of pattern) {
+      if (ch >= "0" && ch <= "9") points[points.length - 1] = ch.charCodeAt(0) - 48;
+      else {
+        codes.push(ch.codePointAt(0)!);
+        points.push(0);
+      }
+    }
+    let node = root!;
+    for (const code of codes) {
+      node.children ??= new Map();
+      let next = node.children.get(code);
+      if (next === undefined) {
+        next = { children: null, points: null };
+        node.children.set(code, next);
+      }
+      node = next;
+    }
+    node.points = Uint8Array.from(points);
+  }
+
   function compile(): void {
     root = { children: new Map(), points: null };
-    for (const pattern of data.patterns.split(/\s+/)) {
-      if (pattern.length === 0) continue;
-      const codes: number[] = [];
-      const points: number[] = [0];
-      for (const ch of pattern) {
-        if (ch >= "0" && ch <= "9") points[points.length - 1] = ch.charCodeAt(0) - 48;
-        else {
-          codes.push(ch.codePointAt(0)!);
-          points.push(0);
-        }
+    if (data.packed !== undefined) {
+      // Rebuild each pattern from the tail the token carries plus the number
+      // of leading characters it reuses from its predecessor. The patterns
+      // arrive sorted rather than in their original order, which the trie
+      // does not care about: it holds a set, one point vector per pattern.
+      let previous = "";
+      for (const token of data.packed.split(" ")) {
+        if (token.length === 0) continue;
+        previous = previous.slice(0, token.charCodeAt(0) - 48) + token.slice(1);
+        add(previous);
       }
-      let node = root;
-      for (const code of codes) {
-        node.children ??= new Map();
-        let next = node.children.get(code);
-        if (next === undefined) {
-          next = { children: null, points: null };
-          node.children.set(code, next);
-        }
-        node = next;
+    } else if (data.patterns !== undefined) {
+      for (const pattern of data.patterns.split(/\s+/)) {
+        if (pattern.length !== 0) add(pattern);
       }
-      node.points = Uint8Array.from(points);
     }
     exceptionMap = new Map();
     if (data.exceptions !== undefined) {
