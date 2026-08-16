@@ -42,7 +42,8 @@
  * upgrade, but a group that committed no interim has nothing to tear
  * down until its pattern module lands).
  */
-import { type LayoutOptions, justify, unjustify } from "./index.js";
+import { justify, unjustify } from "./index.js";
+import type { LayoutOptions } from "./options.js";
 import { hyphenationFor, moduleFor } from "./auto-languages.js";
 import { CSS_PROPERTIES, parseCssOptions } from "./auto-options.js";
 import { createWatcher } from "./auto-watch.js";

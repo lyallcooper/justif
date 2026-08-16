@@ -79,9 +79,15 @@ export function suppressTransitions(targets: readonly HTMLElement[]): () => void
   };
 }
 
-/** Suppress engine text autosizing across a scan, and return the undo: the
- * scan must read the font sizes the author asked for, not the ones the engine
- * inflated on a narrow viewport. */
+/**
+ * Temporarily suppress text autosizing on every source run before the scan,
+ * returning the undo. WebKit exposes an already-active autosizing multiplier
+ * through computed font sizes; applying the permanent opt-out only when output
+ * was written would therefore measure boosted text and render it unboosted. Do
+ * all writes up front so the first computed-style read pays one batched style
+ * recalculation, then restore every style attribute byte-for-byte before
+ * measurement or user code can observe the temporary declarations.
+ */
 export function suppressAutosizingForScan(paragraphs: readonly HTMLElement[]): () => void {
   const saved: Array<{ el: HTMLElement; style: string | null }> = [];
   const seen = new WeakSet<HTMLElement>();

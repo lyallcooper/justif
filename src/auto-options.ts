@@ -17,7 +17,7 @@ import {
   type HangingPunctuationOptions,
   layoutDefaults,
   type LayoutOptions,
-} from "./index.js";
+} from "./options.js";
 
 /** Every property, in the order the grouping key serializes them. */
 export const CSS_PROPERTIES = [
