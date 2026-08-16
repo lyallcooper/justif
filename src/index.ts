@@ -34,6 +34,7 @@ import { clearMeasureCache, supportsSpec } from "./dom/measure.js";
 import { joinClipboardCleanup } from "./dom/clipboard.js";
 import { createCorrectionPass, type PatchEntry, type PatchOutcome } from "./dom/corrections.js";
 import { createDrain, createDrainQueues } from "./dom/drain.js";
+import { beginScanBatch, endScanBatch, type ScanBatch } from "./dom/float-geometry.js";
 import { createFloatTracking } from "./dom/floats.js";
 import {
   collectFontProbes,
@@ -45,14 +46,7 @@ import { createWidthObserver, type WidthObserver } from "./dom/observe.js";
 import { createMetricsPass } from "./dom/metrics.js";
 import { type ParaState, restoreManagedOutput, states } from "./dom/paragraph-state.js";
 import { createPatchPass } from "./dom/patch.js";
-import {
-  beginScanBatch,
-  contentWidthOf,
-  endScanBatch,
-  type ParagraphScan,
-  readParagraph,
-  type ScanBatch,
-} from "./dom/read.js";
+import { contentWidthOf, type ParagraphScan, readParagraph } from "./dom/read.js";
 import {
   createAdoptionRecord,
   createRereadPass,

@@ -26,12 +26,12 @@ import type { PatchEntry } from "./corrections.js";
 import type { DrainQueues } from "./drain.js";
 import { type ParaState, restoreManagedOutput } from "./paragraph-state.js";
 import {
-  contentWidthOf,
   type ElementFloatIntrusion,
   floatInlineSizeOf,
   floatIntrusionOf,
   renderedElementFloatIntrusionOf,
-} from "./read.js";
+} from "./float-geometry.js";
+import { contentWidthOf } from "./read.js";
 
 /** Sub-pixel noise in a live rect read must not count as a geometry
  * change, or every remeasure would invalidate every float paragraph. */
