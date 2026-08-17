@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.0 (2026-08-17)
+
 - Paragraphs with `<math>` or `inline-block` elements are now supported by
   justif. Fixes #17.
 - Fixed justified text pushing the page wider in Safari, seen most often as a
