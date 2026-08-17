@@ -2,31 +2,14 @@
 
 ## Unreleased
 
-- Paragraphs with inline math are now justified instead of being left to the
-  browser. Rendered formulas (KaTeX in either output mode, MathJax's CommonHTML
-  output, or native `<math>`) are set as unbreakable boxes at the width your own
-  layout gives them, and lines may break between the pieces a formula is split
-  into but never inside one. The same applies to `inline-block` chips and other
-  inline-level boxes. Nothing to configure, and an equation is never stretched
-  or letterspaced to fill a line. Fixes #17.
-
+- Paragraphs with `<math>` or `inline-block` elements are now supported by
+  justif. Fixes #17.
 - Fixed justified text pushing the page wider in Safari, seen most often as a
-  sideways scroll on iPhone. Justified paragraphs now keep the exact measure
-  the page gave them — whether the paragraph is itself a Grid or Flex item or
-  sits several levels inside one — and re-break correctly when something else
-  on the page changes that measure. Fixes #16.
-- Hyphenation downloads are about a third smaller. German drops from 119 KB to
-  80 KB compressed, Hungarian from 205 KB to 126 KB, Dutch from 40 KB to 27 KB,
-  and the drop-in script itself is 4 KB smaller. If you build your own
-  hyphenator with `createHyphenator`, `patterns` is now optional beside the new
-  `packed` form — passing your own TeX patterns works exactly as before.
+  sideways scroll on iPhone. Fixes #16.
+- Hyphenation dictionary downloads are about a third smaller.
 - A quote or other mark ending a line beside a drop cap no longer drifts away
   from the character before it.
 - Fixed a small word-spacing error on lines beside a drop cap.
-- A paragraph whose floated opening element stops being floated — a breakpoint
-  that drops the drop cap on narrow screens, say — no longer keeps a gap where
-  the ornament used to be. Such a paragraph goes back to your own rendering,
-  and `rescan()` takes it up again in its new shape.
 
 ## 0.8.1 (2026-08-14)
 
