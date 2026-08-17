@@ -1389,6 +1389,90 @@ test("a float that resizes under a paragraph re-breaks it", async ({ page }) => 
   expect(result.after.segWidth).toBeLessThan(result.before.segWidth);
 });
 
+/**
+ * A responsive breakpoint that stops floating a leading ornament. The float's
+ * own observer reports it, but the box it reports is the trap: an element the
+ * author has un-floated collapses to nothing exactly like one an ancestor has
+ * hidden, and those two need opposite answers — wait for the second, give up
+ * on the first. Read as "not rendered just now", the paragraph keeps line
+ * widths measured around a float that is no longer there and its text runs
+ * past the measure.
+ */
+test("a leading float that stops being floated hands the paragraph back", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const style = document.createElement("style");
+    style.textContent = `
+      #unfloat { margin: 0; width: 440px; font: 17px/24px Georgia, serif; text-align: justify; }
+      #unfloat .cap { float: left; width: 90px; height: 96px; margin: 0 10px 0 0; }
+    `;
+    document.head.append(style);
+    const p = document.createElement("p");
+    p.id = "unfloat";
+    p.innerHTML =
+      '<span class="cap"></span>Many of us toil away in large git repositories, spending countless seconds every day waiting for git status to return to us its precious information deep from within the bowels of the git tree itself. The tale continues with more prose so the paragraph runs well past the ornament and settles into full measure lines beneath it, line after line, until the story finally ends.';
+    document.getElementById("host")!.replaceChildren(p);
+    const skips: string[] = [];
+    const ctl = window.__justif.justify([p], {
+      hyphenate: window.__justif.hyphenateEnUS,
+      onSkip: (_el: HTMLElement, reason: string) => skips.push(reason),
+    });
+    await ctl.ready;
+
+    const settle = async (frames: number) => {
+      for (let i = 0; i < frames; i++) {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+    };
+    /** How far the first rendered line stops short of the content edge. A
+     * justified line beside a float still reaches it; one broken around a
+     * float that has since gone leaves the float's width standing empty. */
+    const firstLineShortfall = () => {
+      const seg = p.querySelector<HTMLElement>(".justif-seg");
+      if (seg === null) return null;
+      return Math.round(p.getBoundingClientRect().right - seg.getBoundingClientRect().right);
+    };
+
+    await settle(4);
+    const before = { enhanced: p.hasAttribute("data-justif"), shortfall: firstLineShortfall() };
+    // The ornament stops being a float, gutter and all — what a breakpoint
+    // that drops the drop cap actually writes. Nothing else about the page
+    // moves; the paragraph's own measure is untouched.
+    style.textContent = style.textContent!.replace(
+      "float: left; width: 90px; height: 96px; margin: 0 10px 0 0;",
+      "float: none;",
+    );
+    await settle(20);
+    const after = {
+      enhanced: p.hasAttribute("data-justif"),
+      shortfall: firstLineShortfall(),
+      skips: [...skips],
+    };
+    // A re-read is the documented way back: the float was part of the
+    // decision, so rescan() always reconsiders this paragraph.
+    ctl.rescan();
+    await settle(8);
+    const rescanned = p.hasAttribute("data-justif");
+    ctl.destroy();
+    p.remove();
+    style.remove();
+    return { before, after, rescanned };
+  });
+
+  // Beside the ornament, the first line reaches the measure like any other
+  // (a beside-float line keeps a little physical spare, never the ornament's
+  // 90px — which is what it would be left standing if the float went
+  // unnoticed).
+  expect(result.before.enhanced).toBe(true);
+  expect(result.before.shortfall!).toBeLessThan(10);
+  // Handed back rather than left set around a float that is gone — which
+  // would leave the ornament's width standing empty at the end of line one.
+  expect(result.after.enhanced).toBe(false);
+  expect(result.after.shortfall).toBeNull();
+  expect(result.after.skips).toContain("leading floated element is no longer floated");
+  // And re-enhanceable once the page has settled into its new shape.
+  expect(result.rescanned).toBe(true);
+});
+
 test("hang-span segments with edge-trimmed spaces measure without crashing", async ({
   page,
 }) => {

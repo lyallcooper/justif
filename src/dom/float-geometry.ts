@@ -237,7 +237,13 @@ export function firstLetterInnerStyle(
 /** Resolve logical float values against the paragraph's inline direction.
  * Browsers preserve `inline-start`/`inline-end` as the computed value even
  * though they actively place the float at a physical edge. */
-function physicalFloatSide(
+/**
+ * The physical side a float sits on, or null when the element is not floated
+ * to a side the line model can follow. `none` lands here, which is how a
+ * caller tells "no longer a float at all" apart from "a float that cannot be
+ * measured just now".
+ */
+export function physicalFloatSide(
   value: string,
   direction: "ltr" | "rtl",
 ): "left" | "right" | null {

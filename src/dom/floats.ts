@@ -29,6 +29,7 @@ import {
   type ElementFloatIntrusion,
   floatInlineSizeOf,
   floatIntrusionOf,
+  physicalFloatSide,
   renderedElementFloatIntrusionOf,
 } from "./float-geometry.js";
 import { contentWidthOf } from "./read.js";
@@ -102,15 +103,24 @@ export function createFloatTracking(host: FloatHost) {
     state: ParaState,
     intrusion: ElementFloatIntrusion,
     source?: Element,
-  ): "unchanged" | "changed" | "unmeasurable" | "stale" => {
+  ): "unchanged" | "changed" | "unmeasurable" | "unfloated" | "stale" => {
     if (host.queues.pendingWidths.has(p)) return "stale";
     const widthNow = contentWidthOf(p);
     if (typeof widthNow !== "number" || Math.abs(widthNow - state.width) > 0.05) {
       return "stale";
     }
+    const rendered = source ?? state.renderedFloat ?? intrusion.source;
+    // Asked before measuring, because the two failures need opposite answers
+    // and the box cannot tell them apart: an element the author has stopped
+    // floating collapses to nothing exactly like one that is not being
+    // rendered. `float` is the only thing that says which happened.
+    const direction = state.scan.direction === "rtl" ? "rtl" : "ltr";
+    if (physicalFloatSide(getComputedStyle(rendered).float, direction) === null) {
+      return "unfloated";
+    }
     const next = renderedElementFloatIntrusionOf(
       p,
-      source ?? state.renderedFloat ?? intrusion.source,
+      rendered,
       intrusion,
     );
     if (next === null) return "unmeasurable";
@@ -118,6 +128,23 @@ export function createFloatTracking(host: FloatHost) {
     state.scan.floatIntrusion = next;
     state.lastPatch = "";
     return "changed";
+  };
+
+  /**
+   * The author has stopped floating this paragraph's leading element. Its
+   * intrusion is not merely unreadable, it is gone — and the enhanced DOM is
+   * built around a float that no longer exists, so the line widths and the
+   * ornament's placement are both wrong. Hand the paragraph back to the
+   * engine rather than leave it set to a measure nothing takes away from.
+   *
+   * Recoverable: `rescan()` always re-reads a paragraph whose float was part
+   * of the decision, so this is undone by a re-read once the page settles.
+   */
+  const declineUnfloated = (p: HTMLElement): void => {
+    host.queues.drop(p);
+    const changed = host.bailToNative(p, "leading floated element is no longer floated");
+    rebind(p);
+    if (changed) host.emitRelayout(p);
   };
 
   /**
@@ -157,9 +184,11 @@ export function createFloatTracking(host: FloatHost) {
       const state = host.ownedState(p);
       if (state === undefined || state.scan.floatIntrusion === null) continue;
       if (state.scan.floatIntrusion.kind === "element") {
-        if (refreshElementFloat(p, state, state.scan.floatIntrusion) === "changed") {
-          changed = true;
-        }
+        const verdict = refreshElementFloat(p, state, state.scan.floatIntrusion);
+        // Also checked here, not just in the observer: with `observeResize`
+        // off there is no observer, and this is the only pass that looks.
+        if (verdict === "unfloated") declineUnfloated(p);
+        else if (verdict === "changed") changed = true;
         continue;
       }
       const nextInlineSize = floatInlineSizeOf(p);
@@ -265,6 +294,10 @@ export function createFloatTracking(host: FloatHost) {
         continue;
       }
       const verdict = refreshElementFloat(p, state, intrusion, entry.target);
+      if (verdict === "unfloated") {
+        declineUnfloated(p);
+        continue;
+      }
       if (verdict === "unmeasurable") {
         // A float that has stopped being rendered — an ancestor turned
         // `display: none`, a tab panel closed — notifies at 0×0, and its

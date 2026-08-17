@@ -15,6 +15,10 @@
 - A quote or other mark ending a line beside a drop cap no longer drifts away
   from the character before it.
 - Fixed a small word-spacing error on lines beside a drop cap.
+- A paragraph whose floated opening element stops being floated — a breakpoint
+  that drops the drop cap on narrow screens, say — no longer keeps a gap where
+  the ornament used to be. Such a paragraph goes back to your own rendering,
+  and `rescan()` takes it up again in its new shape.
 
 ## 0.8.1 (2026-08-14)
 
