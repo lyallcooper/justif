@@ -411,6 +411,35 @@ default) to retain those insets instead of overflowing or inventing a break
 inside code. With tracking disabled—or a token still too wide after that
 bounded fallback—ordinary overfull-line behavior remains.
 
+### Inline math and other inline objects
+
+Inline-level boxes that the browser lays out as a single object—rendered math
+(KaTeX, MathJax's CommonHTML output, or native `<math>`), `inline-block` chips,
+`inline-flex` and `inline-grid` elements—are set as fixed, unbreakable boxes at
+the width they have in your own layout. The text around them is justified
+normally, and a line may break before or after such a box, but never inside it.
+Where a rendered formula is split into several boxes (KaTeX splits at relations
+and operators), lines may break between them, which is where TeX breaks
+displayed relations too.
+
+An object's own typography is left alone: the letter-spacing, word-spacing and
+font-stretch that justification applies to a line stop at its edge, so an
+equation is never stretched or tracked to fill a line.
+
+Math needs no configuration. If you use KaTeX, either output mode works, and
+the accessible MathML that its default output carries is preserved.
+
+Objects wrapping content that cannot be copied faithfully—a `canvas`, a media
+element, a form control, an `iframe`, or a shadow root—leave the paragraph on
+native rendering, as do images and SVG, whose size can still change after the
+page has been measured.
+
+An object's width is read when the paragraph is scanned. Rendered math and
+chips are sized by their own content, so that width holds at any measure; an
+object sized against the measure itself—a percentage width, or an
+`inline-block` wide enough that its own text rewraps—is re-read by `rescan()`
+rather than on resize.
+
 ### Hard line breaks
 
 Inline `<br>` elements are preserved as real breaks. The default behavior is to
@@ -430,7 +459,7 @@ reliably. This includes:
 
 - mixed LTR and RTL text;
 - vertical writing, Thai, and Lao;
-- images, form controls, SVG, MathML, or block descendants in the text flow;
+- images, form controls, SVG, or block descendants in the text flow;
 - floats, except a single one as the paragraph's first child;
 - inline descendants with horizontal margins, `box-decoration-break: clone`,
   or preserved-whitespace `white-space` values;

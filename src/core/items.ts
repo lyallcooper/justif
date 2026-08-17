@@ -94,6 +94,22 @@ const NEAR_PROHIBITIVE_PENALTY = 9999;
 /** A normal soft-wrap opportunity after a fixed-width separator run. */
 const FIXED_SPACE_BREAK_PENALTY = 0;
 
+/**
+ * The break beside an atomic box where no space separates it from its
+ * neighbor — between an equation and the word it abuts, and between two
+ * adjacent equation fragments. Every engine breaks there (an atomic inline
+ * is UAX #14 class CB, measured breaking on both sides in Chromium, Firefox
+ * and WebKit), so the model has to offer the same opportunity or it would
+ * weld a formula to the prose around it and overflow narrow measures.
+ *
+ * Priced rather than free, in the spirit of TeX's \relpenalty: a break at a
+ * junction the author wrote no space at is a legitimate escape, not a
+ * preference. The junctions a rendered equation exposes are exactly the
+ * relation and operator boundaries its renderer chose to split at, which is
+ * where TeX would break too.
+ */
+const ATOMIC_BREAK_PENALTY = 500;
+
 /** Fixed-width Unicode Zs characters CSS calls "other space separators".
  * These retain their source character and intrinsic advance. U+202F NARROW
  * NO-BREAK SPACE deliberately remains inside its surrounding no-break box,
@@ -617,6 +633,10 @@ export function buildItems(
   let piecePaintedEnd = false;
   let pendingBoxStartProtrusion = 0;
   let pendingPaintedStart = false;
+  /** The last box emitted was an atomic object, so the junction in front of
+   * whatever comes next is one the engine would break at (see
+   * ATOMIC_BREAK_PENALTY). Cleared by any glue, which carries its own. */
+  let atomicBreakPending = false;
 
   const emitBox = (box: Box, runIndex: number): void => {
     if (pendingPad > 0 || pendingPaintedStart) {
@@ -641,7 +661,9 @@ export function buildItems(
     items.push(box);
     hasBox = true;
     // Emptiness only: UTF-16 length and code-point count are zero together.
-    if ((box.flowChars ?? box.text.length) > 0) hasFlowBox = true;
+    // An atomic box holds no text but does occupy flow, so a space after one
+    // is an ordinary word space rather than a collapsed leading one.
+    if ((box.flowChars ?? box.text.length) > 0 || box.atomic === true) hasFlowBox = true;
     lastBox = box;
     lastBoxRun = runIndex;
     lastBoxKey = pieceKey;
@@ -848,7 +870,39 @@ export function buildItems(
     nextRun: number,
     dashInitial = false,
     fixedSpaceInitial = false,
+    /** First character of the box about to follow, when it is text. Empty for
+     * an atomic object, which has no character to judge. */
+    nextInitial = "",
+    /** The box about to follow is itself an atomic object. */
+    nextAtomic = false,
   ): void => {
+    if (pendingSpaceRun < 0 && (atomicBreakPending || nextAtomic) && !fixedSpaceInitial) {
+      // No space separates this atomic from its neighbor, so the engine's own
+      // opportunity here has no glue to stand on. Give it a penalty of its
+      // own — unless a nowrap element encloses both sides, or the junction is
+      // one the punctuation rules already reserve: a comma after an equation
+      // belongs with it exactly as it does after a word, and an opening
+      // bracket before one may no more end a line than it may before a dash.
+      const last = items[items.length - 1];
+      if (
+        last?.type === ItemType.Box &&
+        !(pieceKey !== undefined && pieceKey === lastBoxKey) &&
+        (nextInitial === "" || !NO_LINE_START.test(nextInitial)) &&
+        (last.text.length === 0 || !NO_LINE_END.test(lastCodePoint(last.text)))
+      ) {
+        items.push({
+          type: ItemType.Penalty,
+          penalty: ATOMIC_BREAK_PENALTY,
+          width: 0,
+          flagged: false,
+          hyphen: false,
+          rp: last.rp,
+          run: nextRun,
+          atomic: true,
+        } satisfies Penalty);
+      }
+    }
+    atomicBreakPending = false;
     if (pendingSpaceRun >= 0 && hasBox) {
       const space = runs[pendingSpaceRun]!.space;
       if (
@@ -923,7 +977,7 @@ export function buildItems(
     // would get a doubled glue.
     if (pieceCount === 0) return;
 
-    flushPendingSpace(runIndex, isAnyDash(token.charCodeAt(0)));
+    flushPendingSpace(runIndex, isAnyDash(token.charCodeAt(0)), false, firstCodePoint(token));
 
     // The shape almost every prose token has — one unbreakable fragment with
     // nothing withdrawn from flow — is the whole token measured once. The
@@ -982,6 +1036,50 @@ export function buildItems(
         );
       }
     }
+  };
+
+  /**
+   * Emit one atomic object as a rigid box: an equation, an inline-block, any
+   * inline-level thing the model places whole. Its width was measured in the
+   * author's own layout, and every flex a Box can carry is deliberately zero
+   * — protrusion describes glyph shapes, expansion and letterfit reshape
+   * glyph runs, and this box has no glyphs to speak for. A line that ends or
+   * begins with one therefore sets flush against it, which is what the
+   * object's own edge is.
+   */
+  const pushAtomic = (widthPx: number, runIndex: number): void => {
+    // A ZERO-WIDTH object offers no junction of its own, in either
+    // direction: it is an out-of-flow subtree carried for its DOM, and there
+    // is nothing at it for a line to break around. Offering one would let a
+    // line break inside the word an absolutely positioned span sits in.
+    // Where such a subtree is the hidden half of a formula — KaTeX emits its
+    // MathML that way — the junction beside the VISIBLE half serves both;
+    // breaking there leaves the hidden half on the line above, which is a
+    // difference nothing can see.
+    const occupies = widthPx > 0;
+    flushPendingSpace(runIndex, false, false, "", occupies);
+    emitBox(
+      {
+        type: ItemType.Box,
+        width: widthPx,
+        run: runIndex,
+        text: "",
+        lp: 0,
+        lpFirst: 0,
+        rp: 0,
+        hangStretch: 0,
+        hangShrink: 0,
+        expStretch: 0,
+        expShrink: 0,
+        trackStretch: 0,
+        trackShrink: 0,
+        atomic: true,
+      },
+      runIndex,
+    );
+    // A nowrap element around this object forbids the junction after it, as
+    // it forbids every other break between its own boxes.
+    atomicBreakPending = occupies && pieceKey === undefined;
   };
 
   /** Emit one fixed-width CSS other-space separator as source-preserving box
@@ -1115,7 +1213,7 @@ export function buildItems(
       } else groups.push({ cjk, text: cluster, flowText, flowExclusion: clusterExclusion });
     }
 
-    flushPendingSpace(runIndex, isAnyDash(clean.charCodeAt(0)));
+    flushPendingSpace(runIndex, isAnyDash(clean.charCodeAt(0)), false, firstCodePoint(clean));
 
     // Each group is measured in ISOLATION, deliberately unlike pushWord's
     // prefix-incremental scheme: engines disagree on kana kerning between
@@ -1189,6 +1287,12 @@ export function buildItems(
     if (opts.protrusion !== false && piece.boxStartProtrusionPx !== undefined) {
       pendingPaintedStart = true;
       pendingBoxStartProtrusion += piece.boxStartProtrusionPx;
+    }
+    if (piece.atomic !== undefined) {
+      // An atomic piece carries no text to tokenize; its extras (a padded
+      // element opening or closing on it) are handled around this block
+      // exactly as they are for text.
+      pushAtomic(piece.atomic.widthPx, run);
     }
     // Capturing split groups alternate with text. Separator entries are
     // classified from their first code unit: fixed-width separators are

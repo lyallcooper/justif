@@ -105,6 +105,9 @@ export function runTexts(scan: ParagraphScan): RunText[] {
     padStartPx: r.padStartPx,
     padEndPx: r.padEndPx,
     atomicKey: r.atomicKey,
+    // The core needs the object's advance and nothing else about it; its
+    // element and styling stay on the scan, where the writer reads them.
+    atomic: r.atomic === undefined ? undefined : { widthPx: r.atomic.widthPx },
   }));
 }
 export function buildRunMetrics(

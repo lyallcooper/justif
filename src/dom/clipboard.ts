@@ -118,6 +118,21 @@ function removeCopiedBoundaryJoints(range: Range, fragment: DocumentFragment): v
   for (const node of remove) node.remove();
 }
 /**
+ * Drop the joints that stand for no author character at all, wherever they
+ * fall in the copy — not only at its edges, as the boundary joints above are.
+ *
+ * The distinction is what each one replaces. An ordinary line-boundary space
+ * IS the author's word space, so an interior one belongs in the copy; the
+ * space closing a line broken at an atomic object's junction replaces
+ * nothing, and exists only because Firefox honors no zero-width break
+ * opportunity between two objects (see RenderSegment.jointVoid). Copying a
+ * wrapped formula must not put a space inside it.
+ */
+function removeVoidJoints(fragment: DocumentFragment): void {
+  for (const joint of fragment.querySelectorAll(".justif-joint-void")) joint.remove();
+}
+
+/**
  * Clipboard cleanup is a DOCUMENT-level concern, so all controllers share one
  * listener: registering per controller meant a page that re-justifies without
  * destroying accumulated handlers, each one cloning the whole selection on
@@ -157,6 +172,7 @@ const onDocumentCopy = (e: ClipboardEvent): void => {
     const range = sel.getRangeAt(i);
     const frag = range.cloneContents();
     removeCopiedBoundaryJoints(range, frag);
+    removeVoidJoints(frag);
     const walker = document.createTreeWalker(frag, NodeFilter.SHOW_TEXT);
     for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
       n.nodeValue = clean(n.nodeValue ?? "");

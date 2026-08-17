@@ -9,6 +9,12 @@
  * borders and painted overflow into the widths they actually occupy, and
  * finding the forced breaks.
  *
+ * Not everything inline is text. An inline-level box the engine lays out as
+ * one object — a rendered formula, an inline-block chip — is read as an
+ * ATOMIC BOX instead: its measured advance, the element to clone, and the
+ * styling to pin on that clone. The walk stops at it, which is the point:
+ * what is inside an object is the object's business.
+ *
  * The other half of the job is saying no. Justif's contract is "enhance or
  * leave native", so anything the model cannot represent faithfully has to be
  * recognized HERE and reported as a reason rather than approximated: a
@@ -31,6 +37,28 @@ import {
 } from "./float-geometry.js";
 import { fragmentBoxesOf } from "./geometry.js";
 import { type FontSpec, fontSpecOf } from "./measure.js";
+
+/**
+ * An inline-level object the model places whole and never looks inside: a
+ * rendered equation, an inline-block chip, an out-of-flow subtree that
+ * carries no advance at all. Everything the layout needs about it is its
+ * measured advance; everything the writer needs is the element to clone and
+ * the styling to pin on that clone.
+ */
+export interface AtomicBox {
+  /** The author's own element, deep-cloned into the line that holds it. */
+  source: Element;
+  /** Margin-box advance, measured in the author's own layout. */
+  widthPx: number;
+  /**
+   * Inherited declarations pinned on the clone so the enhancement's own
+   * segment styling cannot resize a box whose width is already modeled.
+   * Measured: a segment's letterfit letter-spacing widens a KaTeX formula by
+   * ~1.8px per equation in all three engines, and the nowrap a segment
+   * carries widens a wrappable inline-block by a quarter of its width.
+   */
+  style: readonly (readonly [property: string, value: string])[];
+}
 
 /** One resolved styling run; adjacent sibling text nodes may be coalesced. */
 export interface StyledRun {
@@ -65,6 +93,8 @@ export interface StyledRun {
   /** Inherited visual style that differs from the paragraph and must be
    * restored on this fragment inside the reconstructed first-letter box. */
   floatInnerStyle?: readonly (readonly [property: string, value: string])[];
+  /** This run IS an atomic object rather than text (`text` is empty). */
+  atomic?: AtomicBox;
 }
 
 /** A visible forced line break in source order. `afterRun` partitions the
@@ -150,7 +180,16 @@ export function paragraphStyleKey(style: CSSStyleDeclaration): string {
   ].join(" ");
 }
 
-/** Content the v1 walker cannot lay out; the paragraph keeps native rendering. */
+/**
+ * Content the walker cannot lay out; the paragraph keeps native rendering.
+ *
+ * Replaced elements are here for a reason atomic boxes do not fix: their
+ * intrinsic size can resolve LATER. Measured, an `<img>` with no declared
+ * dimensions is 0px wide before its bytes arrive and 40px after, in all three
+ * engines — a scan-time advance that a later load invalidates. `<math>` is
+ * absent because a rendered formula IS measurable at scan time; it becomes an
+ * atomic box below.
+ */
 const REJECT_TAGS = new Set([
   "WBR",
   "IMG",
@@ -165,11 +204,60 @@ const REJECT_TAGS = new Set([
   "BUTTON",
   "SELECT",
   "TEXTAREA",
-  "MATH",
   "TABLE",
   "HR",
   "SVG",
 ]);
+
+/**
+ * Computed `display` values that make an element an inline-level ATOMIC box:
+ * one line-layout object, never split across lines, whose inside the model
+ * has no business modeling. KaTeX's `.base` spans are `inline-block`; the
+ * two-value serializations are listed because engines differ on which form
+ * they report.
+ *
+ * `<math>` is deliberately NOT recognized here but by tag below: measured,
+ * Chromium computes `display: math` for it while Firefox and WebKit report
+ * plain `inline`, though all three lay it out as one atomic object.
+ */
+const ATOMIC_DISPLAYS = new Set([
+  "inline-block",
+  "inline-flex",
+  "inline-grid",
+  "inline-table",
+  "inline flow-root",
+  "inline math",
+  "math",
+]);
+
+/**
+ * Descendants an atomic box may not contain, because the writer renders one
+ * by CLONING it: a canvas loses its bitmap, a media element its playback
+ * state, a form control its value, an iframe its whole document. Rejecting
+ * the box keeps the paragraph native, which is what these elements got
+ * before atomic boxes existed (they are in REJECT_TAGS for the same reason).
+ */
+const UNCLONEABLE =
+  "canvas,iframe,video,audio,object,embed,input,button,select,textarea,slot," +
+  '[contenteditable=""],[contenteditable="true"]';
+
+/**
+ * Inherited properties pinned onto an atomic box's clone. Each is a
+ * declaration the enhancement itself writes on the segments it emits, and so
+ * one that would otherwise reach INSIDE an object whose advance is already
+ * modeled: the letterfit and expansion a line carries, the word-spacing its
+ * glue resolved to, the nowrap that makes a line one unbreakable fragment,
+ * the kerning suppression a CJK segment declares, and the alignment justif
+ * substitutes for the author's.
+ */
+const ATOMIC_PINNED_PROPERTIES = [
+  "white-space",
+  "letter-spacing",
+  "word-spacing",
+  "font-stretch",
+  "font-kerning",
+  "text-align",
+] as const;
 
 /**
  * Scripts still out of scope: Southeast Asian scripts whose line breaks
@@ -416,6 +504,62 @@ function supportedTextTransform(value: string): boolean {
 }
 
 /**
+ * Reads one atomic box, or says why this element is not one.
+ *
+ * Two shapes qualify. An IN-FLOW atomic inline (`display: inline-block` and
+ * relatives, plus `<math>`) is one line-layout object: measured across
+ * Chromium, Firefox and WebKit, its border box is exactly its advance — a
+ * nowrap segment holding text, such an object and more text measures its
+ * three parts to the pixel — and every engine offers a break on both sides of
+ * it, which the item model reproduces. An OUT-OF-FLOW subtree (absolute or
+ * fixed) contributes no advance at all, so it becomes a zero-width box that
+ * exists only to carry its DOM: that is what keeps KaTeX's visually hidden
+ * MathML, the accessible half of a rendered formula, in the enhanced output.
+ *
+ * Returns null when the element is ordinary inline content (the caller
+ * descends into it as before), or a bail string when it is atomic in shape
+ * but not in a form the writer can reproduce.
+ */
+function readAtomicBox(el: Element, elStyle: CSSStyleDeclaration): AtomicBox | string | null {
+  const outOfFlow = elStyle.position === "absolute" || elStyle.position === "fixed";
+  const inFlowAtomic =
+    !outOfFlow &&
+    (ATOMIC_DISPLAYS.has(elStyle.display) || el.tagName.toUpperCase() === "MATH");
+  if (!outOfFlow && !inFlowAtomic) return null;
+  const name = el.tagName.toLowerCase();
+  if (elStyle.float !== "none") return "floated element is not a leading direct child";
+  // A shadow root does not come along on cloneNode, so the rendered box would
+  // be empty. Only the host itself is checked: walking a subtree for hosts
+  // would cost every atomic box a tree walk to catch a shape essentially no
+  // formula or chip has.
+  if (el.shadowRoot !== null) return `atomic <${name}> hosts a shadow root`;
+  if (el.querySelector(UNCLONEABLE) !== null) {
+    return `atomic <${name}> contains content a clone would not reproduce`;
+  }
+  if (outOfFlow) return { source: el, widthPx: 0, style: [] };
+  // A transform scales the rect but not the advance the box occupies, so the
+  // one number this model has for the object would be the wrong one. (An
+  // ANCESTOR transform scales the paragraph's own measure by the same factor
+  // — see contentWidthOf — so those stay consistent and are not rejected.)
+  if (elStyle.transform !== "none") return `transformed atomic <${name}>`;
+  const rect = el.getBoundingClientRect();
+  // Margins on an atomic box ARE modelable, unlike the ones on an inline: the
+  // object's contribution to the line is its margin box, and the clone
+  // carries the same declarations the measurement saw. A net negative margin
+  // is clamped away — the breaker requires nonnegative widths, and an object
+  // pulled into its neighbors is past what the line model can promise.
+  const margins =
+    (parseFloat(elStyle.marginLeft) || 0) + (parseFloat(elStyle.marginRight) || 0);
+  return {
+    source: el,
+    widthPx: Math.max(0, rect.width + margins),
+    style: ATOMIC_PINNED_PROPERTIES.map(
+      (property) => [property, elStyle.getPropertyValue(property)] as const,
+    ).filter(([, value]) => value !== ""),
+  };
+}
+
+/**
  * Why the model cannot place this inline element's content, or null when it
  * can. `padded` says whether the element has horizontal insets, which decides
  * whether `box-decoration-break` has any decoration to repeat.
@@ -548,7 +692,11 @@ export function readParagraph(p: HTMLElement, batch?: ScanBatch): ParagraphScan 
     let firstBoxAt = -1;
     let lastBoxAt = -1;
     for (let i = 0; i < inside.length; i++) {
-      if (!textMakesBox(inside[i]!.text)) continue;
+      // An atomic object is a box of the element's content as much as a word
+      // is, so a chip whose whole content is one formula owns its padding
+      // like any other.
+      const run = inside[i]!;
+      if (run.atomic === undefined && !textMakesBox(run.text)) continue;
       if (firstBoxAt < 0) firstBoxAt = i;
       lastBoxAt = i;
     }
@@ -656,6 +804,25 @@ export function readParagraph(p: HTMLElement, batch?: ScanBatch): ParagraphScan 
           return;
         }
         const elStyle = view.getComputedStyle(el);
+        const atomic = readAtomicBox(el, elStyle);
+        if (typeof atomic === "string") {
+          skip = atomic;
+          return;
+        }
+        if (atomic !== null) {
+          // An object, not a styling context: it takes no spec of its own
+          // (nothing here is measured in a font) and no descent. The
+          // enclosing chain is kept so the writer nests the clone exactly
+          // where the author put it.
+          runs.push({
+            text: "",
+            spec,
+            ancestors: chain,
+            atomicKey,
+            atomic,
+          });
+          continue;
+        }
         const insets = inlineInsets(elStyle, direction);
         const padded = insets.start > 0 || insets.end > 0;
         skip = inlineBailReason(el, elStyle, cs, padded);

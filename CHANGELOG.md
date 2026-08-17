@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Paragraphs with inline math are now justified instead of being left to the
+  browser. Rendered formulas (KaTeX in either output mode, MathJax's CommonHTML
+  output, or native `<math>`) are set as unbreakable boxes at the width your own
+  layout gives them, and lines may break between the pieces a formula is split
+  into but never inside one. The same applies to `inline-block` chips and other
+  inline-level boxes. Nothing to configure, and an equation is never stretched
+  or letterspaced to fill a line. Fixes #17.
+
 - Fixed justified text pushing the page wider in Safari, seen most often as a
   sideways scroll on iPhone. Justified paragraphs now keep the exact measure
   the page gave them — whether the paragraph is itself a Grid or Flex item or

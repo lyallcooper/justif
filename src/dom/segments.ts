@@ -178,6 +178,9 @@ export function buildRenderSegments(
   let pendingJoint: RenderSegment["joint"] = "none";
   /** Whether the line that joint closes was set beside the float. */
   let pendingJointBesideFloat = false;
+  /** Whether that joint stands for no source character at all (a break at an
+   * atomic object's junction — see RenderSegment.jointVoid). */
+  let pendingJointVoid = false;
 
   // Inline padding/border (StyledRun.padStartPx/padEndPx) is layout width
   // the corrective measurement can't see in the text rects — it renders on
@@ -233,6 +236,7 @@ export function buildRenderSegments(
 
     let joint = pendingJoint;
     let jointFlat = pendingJoint === "space" && pendingJointBesideFloat;
+    let jointVoid = pendingJointVoid;
     let first = true;
     let text = "";
     let run = -1;
@@ -256,6 +260,10 @@ export function buildRenderSegments(
      * separate it from the next Box. Retain its source edge so cross-run
      * dash junctions receive the same WJ protection as unflushed boxes. */
     let fixedBoundary: { lastChar: string; run: number } | undefined;
+    /** The last thing placed on this line was an atomic object, so a space
+     * arriving now opens a segment rather than continuing one (see the glue
+     * branch below). */
+    let afterObject = false;
     let flowExclusion: { start: number; end: number } | undefined;
     /** Set while flushing a rigid boundary glue's own segment. */
     let rigidFlex: { stretch: number; shrink: number } | null = null;
@@ -358,6 +366,7 @@ export function buildRenderSegments(
         cjk: hasCJK,
         joint,
         jointFlat: jointFlat ? true : undefined,
+        jointVoid: jointVoid ? true : undefined,
         marginStartOwner:
           first && line.leftHang > 0 ? srcRun.boxStartProtrusionOwner : undefined,
         // Assigned only to the line's actual final segment below. Pointing
@@ -370,6 +379,7 @@ export function buildRenderSegments(
       if (flowText.length > 0) {
         joint = "none";
         jointFlat = false;
+        jointVoid = false;
         first = false;
       }
       text = "";
@@ -420,7 +430,66 @@ export function buildRenderSegments(
 
     for (let i = line.start; i < line.end; i++) {
       const it = para.items[i]!;
+      if (it.type === ItemType.Box && it.atomic === true) {
+        // An object stands alone: it is placed, not set, so it shares a
+        // segment with no text — which is also what lets its own element
+        // sit at its authored depth in the cloned inline ancestry.
+        flush();
+        fixedBoundary = undefined;
+        const srcRun = scan.runs[it.run]!;
+        // Decoration accounting is the text path's, unchanged: an inline
+        // whose whole content is one object opens its padding on that
+        // object's segment and closes it there too.
+        let decorPx: number | undefined;
+        if (srcRun.padStartPx !== undefined && !decorStartSeen.has(it.run)) {
+          decorStartSeen.add(it.run);
+          decorPx = srcRun.padStartPx;
+        }
+        segments.push({
+          text: "",
+          atomic: {
+            source: srcRun.atomic!.source,
+            style: srcRun.atomic!.style,
+            // A weld at the line's own edge would forbid the break the joint
+            // there depends on. The trailing one is withdrawn below, once
+            // the line's last segment is known.
+            weldStart: !first,
+            weldEnd: true,
+          },
+          ancestors: srcRun.ancestors,
+          wordSpacingPx: 0,
+          adjustableSpaceCount: 0,
+          // Nothing about an object is spacing, so no correction may be
+          // distributed onto it; the line's text carries the whole
+          // adjustment. Its own measured rect still enters the line extent,
+          // which is what makes a drifted object width self-correcting.
+          allowLetterCorrection: false,
+          letterSpacingPx: null,
+          resolvedLetterSpacingPx: 0,
+          fontStretchPct: 100,
+          // An object protrudes nothing of its own, but a painted inline
+          // opening on it still hangs its decoration into the margin.
+          marginStartPx: first ? -line.leftHang : 0,
+          marginStartOwner:
+            first && line.leftHang > 0 ? srcRun.boxStartProtrusionOwner : undefined,
+          marginEndPx: 0, // the line's last segment is patched after the loop
+          edgeTrim: { lead: 0, trail: 0, modelPx: 0 },
+          decorPx,
+          joint,
+          jointFlat: jointFlat ? true : undefined,
+          jointVoid: jointVoid ? true : undefined,
+          marginEndOwner: undefined,
+        });
+        if (srcRun.padEndPx !== undefined) lastSegForRun.set(it.run, segments.length - 1);
+        joint = "none";
+        jointFlat = false;
+        jointVoid = false;
+        first = false;
+        afterObject = true;
+        continue;
+      }
       if (it.type === ItemType.Box) {
+        afterObject = false;
         const ownFixedSegment =
           it.otherSpace === true || AUTHOR_NO_BREAK_SPACE.test(it.text);
         const firstChar = it.text[0] ?? "";
@@ -537,7 +606,14 @@ export function buildRenderSegments(
         // engine's edge-space heuristics. Word-spacing applies to it
         // identically; the glyph advance usually matches too, and flush()
         // shaves off the surplus in the fonts where it does not.
-        if (run === -1 || run === it.run) {
+        //
+        // The space after an ATOMIC OBJECT takes the same treatment even
+        // when it continues the run the object interrupted. Measured: a
+        // plain space opening the segment after an object is where Firefox
+        // ends the line, dropping the rest of a line that fit to the pixel
+        // — the object's own word joiner cannot speak for a boundary the
+        // space owns.
+        if (!afterObject && (run === -1 || run === it.run)) {
           run = it.run;
           text += " ";
           adjustableSpaceCount++;
@@ -549,6 +625,7 @@ export function buildRenderSegments(
           text = "\u00A0";
           adjustableSpaceCount = 1;
           leadingSyntheticNbsp = true;
+          afterObject = false;
         }
       }
       // Penalties not broken at render nothing.
@@ -562,6 +639,10 @@ export function buildRenderSegments(
       // The line's chosen break remains available. Only fixed separators
       // followed by another box on this same modeled line need welding.
       last.weldEnd = false;
+      // Same rule for an object closing the line: the joint after it is the
+      // break the next line begins at, and a word joiner in front of that
+      // joint is exactly what would forbid it.
+      if (last.atomic !== undefined) last.atomic.weldEnd = false;
       let endBox: Box | undefined;
       for (let i = line.end - 1; i >= line.start; i--) {
         const candidate = para.items[i]!;
@@ -718,6 +799,7 @@ export function buildRenderSegments(
     // Decide the joint that separates this line from the next.
     const brk = para.items[line.end];
     pendingJointBesideFloat = lineOffset + lineIndex < (scan.floatIntrusion?.lines ?? 0);
+    pendingJointVoid = false;
     if (line.hyphenated) pendingJoint = "hyphen";
     else if (brk !== undefined && brk.type === ItemType.Glue) pendingJoint = "space";
     else if (
@@ -726,8 +808,8 @@ export function buildRenderSegments(
       brk.width === 0 &&
       !brk.flagged
     ) {
-      // Unflagged zero-width penalties come in two kinds, told apart by
-      // the `cjk` discriminator. Hand-built zero-width penalties sit BEFORE a
+      // Unflagged zero-width penalties come in several kinds, told apart by
+      // their discriminators. Hand-built zero-width penalties sit BEFORE a
       // glue at a real space: the break consumes that space, which must
       // still appear in the DOM text — a zero-width joint there would
       // silently delete it from copies and find-in-page. CJK inter-character
@@ -735,7 +817,18 @@ export function buildRenderSegments(
       // copies (and render a visible gap), so they get the bare zero-width
       // joint. Explicit-hyphen breaks are flagged and keep the zero-width
       // joint below.
-      pendingJoint = brk.cjk === true || brk.fixedSpace === true ? "wbr" : "space";
+      //
+      // An atomic object's junction has no source space either, but cannot
+      // use that zero-width joint: measured, Firefox ignores it between two
+      // objects and runs a formula clean past the measure. It takes a flat
+      // space instead, marked as standing for nothing so copies drop it
+      // (see RenderSegment.jointVoid).
+      if (brk.atomic === true) {
+        pendingJoint = "space";
+        pendingJointVoid = true;
+      } else {
+        pendingJoint = brk.cjk === true || brk.fixedSpace === true ? "wbr" : "space";
+      }
     } else pendingJoint = "wbr"; // zero-width flagged penalty (dash break)
   }
 

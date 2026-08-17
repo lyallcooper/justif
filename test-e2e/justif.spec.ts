@@ -43,6 +43,25 @@ declare global {
       contentRight: number;
       lines: Array<{ top: number; left: number; right: number; texts: string[] }>;
     };
+    /**
+     * Lines of a paragraph containing ATOMIC OBJECTS, read from the rendered
+     * segments instead of from word rects (see fixture.html): an object's own
+     * text sits at tops of its own, and its box is taller than the text
+     * beside it, so the word reader's top clustering stops finding lines.
+     */
+    __justifObjectLines: (root: Element) => {
+      contentRight: number;
+      lines: Array<{
+        left: number;
+        right: number;
+        objects: number;
+        segments: number;
+        /** A segment of this MODEL line started back at the margin: the
+         * engine broke where justif did not. */
+        fragmented: boolean;
+      }>;
+      objects: Array<{ width: number; line: number }>;
+    };
     __ready: boolean;
     /** Nonstandard find-in-page (all three engines implement it). */
     find(
@@ -9041,6 +9060,11 @@ test("a length-changing text-transform is measured, not skipped", async ({ page 
     const sharp = make("tt-sharp", source, "text-transform: uppercase;");
     // The same RENDERING, written out: ß already spelled SS, no transform.
     const literal = make("tt-literal", source.toUpperCase());
+    // A host appended to the body lands past the fold of a fixture this
+    // long, where corrections are parked until the reveal observer promotes
+    // them — and the edges below are exactly what an uncorrected line gets
+    // wrong. Scroll it in before enhancing, as the float fixtures do.
+    host.scrollIntoView({ block: "center" });
 
     const skips: Record<string, string> = {};
     const controller = window.__justif.justify([sharp, literal], {
@@ -9218,4 +9242,469 @@ test("a small-caps acronym lowercased by text-transform is enhanced", async ({ p
   expect(result.caps).toBe("small-caps");
   expect(result.text).toContain("LLM");
   expect(result.restored).toBe(result.before);
+});
+
+/**
+ * Atomic object boxes: inline-level things the model places whole rather than
+ * sets — a rendered formula, an inline-block chip, native MathML. The
+ * fixture's math paragraphs carry KaTeX's own DOM shape (see fixture.html).
+ *
+ * Every assertion here is ultimately the same one the rest of the suite makes
+ * — the lines reach the measure — because that is what an object gets wrong
+ * when its width is modeled wrongly, and what an unwelded junction gets wrong
+ * when the engine breaks a line the model did not.
+ */
+interface ObjectGeometry {
+  paragraph: string;
+  skipped: string | undefined;
+  contentRight: number;
+  lines: Array<{
+    left: number;
+    right: number;
+    objects: number;
+    segments: number;
+    fragmented: boolean;
+  }>;
+  objects: Array<{ width: number; line: number }>;
+}
+
+async function readObjectGeometry(page: Page): Promise<ObjectGeometry[]> {
+  return page.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>("#obj-host p")].map((p) => {
+      const g = window.__justifObjectLines(p);
+      return {
+        paragraph: p.id,
+        skipped: (window as unknown as { __skips: Record<string, string> }).__skips[p.id],
+        contentRight: g.contentRight,
+        lines: g.lines,
+        objects: g.objects,
+      };
+    }),
+  );
+}
+
+async function enhanceObjects(page: Page, options: object = {}): Promise<void> {
+  await page.evaluate(async (opts) => {
+    const j = window.__justif;
+    j.controller?.destroy();
+    // These assertions are about CORRECTED geometry, and corrections are
+    // parked for a paragraph sitting past the fold until the reveal observer
+    // promotes them.
+    document.getElementById("obj-host")!.scrollIntoView({ block: "center" });
+    const skips: Record<string, string> = {};
+    (window as unknown as { __skips: Record<string, string> }).__skips = skips;
+    j.controller = j.justify(document.querySelectorAll("#obj-host p"), {
+      ...(opts as object),
+      onSkip: (p: HTMLElement, reason: string) => {
+        skips[p.id] = reason;
+      },
+    } as object);
+    await j.controller.ready;
+  }, options);
+}
+
+/** Microtypography off, so a line's painted edge IS its measure: what is
+ * being tested here is where the objects put the line, not how far a comma
+ * hangs past it. The defaults get their own test below. */
+const PLAIN = {
+  protrusion: false,
+  hangingPunctuation: "none",
+  expansion: false,
+  tracking: false,
+};
+
+test("paragraphs with inline objects set flush, objects and all", async ({ page }) => {
+  await openFixture(page);
+  await enhanceObjects(page, PLAIN);
+  const paragraphs = await readObjectGeometry(page);
+  expect(paragraphs.map((p) => p.paragraph)).toEqual([
+    "p-math",
+    "p-mathml",
+    "p-split",
+    "p-chip",
+    "p-wrap",
+  ]);
+  for (const p of paragraphs) {
+    expect(p.skipped, `${p.paragraph} was left native: ${p.skipped}`).toBeUndefined();
+    expect(p.lines.length, p.paragraph).toBeGreaterThan(2);
+    expect(p.objects.length, p.paragraph).toBeGreaterThan(0);
+    for (const [index, line] of p.lines.entries()) {
+      // No line justif wrote may be broken again by the engine — the object
+      // junctions are the only places inside a line where it could.
+      expect
+        .soft(line.fragmented, `${p.paragraph} line ${index} was re-broken`)
+        .toBe(false);
+      if (index === p.lines.length - 1) continue;
+      // #p-wrap's object is as wide as the measure (that is what makes its
+      // width depend on the white-space it inherits), so the line holding it
+      // is full by the object alone and reaches the measure like the rest.
+      expect
+        .soft(Math.abs(line.right - p.contentRight), `${p.paragraph} line ${index}`)
+        .toBeLessThan(0.5);
+    }
+  }
+});
+
+test("objects set flush under the default microtypography too", async ({ page }) => {
+  await openFixture(page);
+  // Expansion is the one that would reach INTO an object: it renders as
+  // font-stretch on the segment, which the object's pinned styling stops at
+  // its own boundary. Protrusion and hanging punctuation move the painted
+  // edge past the measure by design, so the bound below is one-sided.
+  await enhanceObjects(page);
+  const paragraphs = await readObjectGeometry(page);
+  for (const p of paragraphs) {
+    expect(p.skipped, p.paragraph).toBeUndefined();
+    for (const [index, line] of p.lines.entries()) {
+      if (index === p.lines.length - 1) continue;
+      const overhang = line.right - p.contentRight;
+      expect.soft(overhang, `${p.paragraph} line ${index} falls short`).toBeGreaterThan(-0.5);
+      expect.soft(overhang, `${p.paragraph} line ${index} overhangs`).toBeLessThan(8);
+    }
+  }
+});
+
+test("an object renders at the width the author's own layout gave it", async ({ page }) => {
+  await openFixture(page);
+  // Native widths first: the model measures these, and the enhancement must
+  // not change them. #p-wrap's object is the sharp case — its used width is
+  // shrink-to-fit, so the nowrap a segment carries would widen it.
+  const before = await page.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>("#obj-host .base, #obj-host .chip, #obj-host .wrapbox, #obj-host math")].map(
+      (el) => el.getBoundingClientRect().width,
+    ),
+  );
+  await enhanceObjects(page);
+  const after = await page.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>("#obj-host .base, #obj-host .chip, #obj-host .wrapbox, #obj-host math")].map(
+      (el) => el.getBoundingClientRect().width,
+    ),
+  );
+  expect(after.length).toBe(before.length);
+  for (const [index, width] of after.entries()) {
+    expect(width, `object ${index} changed width under enhancement`).toBeCloseTo(
+      before[index]!,
+      1,
+    );
+  }
+
+  // And the pinning that keeps it that way, asserted directly rather than
+  // through whatever styling this paragraph's lines happened to need: put
+  // every declaration a segment can carry on the segments themselves, and
+  // the objects inside them must not move. (Measured without the pinning, a
+  // segment's letter-spacing widens a KaTeX formula by ~1.8px.)
+  const shielded = await page.evaluate(() => {
+    const objects = [...document.querySelectorAll<HTMLElement>("#obj-host .justif-seg")]
+      .map((seg) => ({ seg, object: seg.firstElementChild as HTMLElement | null }))
+      .filter((entry) => entry.object !== null);
+    const widths = objects.map(({ object }) => object!.getBoundingClientRect().width);
+    for (const { seg } of objects) {
+      seg.style.letterSpacing = "2px";
+      seg.style.wordSpacing = "8px";
+      seg.style.fontStretch = "125%";
+    }
+    const after = objects.map(({ object }) => object!.getBoundingClientRect().width);
+    for (const { seg } of objects) seg.removeAttribute("style");
+    return { widths, after };
+  });
+  expect(shielded.widths.length).toBeGreaterThan(3);
+  for (const [index, width] of shielded.after.entries()) {
+    expect(width, `object ${index} moved with its segment's styling`).toBeCloseTo(
+      shielded.widths[index]!,
+      1,
+    );
+  }
+});
+
+test("an out-of-flow subtree keeps its accessible content and takes no advance", async ({
+  page,
+}) => {
+  await openFixture(page);
+  await enhanceObjects(page);
+  const result = await page.evaluate(() => {
+    const p = document.getElementById("p-math")!;
+    const mathml = p.querySelector(".katex-mathml math");
+    const wrapper = p.querySelector(".katex-mathml");
+    return {
+      mathml: mathml !== null,
+      mathmlText: mathml?.textContent ?? "",
+      // The segment carrying it contributes nothing to any line.
+      wrapperSegmentWidth:
+        wrapper?.closest(".justif-seg")?.getBoundingClientRect().width ?? -1,
+      objects: p.querySelectorAll(".justif-seg > .base").length,
+    };
+  });
+  expect(result.mathml).toBe(true);
+  expect(result.mathmlText).toContain("x");
+  expect(result.wrapperSegmentWidth).toBeCloseTo(0, 1);
+  expect(result.objects).toBe(2);
+});
+
+test("object junctions copy without the joiners that hold them together", async ({ page }) => {
+  await openFixture(page);
+  await enhanceObjects(page);
+  const result = await page.evaluate(() => {
+    const p = document.getElementById("p-chip")!;
+    const range = document.createRange();
+    range.selectNodeContents(p);
+    const selection = getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    const event = new ClipboardEvent("copy", {
+      clipboardData: new DataTransfer(),
+      cancelable: true,
+    });
+    document.dispatchEvent(event);
+    selection.removeAllRanges();
+    return {
+      rendered: p.textContent ?? "",
+      copied: event.clipboardData!.getData("text/plain"),
+    };
+  });
+  // The joiners are in the DOM (they are what forbids the engine's own break
+  // beside an object) and out of the clipboard.
+  expect(result.rendered).toContain("⁠");
+  expect(result.copied).not.toContain("⁠");
+  expect(result.copied).toContain("Inline chips such as alpha and beta");
+});
+
+test("destroy() restores object paragraphs byte-identically", async ({ page }) => {
+  await openFixture(page);
+  const before = await page.evaluate(() =>
+    [...document.querySelectorAll("#obj-host p")].map((p) => p.outerHTML),
+  );
+  await enhanceObjects(page);
+  const after = await page.evaluate(() => {
+    window.__justif.controller!.destroy();
+    return [...document.querySelectorAll("#obj-host p")].map((p) => p.outerHTML);
+  });
+  expect(after).toEqual(before);
+});
+
+/**
+ * Content a clone cannot reproduce keeps the paragraph native, exactly as it
+ * did before objects were placeable at all: an inline-block wrapper is not a
+ * licence to clone a canvas's bitmap or a control's value away.
+ */
+test("an object wrapping uncloneable content leaves the paragraph native", async ({ page }) => {
+  await openFixture(page);
+  const skips = await page.evaluate(async () => {
+    const host = document.createElement("div");
+    host.id = "uncloneable-host";
+    host.innerHTML =
+      '<p id="p-canvas" style="width:300px;text-align:justify;font:17px/1.5 Georgia,serif">' +
+      "A paragraph whose object holds a canvas " +
+      '<span style="display:inline-block"><canvas width="40" height="12"></canvas></span> ' +
+      "must stay with the engine, since the clone would carry an empty one, and " +
+      "there is enough text here to make several lines of it.</p>";
+    document.body.append(host);
+    const reasons: Record<string, string> = {};
+    const controller = window.__justif.justify(document.querySelectorAll("#uncloneable-host p"), {
+      onSkip: (p: HTMLElement, reason: string) => {
+        reasons[p.id] = reason;
+      },
+    } as object);
+    await controller.ready;
+    const segments = document.querySelectorAll("#uncloneable-host .justif-seg").length;
+    controller.destroy();
+    return { reasons, segments };
+  });
+  expect(skips.segments).toBe(0);
+  expect(skips.reasons["p-canvas"]).toContain("clone would not reproduce");
+});
+
+/**
+ * An object at a line's own edge. The word joiners that hold an object to its
+ * neighbors mid-line must NOT be written there: the joint outside the segment
+ * is the break the next line begins at, and a joiner in front of it forbids
+ * exactly that break. The object here is wide enough that it cannot share a
+ * line with the text before it, so it both starts a line and ends one.
+ */
+test("an object at a line edge keeps the break the line needs", async ({ page }) => {
+  await openFixture(page);
+  const result = await page.evaluate(async () => {
+    const host = document.createElement("div");
+    host.id = "edge-object-host";
+    document.body.append(host);
+    const p = document.createElement("p");
+    p.id = "p-edge";
+    p.setAttribute(
+      "style",
+      "width: 300px; text-align: justify; font: 17px/1.5 Georgia, serif; margin: 0;",
+    );
+    p.innerHTML =
+      "A paragraph whose object is far too wide to share a line with the words " +
+      'before it: <span style="display:inline-block;width:280px;background:#eef">' +
+      "wide</span> and then enough words after it to set several more lines of " +
+      "ordinary prose against the same measure.";
+    host.append(p);
+    host.scrollIntoView({ block: "center" });
+    const skips: Record<string, string> = {};
+    const controller = window.__justif.justify([p], {
+      protrusion: false,
+      hangingPunctuation: "none",
+      expansion: false,
+      tracking: false,
+      onSkip: (el: HTMLElement, reason: string) => (skips[el.id] = reason),
+    } as object);
+    await controller.ready;
+    const g = window.__justifObjectLines(p);
+    const cs = getComputedStyle(p);
+    const contentLeft = p.getBoundingClientRect().left + parseFloat(cs.paddingLeft);
+    const object = g.objects[0]!;
+    const out = {
+      skips,
+      lines: g.lines.map((l) => ({
+        short: +(g.contentRight - l.right).toFixed(2),
+        startsAtMargin: Math.abs(l.left - contentLeft) < 1,
+      })),
+      objectLine: object.line,
+      objectAlone: g.lines[object.line]!.segments === 1,
+      fragmented: g.lines.some((l) => l.fragmented),
+      // The object's line must still be reachable from both sides: the line
+      // before it ends, and the line after it starts, at real breaks.
+      lineCount: g.lines.length,
+    };
+    controller.destroy();
+    host.remove();
+    return out;
+  });
+  expect(result.skips).toEqual({});
+  expect(result.lineCount).toBeGreaterThan(3);
+  expect(result.fragmented).toBe(false);
+  // The object could not fit beside the opening words, so it holds a line of
+  // its own — one that starts at the margin like any other.
+  expect(result.objectAlone).toBe(true);
+  expect(result.lines[result.objectLine]!.startsAtMargin).toBe(true);
+  // Every line but the object's own (which is as long as the object) and the
+  // paragraph's last reaches the measure.
+  for (const [index, line] of result.lines.entries()) {
+    if (index === result.objectLine || index === result.lines.length - 1) continue;
+    expect.soft(Math.abs(line.short), `line ${index}`).toBeLessThan(0.5);
+  }
+});
+
+/**
+ * The welds themselves, put under the load they exist for. Everything else
+ * about an object's line keeps it at or under the measure, so squeeze the
+ * measure out from under a finished paragraph instead: every line is then
+ * overfull, and the engine will take any break it can find. The only ones on
+ * offer inside a line are an object's two junctions, and a line that loses
+ * its tail to one of them is the whole failure mode — a formula stranded on
+ * a line of its own with a half-empty line above it.
+ *
+ * Read synchronously, before the resize observer re-lays the paragraph out:
+ * what is being tested is what the ENGINE does with the DOM justif wrote.
+ *
+ * Native `<math>` is excluded, and only in the sense that it is not asserted
+ * about: measured, Firefox breaks at a MathML boundary as soon as the line
+ * does not fit, whatever forbids the break there. That is the engine's own
+ * last resort, and what keeps it from firing is the wrap spare a corrected
+ * object line retains rather than the joiners. Every renderer that produces
+ * inline-blocks — KaTeX's `.base`, MathJax's container — is covered here.
+ */
+test("an overfull line never breaks at an object's junctions", async ({ page }) => {
+  await openFixture(page);
+  const result = await page.evaluate(async () => {
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    document.getElementById("obj-host")!.scrollIntoView({ block: "center" });
+    const controller = window.__justif.justify(
+      document.querySelectorAll("#obj-host p"),
+      { protrusion: false, hangingPunctuation: "none", expansion: false } as object,
+    );
+    await controller.ready;
+    const host = document.getElementById("obj-host")!;
+    const paragraphs = [...document.querySelectorAll<HTMLElement>("#obj-host p")].filter(
+      (p) => p.id !== "p-mathml",
+    );
+    const fragmented = (p: HTMLElement) =>
+      window.__justifObjectLines(p).lines.filter((l) => l.fragmented).length;
+    const before = paragraphs.map(fragmented);
+    // Narrower by more than any slack a line carries (the wrap spare is a
+    // quarter pixel), and read back in the same task: the observer's
+    // re-layout runs on a later frame.
+    host.style.width = "438px";
+    const squeezed = paragraphs.map(fragmented);
+    host.style.width = "";
+    controller.destroy();
+    return { before, squeezed, ids: paragraphs.map((p) => p.id) };
+  });
+  expect(result.ids.length).toBe(4);
+  // The lines overflow (they have nowhere legal to break) rather than
+  // fragmenting at an object.
+  expect(result.before).toEqual([0, 0, 0, 0]);
+  for (const [index, id] of result.ids.entries()) {
+    expect(result.squeezed[index], `${id} fragmented at an object junction`).toBe(0);
+  }
+});
+
+/**
+ * A formula wider than the measure has to WRAP, at the boundaries between the
+ * pieces its renderer split it into — which is where TeX breaks a long
+ * relation too, and what the engine does with it natively.
+ *
+ * The joint at such a break is the one place in the enhanced DOM that has to
+ * be a real space: measured, Firefox honors no zero-width opportunity between
+ * two adjacent objects (not the generated ZWSP every other joint uses, not a
+ * real one), so the formula ran 191px past the measure there. The space is
+ * written flat, so it costs no advance, and stripped from copies, so the
+ * formula's own text is unchanged by having wrapped.
+ */
+test("a formula too wide for the measure wraps between its own pieces", async ({ page }) => {
+  await openFixture(page);
+  const result = await page.evaluate(async () => {
+    document.getElementById("obj-host")!.scrollIntoView({ block: "center" });
+    const controller = window.__justif.justify(document.querySelectorAll("#obj-host p"), {
+      protrusion: false,
+      hangingPunctuation: "none",
+      expansion: false,
+      tracking: false,
+    } as object);
+    await controller.ready;
+    const p = document.getElementById("p-split")!;
+    const g = window.__justifObjectLines(p);
+    // Which line each piece of the formula landed on.
+    const pieceLines = g.objects.map((o) => o.line);
+    const range = document.createRange();
+    range.selectNodeContents(p);
+    const selection = getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    const event = new ClipboardEvent("copy", {
+      clipboardData: new DataTransfer(),
+      cancelable: true,
+    });
+    document.dispatchEvent(event);
+    selection.removeAllRanges();
+    const out = {
+      pieces: g.objects.length,
+      distinctLines: new Set(pieceLines).size,
+      fragmented: g.lines.some((l) => l.fragmented),
+      shortfalls: g.lines
+        .slice(0, -1)
+        .map((l) => +(g.contentRight - l.right).toFixed(2)),
+      copied: event.clipboardData!.getData("text/plain"),
+      // The joint is written without an advance of its own.
+      jointWidth: [...p.querySelectorAll(".justif-joint-void")].map(
+        (j) => j.getBoundingClientRect().width,
+      ),
+    };
+    controller.destroy();
+    return out;
+  });
+  expect(result.pieces).toBe(4);
+  // The formula spans more than one line, and no line the model wrote was
+  // re-broken by the engine.
+  expect(result.distinctLines).toBeGreaterThan(1);
+  expect(result.fragmented).toBe(false);
+  for (const [index, short] of result.shortfalls.entries()) {
+    expect.soft(Math.abs(short), `line ${index}`).toBeLessThan(0.5);
+  }
+  expect(result.jointWidth.length).toBeGreaterThan(0);
+  for (const width of result.jointWidth) expect(width).toBeCloseTo(0, 1);
+  // Copied, the formula reads exactly as its author wrote it: the wrap left
+  // nothing behind in the text. (The fixture spaces its pieces with author
+  // NBSPs, which the cleanup preserves — normalized here so the assertion is
+  // about the joint and not about them.)
+  expect(result.copied.replace(/\u00A0/g, " ")).toContain("a + b = c + d = e + f = g + h");
 });

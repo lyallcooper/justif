@@ -1026,6 +1026,150 @@ describe("atomic (nowrap) scopes", () => {
 
 });
 
+describe("atomic object boxes", () => {
+  const OBJECT_WIDTH = 40;
+  const object = (run = 0, widthPx = OBJECT_WIDTH) => ({
+    text: "",
+    run,
+    atomic: { widthPx },
+  });
+
+  /** Like `shape`, but an object box shows its width instead of its (empty)
+   * text — every one of them would otherwise read `box()`. */
+  function objShape(items: Item[]): string {
+    return items
+      .map((it) => {
+        if (it.type === ItemType.Box) {
+          return it.atomic === true ? `obj(${it.width})` : `box(${it.text})`;
+        }
+        if (it.type === ItemType.Glue) return it.stretchFil > 0 ? "fil" : "glue";
+        return `pen(${it.penalty})`;
+      })
+      .join(" ");
+  }
+
+  const buildWith = (texts: Parameters<typeof buildItems>[0], opts: Partial<BuildOptions> = {}) =>
+    buildItems(
+      texts,
+      [mockRun(), mockRun(), mockRun()],
+      { ...defaultBuildOptions, ...opts },
+      mockMeasure,
+    );
+
+  it("places an object as a rigid box between the spaces around it", () => {
+    const para = buildWith([{ text: "at ", run: 0 }, object(1), { text: " rest", run: 0 }]);
+    expect(objShape(para.items)).toBe(
+      "box(at) glue obj(40) glue box(rest) pen(10000) fil pen(-10000)",
+    );
+  });
+
+  it("offers a priced break at both junctions when no space separates them", () => {
+    const para = buildWith([{ text: "at", run: 0 }, object(1), { text: "rest", run: 0 }]);
+    expect(objShape(para.items)).toBe(
+      "box(at) pen(500) obj(40) pen(500) box(rest) pen(10000) fil pen(-10000)",
+    );
+  });
+
+  it("offers one between two adjacent objects (a formula's own fragments)", () => {
+    const para = buildWith([object(0), object(0, 12), object(0, 8)]);
+    expect(objShape(para.items)).toBe(
+      "obj(40) pen(500) obj(12) pen(500) obj(8) pen(10000) fil pen(-10000)",
+    );
+  });
+
+  it("carries no protrusion, expansion or letterfit, whatever is enabled", () => {
+    const para = buildWith([{ text: "at", run: 0 }, object(1)], {
+      protrusion: latinProtrusion,
+      expansion: { max: 0.02, shrink: 0.02, step: 0.005 },
+      tracking: { max: 0.03, shrink: 0.03 },
+    });
+    const box = para.items.find(
+      (it) => it.type === ItemType.Box && it.atomic === true,
+    ) as Extract<Item, { type: typeof ItemType.Box }>;
+    expect(box.width).toBe(OBJECT_WIDTH);
+    expect([box.lp, box.lpFirst, box.rp]).toEqual([0, 0, 0]);
+    expect([box.expStretch, box.expShrink]).toEqual([0, 0]);
+    expect([box.trackStretch, box.trackShrink]).toEqual([0, 0]);
+  });
+
+  it("keeps punctuation that may not start a line with the object", () => {
+    const para = buildWith([object(0), { text: ", and", run: 0 }]);
+    expect(objShape(para.items)).toBe(
+      "obj(40) box(,) glue box(and) pen(10000) fil pen(-10000)",
+    );
+  });
+
+  it("keeps an opening bracket from ending a line before one", () => {
+    const para = buildWith([{ text: "see (", run: 0 }, object(0)]);
+    expect(objShape(para.items)).toBe(
+      "box(see) glue box(() obj(40) pen(10000) fil pen(-10000)",
+    );
+  });
+
+  it("forbids both junctions inside a nowrap element", () => {
+    const para = buildWith([
+      { text: "at", run: 0, atomicKey: 4 },
+      { ...object(0), atomicKey: 4 },
+      { text: "rest", run: 0, atomicKey: 4 },
+    ]);
+    expect(objShape(para.items)).toBe(
+      "box(at) obj(40) box(rest) pen(10000) fil pen(-10000)",
+    );
+  });
+
+  it("offers no junction of its own beside a zero-width object", () => {
+    // An out-of-flow subtree (KaTeX's visually hidden MathML) precedes the
+    // formula it is the accessible half of. The junction beside the VISIBLE
+    // half is the only one: a break there leaves the hidden half on the line
+    // above, which nothing can see.
+    const para = buildWith([
+      { text: "at", run: 0 },
+      object(0, 0),
+      object(1),
+      { text: "rest", run: 0 },
+    ]);
+    expect(objShape(para.items)).toBe(
+      "box(at) obj(0) pen(500) obj(40) pen(500) box(rest) pen(10000) fil pen(-10000)",
+    );
+  });
+
+  it("never breaks a word around an out-of-flow subtree inside it", () => {
+    // An absolutely positioned span between two halves of a word takes no
+    // space and creates no break: offering one there would split the word
+    // across lines with nothing to show for it.
+    const para = buildWith([{ text: "wo", run: 0 }, object(0, 0), { text: "rd", run: 0 }]);
+    expect(objShape(para.items)).toBe(
+      "box(wo) obj(0) box(rd) pen(10000) fil pen(-10000)",
+    );
+  });
+
+  it("breaks at an object junction with a zero-width joint, never a space", () => {
+    const para = buildWith([{ text: "at", run: 0 }, object(1)]);
+    const junction = para.items.find(
+      (it) => it.type === ItemType.Penalty && it.penalty === 500,
+    ) as Extract<Item, { type: typeof ItemType.Penalty }>;
+    // There is no source space at this junction: rendering one would put a
+    // gap in the copied text that the author never wrote.
+    expect(junction.atomic).toBe(true);
+  });
+
+  it("counts an object as flow content, so a space after one is a real space", () => {
+    const para = buildWith([object(0), { text: " rest", run: 0 }]);
+    const glue = para.items.find((it) => it.type === ItemType.Glue) as Glue;
+    expect(glue.width).toBe(4);
+    expect(glue.stretch).toBeGreaterThan(0);
+  });
+
+  it("folds an enclosing inline's padding into the object's box", () => {
+    const para = buildWith([{ ...object(0), padStartPx: 6, padEndPx: 4 }]);
+    const box = para.items.find(
+      (it) => it.type === ItemType.Box,
+    ) as Extract<Item, { type: typeof ItemType.Box }>;
+    expect(box.width).toBe(OBJECT_WIDTH + 10);
+    expect(box.padPx).toBe(10);
+  });
+});
+
 describe("boundary space rigidity", () => {
   const serif = () => mockRun({ familyKey: "serif" });
   const mono = () => mockRun({ familyKey: "mono" });

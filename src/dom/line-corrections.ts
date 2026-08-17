@@ -29,6 +29,7 @@ import { endWithoutCollapsibleSpaces } from "./whitespace.js";
 import {
   CORRECTION_WINDOW_PX,
   FLOAT_WRAP_SPARE_PX,
+  OBJECT_WRAP_SPARE_PX,
   hangCarrierShed,
   type LineEntry,
   type PendingParagraph,
@@ -121,6 +122,17 @@ function fragmentForLine(
 function foreignMutated(entries: readonly LineEntry[]): boolean {
   return entries.some(({ el, seg }) => {
     if (seg === null) return false;
+    if (seg.atomic !== undefined) {
+      // The writer's own shape for an object: one cloned element, with a
+      // word joiner on each side the line does not break at. Nothing here
+      // indexes into text, so only the object itself has to still be there.
+      let elements = 0;
+      for (const node of el.childNodes) {
+        if (node.nodeType === 1) elements++;
+        else if (node.nodeType !== 3 || (node as Text).data !== "\u2060") return true;
+      }
+      return elements !== 1;
+    }
     const singleText =
       el.childNodes.length === 1 &&
       el.firstChild?.nodeType === 3 &&
@@ -551,6 +563,12 @@ export function measureCorrections(
             adjustmentPx = painted.value - desiredEnd;
           }
           const spacing = distributeAdjustment(textEntries, adjustmentPx);
+          // A line holding an object keeps a sliver of layout slack: it is
+          // the only line whose interior the engine can still break (see
+          // OBJECT_WRAP_SPARE_PX).
+          const objectSpare = entries.some((entry) => entry.seg?.atomic !== undefined)
+            ? OBJECT_WRAP_SPARE_PX
+            : 0;
           // With no legitimate spacing recipient, keep the provisional wrap
           // margin instead of changing an author no-break-space box. This is
           // the only faithful fallback for a line made solely of fixed boxes.
@@ -565,7 +583,12 @@ export function measureCorrections(
             // margin again from summed DOM widths lets engine-specific inline
             // rounding leak back in (notably Firefox's persistent 1.5px).
             marginPx:
-              -(rightHang - (besideFloat ? physicalEndHang : 0) + deliberateOverflow),
+              -(
+                rightHang -
+                (besideFloat ? physicalEndHang : 0) +
+                deliberateOverflow +
+                objectSpare
+              ),
             spacing: spacing.length > 0 ? spacing : undefined,
           });
         }

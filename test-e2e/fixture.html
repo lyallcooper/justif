@@ -32,6 +32,45 @@
      glue renders as NBSP, so the surplus has to come back off as a start
      margin. No Linux CI font is known to diverge — the test skips when the
      stack resolves to a face where the two agree. */
+  /* Object-box fixtures. The .katex rules are KaTeX's own, reduced to what
+     decides layout: the wrapper is ordinary inline, the MathML half is out
+     of flow (so it contributes no advance), and each .base is one atomic
+     inline-block. */
+  #obj-host { width: 440px; }
+  #obj-host p {
+    font-family: Georgia, serif;
+    font-size: 17px;
+    line-height: 1.45;
+    text-align: justify;
+    margin: 0 0 1em;
+    padding: 0;
+    border: 0;
+  }
+  #obj-host .katex-mathml {
+    position: absolute;
+    clip: rect(1px, 1px, 1px, 1px);
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+  }
+  #obj-host .base {
+    display: inline-block;
+    position: relative;
+    white-space: nowrap;
+  }
+  #obj-host .chip {
+    display: inline-block;
+    background: #eef;
+    border-radius: 3px;
+  }
+  /* Shrink-to-fit against the paragraph's own measure, and so the object
+     whose used width DEPENDS on the white-space it inherits: its content is
+     wider than the measure, so it takes the full measure where it may wrap
+     and its much wider max-content width where it may not. */
+  #obj-host .wrapbox {
+    display: inline-block;
+    background: #efe;
+  }
   #nbsp-host { width: 440px; }
   #nbsp-host p {
     font-family: Charter, "Hoefler Text", Geneva, Georgia, serif;
@@ -110,6 +149,36 @@
   the <em>deep dark well</em> had swallowed it whole, so deep that nobody
   standing at the mossy rim could ever hope to see the bottom of it.</p>
 </div>
+<!-- Atomic object boxes: inline-level things the model places whole rather
+     than sets. The math paragraphs reproduce KaTeX's own DOM shape (a
+     .katex wrapper, an out-of-flow .katex-mathml carrying the accessible
+     MathML, and .katex-html holding one inline-block .base per breakable
+     fragment) rather than loading KaTeX itself, so the suite keeps its
+     single dependency on the built library. #obj-wrap's object is the one
+     whose used width DEPENDS on the white-space it inherits: unpinned, a
+     nowrap segment widens it by a quarter of its width. -->
+<div id="obj-host">
+  <p id="p-math">The quantity <span class="katex"><span class="katex-mathml"><math><mrow><msup><mi>x</mi><mn>2</mn></msup><mo>+</mo><mi>y</mi></mrow></math></span><span
+  class="katex-html" aria-hidden="true"><span class="base">x²&nbsp;+</span><span class="base">&nbsp;y&nbsp;=&nbsp;z</span></span></span> appears
+  throughout the derivation, and every identity below depends on it in one
+  way or another, as the reader will shortly see for themselves.</p>
+  <p id="p-mathml">Written natively, <math><mrow><msup><mi>x</mi><mn>2</mn></msup><mo>+</mo><mi>y</mi></mrow></math> is the same
+  quantity, and the paragraph around it still has to reach the measure on
+  every line it sets, exactly as the one above does.</p>
+  <p id="p-split">A formula too wide for this measure: <span class="katex"><span
+  class="katex-html" aria-hidden="true"><span class="base">a&nbsp;+&nbsp;b&nbsp;=</span><span
+  class="base">&nbsp;c&nbsp;+&nbsp;d&nbsp;=</span><span class="base">&nbsp;e&nbsp;+&nbsp;f&nbsp;=</span><span
+  class="base">&nbsp;g&nbsp;+&nbsp;h</span></span></span> and the prose that follows it,
+  which carries on for long enough to need several more lines of its own.</p>
+  <p id="p-chip">Inline chips such as <span class="chip">alpha</span> and
+  <span class="chip">beta</span> sit in the flow of this paragraph, which
+  runs on long enough to wrap over several lines and so give the
+  justification something real to do with the space around them.</p>
+  <p id="p-wrap">A wrappable object such as <span class="wrapbox">one two three four
+  five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen
+  seventeen</span> keeps the width its own white-space gives it, however many
+  lines this paragraph turns out to need for the rest of its words.</p>
+</div>
 <script type="module">
   import { hangingCharacters, hangingPunctuation, justify, unjustify } from "/dist/index.js";
   import { hyphenateEnUS } from "/dist/hyphenate/en-us.js";
@@ -178,6 +247,69 @@
           texts: ordered.map((b) => b.text),
         };
       }),
+    };
+  };
+
+  /**
+   * Lines of a paragraph that contains ATOMIC OBJECTS, read from the JOINTS
+   * the writer emits rather than from geometry. Geometry cannot answer this
+   * one: an object's own text nodes (a formula's glyph spans) sit at tops of
+   * their own, and an object box can be taller than every line around it, so
+   * neither word rects nor segment tops identify a line any more.
+   *
+   * The joints do, exactly. Everything between two of them is one MODEL line
+   * — what justif intended — and each line's own segment rects then say what
+   * the engine did with it: `fragmented` is true when a segment starts back
+   * at the margin instead of continuing rightward, which is the signature of
+   * a break the model did not ask for.
+   */
+  window.__justifObjectLines = (root) => {
+    const cs = getComputedStyle(root);
+    const contentRight =
+      root.getBoundingClientRect().right -
+      parseFloat(cs.paddingRight) -
+      parseFloat(cs.borderRightWidth);
+    const lines = [[]];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
+      // Anything inside a segment belongs to it, including an object's own
+      // markup and text.
+      if (n.parentElement?.closest(".justif-seg") != null) continue;
+      if (n.nodeType === 1) {
+        if (n.classList.contains("justif-seg")) {
+          const r = n.getBoundingClientRect();
+          lines[lines.length - 1].push({
+            left: r.left,
+            right: r.right,
+            width: r.width,
+            object: n.firstElementChild !== null,
+          });
+        } else if (
+          n.classList.contains("justif-break") ||
+          n.classList.contains("justif-joint") ||
+          n.classList.contains("justif-hyphen") ||
+          n.tagName === "BR"
+        ) {
+          lines.push([]);
+        }
+      } else if (n.nodeValue !== null && /\s/.test(n.nodeValue)) {
+        // A bare space between segments is a line's break space.
+        lines.push([]);
+      }
+    }
+    const filled = lines.filter((segments) => segments.length > 0);
+    return {
+      contentRight,
+      lines: filled.map((segments) => ({
+        left: Math.min(...segments.map((s) => s.left)),
+        right: Math.max(...segments.map((s) => s.right)),
+        objects: segments.filter((s) => s.object).length,
+        segments: segments.length,
+        fragmented: segments.some((s, i) => i > 0 && s.left < segments[i - 1].left - 1),
+      })),
+      objects: filled.flatMap((segments, line) =>
+        segments.filter((s) => s.object).map((s) => ({ width: s.width, line })),
+      ),
     };
   };
 

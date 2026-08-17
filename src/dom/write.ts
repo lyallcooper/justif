@@ -26,6 +26,26 @@ import { graphemes } from "../core/cjk.js";
 
 export interface RenderSegment {
   text: string;
+  /**
+   * This segment renders an ATOMIC OBJECT rather than text: a deep clone of
+   * the author's element, alone in its own `.justif-seg`, with `text` empty.
+   *
+   * The word joiners are what keep the line one fragment. An atomic inline is
+   * UAX #14 class CB, so every engine offers a break on both sides of it —
+   * including the sides justif did NOT choose to break at, which is exactly
+   * what the nowrap segments exist to prevent everywhere else. Measured, a
+   * real U+2060 inside this segment suppresses that break in Chromium,
+   * Firefox and WebKit; the `.justif-weld-end` generated one does not (WebKit
+   * breaks anyway), and neither does one in the neighboring segment's text.
+   * They are omitted at the line's own edges, where the joint outside this
+   * segment is a break that MUST remain available.
+   */
+  atomic?: {
+    source: Element;
+    style: readonly (readonly [property: string, value: string])[];
+    weldStart: boolean;
+    weldEnd: boolean;
+  };
   /** Source prefix rendered outside the nowrap span because it belongs to
    * the paragraph's floated `::first-letter`. Keeping it in the author's
    * inline ancestor chain, but out of `.justif-seg`, preserves the native
@@ -202,6 +222,24 @@ export interface RenderSegment {
    * advance to spend cannot open the window at any width.
    */
   jointFlat?: true;
+  /**
+   * This space joint stands for NO source character: it closes a line broken
+   * at an atomic object's junction, where the author wrote nothing at all.
+   *
+   * It has to be a space, and this is the one place in the enhanced DOM where
+   * that is true. Measured, a line break between two adjacent objects — the
+   * pieces a rendered formula splits into — is honored in Firefox only at a
+   * `<wbr>` or a real space: the generated ZWSP that carries every other
+   * zero-width joint is ignored there, as is a real one, so a formula too
+   * wide for the measure would run straight past it. `<wbr>` is not an option
+   * (annotation tools inject their own text at one — see the hyphen joints).
+   *
+   * Written flat, so it takes no advance the model did not price, and
+   * stripped from copies wherever it appears rather than only at a selection
+   * edge, because unlike every other joint space there is no author space
+   * underneath it.
+   */
+  jointVoid?: true;
 }
 
 /** A mandatory source break between independently laid-out segments. The
@@ -274,7 +312,28 @@ export const CORRECTION_WINDOW_PX = -(2 * WRAP_SAFETY_PAD_PX);
 /** Physical slack retained beside a float. Firefox can reject an
  * exactly-equal later nowrap fragment after device-pixel rounding. */
 export const FLOAT_WRAP_SPARE_PX = 0.25;
+/**
+ * Layout slack a corrected line keeps when it holds an ATOMIC OBJECT.
+ *
+ * Every other line can be set to its measure exactly, because once corrected
+ * there is nowhere inside it the engine may break: its spaces live inside
+ * nowrap segments. An object's own two junctions are the exception — they sit
+ * BETWEEN segments, where nowrap cannot reach and only a word joiner forbids
+ * the break — so such a line is the one that can still lose its tail to a
+ * rounding unit. Measured: a corrected line came out 0.0167px (Firefox's
+ * 1/60px layout unit, left behind when a spacing correction rounds to nothing)
+ * over its 440px measure, and Firefox moved everything after the formula to
+ * the next line; a quarter pixel of margin put it back.
+ *
+ * Costs nothing visible: the margin shortens the line's layout advance, not
+ * its ink, so the glyphs paint exactly where the correction placed them.
+ */
+export const OBJECT_WRAP_SPARE_PX = 0.25;
 const STYLE_ID = "justif-style";
+/** U+2060 WORD JOINER: forbids a break at either of its sides, and is
+ * stripped from copies by the clipboard cleanup like the ones segments.ts
+ * writes at dash junctions. */
+const WORD_JOINER = "\u2060";
 export const px = (v: number): string => `${Math.round(v * 1000) / 1000}px`;
 
 const SHEET_TEXT =
@@ -559,15 +618,20 @@ export function writeParagraph(
       const container = containerAt(depth);
       if (segment.joint === "space") {
         const space = doc.createTextNode(" ");
-        if (segment.jointFlat !== true) container.append(space);
-        else {
+        if (segment.jointFlat !== true && segment.jointVoid !== true) {
+          container.append(space);
+        } else {
           // Beside a float the break space is written without an advance
           // (see RenderSegment.jointFlat). Its leading goes with it: a
           // zero-size box still takes the inherited line-height, half of it
           // below a baseline it has nothing hanging under, which would
           // deepen every line box on the float's side of the paragraph.
+          // An object junction's space is written the same way, for the
+          // same reason and one more: the model priced no advance there
+          // (see RenderSegment.jointVoid).
           const flat = doc.createElement("span");
-          flat.className = "justif-joint";
+          flat.className =
+            segment.jointVoid === true ? "justif-joint justif-joint-void" : "justif-joint";
           flat.append(space);
           container.append(flat);
         }
@@ -610,6 +674,39 @@ export function writeParagraph(
         fragment.append(doc.createTextNode(segment.floatedPrefix));
         floatSource.append(fragment);
       }
+    }
+    if (segment.atomic !== undefined) {
+      const el = doc.createElement("span");
+      el.className = "justif-seg";
+      disableTextAutosizing(el);
+      const clone = segment.atomic.source.cloneNode(true) as HTMLElement;
+      // Pinned on the CLONE, not on this segment: the segment must stay
+      // nowrap (it is a line fragment like any other), while the object
+      // inside it has to lay out under the values it was measured under.
+      for (const [property, value] of segment.atomic.style) {
+        clone.style?.setProperty(property, value);
+      }
+      if (segment.atomic.weldStart) el.append(WORD_JOINER);
+      el.append(clone);
+      if (segment.atomic.weldEnd) el.append(WORD_JOINER);
+      // Margins and their carriers work exactly as they do for text: a
+      // painted inline opening or closing on this object owns the edge.
+      const marginStartEl = cloneFor(segment.marginStartOwner, segment.ancestors) ?? el;
+      const marginEndEl = cloneFor(segment.marginEndOwner, segment.ancestors) ?? el;
+      const paintEndEl = cloneFor(segment.decorEndOwner, segment.ancestors);
+      if (segment.marginStartPx !== 0) {
+        marginStartEl.style.marginInlineStart = px(segment.marginStartPx);
+      }
+      if (segment.marginEndPx !== 0) marginEndEl.style.marginInlineEnd = px(segment.marginEndPx);
+      container.append(el);
+      prevContainer = container;
+      lineElements[lineElements.length - 1]!.push({
+        el,
+        seg: segment,
+        marginEndEl,
+        paintEndEl,
+      });
+      continue;
     }
     // A first-letter range can consume a whole styling run. Its source text
     // still belongs in the cloned DOM, but there is no normal-flow segment
