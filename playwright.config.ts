@@ -28,7 +28,7 @@ export default defineConfig({
   globalSetup: "./test-e2e/global-setup.mjs",
   use: { baseURL: "http://localhost:5199" },
   webServer: {
-    command: "python3 -m http.server 5199",
+    command: "python3 -m http.server 5199 --bind 127.0.0.1",
     port: 5199,
     reuseExistingServer: true,
   },

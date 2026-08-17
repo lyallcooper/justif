@@ -105,7 +105,8 @@ export function createFloatTracking(host: FloatHost) {
     p: HTMLElement,
     state: ParaState,
     intrusion: ElementFloatIntrusion,
-    source?: Element,
+    source: Element | undefined,
+    verify: boolean,
   ): "unchanged" | "changed" | "unmeasurable" | "unfloated" | "stale" => {
     if (host.queues.pendingWidths.has(p)) return "stale";
     const widthNow = contentWidthOf(p);
@@ -121,7 +122,7 @@ export function createFloatTracking(host: FloatHost) {
     if (physicalFloatSide(getComputedStyle(rendered).float, direction) === null) {
       return "unfloated";
     }
-    const next = renderedElementFloatIntrusionOf(p, rendered, intrusion);
+    const next = renderedElementFloatIntrusionOf(p, rendered, intrusion, verify);
     if (next === null) return "unmeasurable";
     if (floatGeometryEquals(next, intrusion)) return "unchanged";
     state.scan.floatIntrusion = next;
@@ -168,7 +169,7 @@ export function createFloatTracking(host: FloatHost) {
       if (state === undefined || intrusion?.kind !== "element") continue;
       // Unmeasurable is not a verdict: the paragraph keeps the geometry it
       // has, exactly as the resize observer leaves an unrendered float alone.
-      if (refreshElementFloat(p, state, intrusion) !== "changed") continue;
+      if (refreshElementFloat(p, state, intrusion, undefined, true) !== "changed") continue;
       host.queues.pendingFloatRelayout.add(p);
       queued = true;
     }
@@ -183,7 +184,13 @@ export function createFloatTracking(host: FloatHost) {
       const state = host.ownedState(p);
       if (state === undefined || state.scan.floatIntrusion === null) continue;
       if (state.scan.floatIntrusion.kind === "element") {
-        const verdict = refreshElementFloat(p, state, state.scan.floatIntrusion);
+        const verdict = refreshElementFloat(
+          p,
+          state,
+          state.scan.floatIntrusion,
+          undefined,
+          false,
+        );
         // Also checked here, not just in the observer: with `observeResize`
         // off there is no observer, and this is the only pass that looks.
         if (verdict === "unfloated") declineUnfloated(p);
@@ -292,7 +299,7 @@ export function createFloatTracking(host: FloatHost) {
         observedFloat.delete(p);
         continue;
       }
-      const verdict = refreshElementFloat(p, state, intrusion, entry.target);
+      const verdict = refreshElementFloat(p, state, intrusion, entry.target, false);
       if (verdict === "unfloated") {
         declineUnfloated(p);
         continue;

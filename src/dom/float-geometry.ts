@@ -331,26 +331,54 @@ function nonFloatedFirstLetterChangesLayout(
   );
 }
 
-/** Group Range fragments into visual line boxes. Inline descendants can
- * yield several fragments for one line, so top coordinates within half a
- * paragraph line-height coalesce. */
-function visualLines(
+export function visualLines(
   rects: readonly DOMRect[],
   lineHeight: number,
-): Array<{ top: number; left: number; right: number }> {
-  const lines: Array<{ top: number; left: number; right: number }> = [];
+): Array<{ top: number; bottom: number; left: number; right: number }> {
+  const lines: Array<{
+    top: number;
+    bottom: number;
+    left: number;
+    right: number;
+    fragments: Array<{ top: number; bottom: number }>;
+  }> = [];
   const threshold = Math.max(2, lineHeight * 0.45);
   for (const rect of [...rects].sort((a, b) => a.top - b.top || a.left - b.left)) {
     if (rect.width <= 0 || rect.height <= 0) continue;
-    const line = lines.find((candidate) => Math.abs(candidate.top - rect.top) < threshold);
-    if (line === undefined) lines.push({ top: rect.top, left: rect.left, right: rect.right });
-    else {
+    const line = lines.find((candidate) => {
+      const topDelta = Math.abs(candidate.top - rect.top);
+      if (topDelta < threshold) return true;
+      return (
+        topDelta < lineHeight * 1.25 &&
+        candidate.fragments.some((fragment) => {
+          const overlap =
+            Math.min(fragment.bottom, rect.bottom) - Math.max(fragment.top, rect.top);
+          const smallerHeight = Math.min(fragment.bottom - fragment.top, rect.height);
+          const largerHeight = Math.max(fragment.bottom - fragment.top, rect.height);
+          const compact = smallerHeight < lineHeight * 0.8;
+          return (
+            (compact || largerHeight > lineHeight * 1.25) &&
+            overlap > smallerHeight * (compact ? 0.3 : 0.5)
+          );
+        })
+      );
+    });
+    if (line === undefined) {
+      lines.push({
+        top: rect.top,
+        bottom: rect.bottom,
+        left: rect.left,
+        right: rect.right,
+        fragments: [{ top: rect.top, bottom: rect.bottom }],
+      });
+    } else {
+      line.bottom = Math.max(line.bottom, rect.bottom);
       line.left = Math.min(line.left, rect.left);
       line.right = Math.max(line.right, rect.right);
+      line.fragments.push({ top: rect.top, bottom: rect.bottom });
     }
   }
-  lines.sort((a, b) => a.top - b.top);
-  return lines;
+  return lines.sort((a, b) => a.top - b.top);
 }
 
 /** Content-box edges and resolved line height of a paragraph, in viewport
@@ -393,11 +421,6 @@ function lastLineRaggedAt(
   return floatSide !== flushEdge;
 }
 
-/** Count the consecutive line boxes a float narrows, from the observed
- * inline shortfall of each rendered line backstopped by the float's
- * vertical extent. The vertical prediction matters when the paragraph
- * initially ends before the float does: after a later resize it can gain
- * additional lines that still need the narrow measure. */
 function intrudedLineCount(
   lines: ReadonlyArray<{ top: number; left: number; right: number }>,
   content: { left: number; right: number; top: number; lineHeight: number },
@@ -405,27 +428,37 @@ function intrudedLineCount(
   floatSide: "left" | "right",
   inlineSize: number,
   floatBottom: number,
+  boundaryMode: 0 | 1 | 2,
 ): number {
   const skipLastLine = lastLineRaggedAt(paragraphStyle, floatSide);
   let affected = 0;
   for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (boundaryMode === 2 && line.top >= floatBottom + 0.5) {
+      const previous = lines[i - 1];
+      if (
+        affected > 0 &&
+        previous !== undefined &&
+        line.top - previous.top < content.lineHeight * 1.5
+      ) {
+        return affected;
+      }
+      break;
+    }
     // Only vertical geometry can say whether the float reaches a line that
     // is short at its ragged edge anyway.
     if (skipLastLine && i === lines.length - 1) break;
-    const line = lines[i]!;
     const observed =
       floatSide === "left" ? line.left - content.left : content.right - line.right;
     // An ordinary first-line indent can move one line, but not by anything
     // close to the whole float. Half the measured margin-box width cleanly
     // separates the intruded lines from the full-width lines below it.
     if (observed > inlineSize * 0.5) affected++;
-    else break;
+    else {
+      if (boundaryMode === 1 && affected > 0) return affected;
+      break;
+    }
   }
-  // A leading float's text starts beside its top. A first line at or below
-  // the float's bottom is a transitional layout — stale segments the engine
-  // reflowed at a width they were not built for — not evidence that the
-  // float overlaps nothing; anchor the vertical prediction at the content
-  // top instead.
   const firstLine = lines[0];
   const textTop =
     firstLine !== undefined && firstLine.top < floatBottom ? firstLine.top : content.top;
@@ -540,6 +573,7 @@ function floatedFirstLetter(
     floatSide,
     inlineSize,
     floatBottom,
+    0,
   );
 
   return { kind: "first-letter", inlineSize, lines: affected, style: firstLetterStyle(style) };
@@ -598,6 +632,7 @@ function elementFloatGeometry(
   paragraphStyle: CSSStyleDeclaration,
   style: CSSStyleDeclaration,
   floatSide: "left" | "right",
+  verify: boolean,
 ): FloatGeometry | null {
   const borderInline = borderBoxSize(style, "inline");
   const borderBlock = borderBoxSize(style, "block");
@@ -616,7 +651,15 @@ function elementFloatGeometry(
   const floatBottom = content.top + blockSize;
   return {
     inlineSize,
-    lines: intrudedLineCount(lines, content, paragraphStyle, floatSide, inlineSize, floatBottom),
+    lines: intrudedLineCount(
+      lines,
+      content,
+      paragraphStyle,
+      floatSide,
+      inlineSize,
+      floatBottom,
+      !p.hasAttribute("data-justif") ? 1 : verify ? 2 : 0,
+    ),
   };
 }
 
@@ -664,7 +707,7 @@ export function leadingElementFloatOf(
   const direction: "ltr" | "rtl" = paragraphStyle.direction === "rtl" ? "rtl" : "ltr";
   const side = physicalFloatSide(style.float, direction);
   if (side === null) return `unsupported element float: ${style.float}`;
-  const geometry = elementFloatGeometry(p, source, paragraphStyle, style, side);
+  const geometry = elementFloatGeometry(p, source, paragraphStyle, style, side, false);
   if (geometry === null) return "could not measure leading floated element";
   return { kind: "element", source, leadingTrivia, ...geometry };
 }
@@ -935,6 +978,7 @@ export function renderedElementFloatIntrusionOf(
   p: HTMLElement,
   source: Element,
   previous: ElementFloatIntrusion,
+  verify: boolean,
 ): ElementFloatIntrusion | null {
   const view = p.ownerDocument.defaultView;
   if (view === null) return null;
@@ -943,7 +987,14 @@ export function renderedElementFloatIntrusionOf(
   const direction: "ltr" | "rtl" = paragraphStyle.direction === "rtl" ? "rtl" : "ltr";
   const side = physicalFloatSide(style.float, direction);
   if (side === null) return null;
-  const geometry = elementFloatGeometry(p, source, paragraphStyle, style, side);
+  const geometry = elementFloatGeometry(
+    p,
+    source,
+    paragraphStyle,
+    style,
+    side,
+    verify,
+  );
   return geometry === null ? null : { ...previous, ...geometry };
 }
 

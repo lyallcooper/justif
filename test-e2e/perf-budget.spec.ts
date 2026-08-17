@@ -70,8 +70,8 @@ test("the drop-in stays within its size budget", async ({ page }) => {
   // budgets; the gzipped figure is what an application actually fetches. Both
   // are kept, so an accidental dependency is caught even where the server
   // reports no compressed size.
-  expect(size.index.raw, "dist/index.js bytes").toBeLessThan(181_000);
-  if (size.index.gzip > 0) expect(size.index.gzip, "dist/index.js gzipped").toBeLessThan(45_500);
+  expect(size.index.raw, "dist/index.js bytes").toBeLessThan(181_500);
+  if (size.index.gzip > 0) expect(size.index.gzip, "dist/index.js gzipped").toBeLessThan(45_750);
 });
 
 test("a re-read rebuilds only what changed", async ({ page }) => {

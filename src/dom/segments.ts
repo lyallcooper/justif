@@ -140,8 +140,7 @@ function terminalPairKern(
   return Math.abs(kern) > KERN_EPSILON ? kern : undefined;
 }
 
-/** Set a line `px` tighter by taking it out of the word spaces its
- * corrective pass would use, in the same proportions. */
+/** Tighten a line without collapsing protected word spaces. */
 function tightenLine(
   segments: readonly RenderSegment[],
   first: number,
@@ -154,14 +153,38 @@ function tightenLine(
       segments[index]!.adjustableSpaceCount -
         (index === first ? segments[index]!.edgeTrim.lead : 0),
     );
-  let spaces = 0;
-  for (let i = first; i < segments.length; i++) spaces += countAt(i);
-  // A line of nothing but fixed boxes has no spacing to give; it keeps the
-  // over-wide box, exactly as the corrective pass leaves such a line alone.
-  if (spaces === 0) return;
-  const delta = px / spaces;
+  let remaining = px;
+  const spaces = segments
+    .slice(first)
+    .reduce((sum, _segment, offset) => sum + countAt(first + offset), 0);
+  const delta = spaces > 0 ? remaining / spaces : 0;
   for (let i = first; i < segments.length; i++) {
-    if (countAt(i) > 0) segments[i]!.wordSpacingPx -= delta;
+    const segment = segments[i]!;
+    const count = countAt(i);
+    if (count === 0) continue;
+    const next = Math.max(segment.minimumWordSpacingPx, segment.wordSpacingPx - delta);
+    remaining -= (segment.wordSpacingPx - next) * count;
+    segment.wordSpacingPx = next;
+  }
+
+  if (remaining <= 0.001) return;
+  const charCounts = segments.slice(first).map((segment) =>
+    segment.allowLetterCorrection
+      ? Array.from(segment.text).filter((char) => char.trim()).length
+      : 0,
+  );
+  const chars = charCounts.reduce((sum, count) => sum + count, 0);
+  if (chars === 0) return;
+  const tracking = remaining / chars;
+  for (let i = first; i < segments.length; i++) {
+    const segment = segments[i]!;
+    if (charCounts[i - first] === 0) continue;
+    segment.resolvedLetterSpacingPx -= tracking;
+    segment.letterSpacingPx = segment.resolvedLetterSpacingPx;
+    if (countAt(i) > 0) {
+      segment.wordSpacingPx += tracking;
+      segment.minimumWordSpacingPx += tracking;
+    }
   }
 }
 
@@ -213,8 +236,16 @@ export function buildRenderSegments(
 
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
     const line = lines[lineIndex]!;
+    const besideFloat = lineOffset + lineIndex < (scan.floatIntrusion?.lines ?? 0);
+    const letterCorrectionAllowed =
+      scan.direction !== "rtl" &&
+      para.items.slice(line.start, line.end).some(
+        (item) =>
+          item.type === ItemType.Box && (item.trackStretch > 0 || item.trackShrink > 0),
+      );
     /** Where this line's own segments start, for line-wide adjustments. */
     const lineFirstSegment = segments.length;
+    let floorOverflowPx = 0;
     // Absolute word-spacing per run on this line: the author's own
     // word-spacing, the offset from the space glyph's advance to the glue
     // width the engine assigned (nonzero for pressured oversized spaces),
@@ -318,7 +349,23 @@ export function buildRenderSegments(
       const wordSpacing = fixedSpaceBox
         ? spec.wordSpacingPx
         : desired(run, rigidFlex ?? undefined);
-      const spacePx = spaceWidthIn(spec, () => scan.runs[run]!.text) * ratio + wordSpacing;
+      const spaceGlyphPx = spaceWidthIn(spec, () => scan.runs[run]!.text) * ratio;
+      const spacePx = spaceGlyphPx + wordSpacing;
+      const minimumWordSpacingPx = besideFloat && letterCorrectionAllowed
+        ? Math.max(0, ((spaceGlyphPx + spec.wordSpacingPx) * 4) / 5) -
+          spaceGlyphPx -
+          ls
+        : Number.NEGATIVE_INFINITY;
+      const renderedWordSpacingPx = fixedSpaceBox
+        ? wordSpacing
+        : Math.max(wordSpacing - ls, minimumWordSpacingPx);
+      const unclampedWordSpacingPx = fixedSpaceBox ? wordSpacing : wordSpacing - ls;
+      const correctionSpaceCount = Math.max(
+        0,
+        adjustableSpaceCount - (segments.length === lineFirstSegment ? lead : 0),
+      );
+      floorOverflowPx +=
+        (renderedWordSpacingPx - unclampedWordSpacingPx) * correctionSpaceCount;
       // Shave a fatter-than-space NBSP back to the glue width the model
       // assigned it. The character stays U+00A0 (the boundary must remain
       // unbreakable) and takes this segment's word-spacing like any other
@@ -349,13 +396,17 @@ export function buildRenderSegments(
         floatedInnerStyle:
           floatedPrefix !== undefined ? srcRun.floatInnerStyle : undefined,
         ancestors: srcRun.ancestors,
-        wordSpacingPx: fixedSpaceBox ? wordSpacing : wordSpacing - ls,
+        wordSpacingPx: renderedWordSpacingPx,
         adjustableSpaceCount,
+        minimumWordSpacingPx,
         allowLetterCorrection: !fixedSpaceBox,
         weldEnd: weldFixedSeparator,
         letterSpacingPx: ls !== 0 ? spec.letterSpacingPx + ls : null,
         resolvedLetterSpacingPx: spec.letterSpacingPx + ls,
-        fontFeatureSettings: trackingFeatureSettings(spec, ls !== 0),
+        fontFeatureSettings: trackingFeatureSettings(
+          spec,
+          ls !== 0 || (besideFloat && letterCorrectionAllowed),
+        ),
         isolateShaping: spec.variantPosition !== "normal",
         fontStretchPct: line.fontStretch,
         marginStartPx: (first ? -line.leftHang : 0) - nbspExcessPx,
@@ -459,6 +510,7 @@ export function buildRenderSegments(
           ancestors: srcRun.ancestors,
           wordSpacingPx: 0,
           adjustableSpaceCount: 0,
+          minimumWordSpacingPx: 0,
           // Nothing about an object is spacing, so no correction may be
           // distributed onto it; the line's text carries the whole
           // adjustment. Its own measured rect still enters the line extent,
@@ -658,7 +710,6 @@ export function buildRenderSegments(
       // joined to the word, but its ink can paint beyond the shortened
       // line box. Painted inline boxes retain the ordinary margin
       // representation: their overhang is not a terminal glyph advance.
-      const besideFloat = lineOffset + lineIndex < (scan.floatIntrusion?.lines ?? 0);
       const requestedHang =
         besideFloat &&
         !line.hyphenated &&
@@ -765,7 +816,11 @@ export function buildRenderSegments(
         // correction is parked can still benefit from it. Spacing is exact,
         // unlike an advance the engine may clamp, so it is also what makes
         // the arithmetic above safe to be conservative with.
-        tightenLine(segments, lineFirstSegment, unshed + (WRAP_SAFETY_PAD_PX - pad));
+        tightenLine(
+          segments,
+          lineFirstSegment,
+          floorOverflowPx + unshed + (WRAP_SAFETY_PAD_PX - pad),
+        );
       }
       // Whatever the writer ends up shedding, the carrier it sheds from is
       // shaped apart from the cluster before it. Hand it the pair kern that

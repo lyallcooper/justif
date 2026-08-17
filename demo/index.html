@@ -718,6 +718,58 @@
     hanging-punctuation: first force-end last;
   }
 
+  /* A pair of ordinary leading floats, deliberately less specialized than
+     the specimen's drop cap. Fixed border-box dimensions give justif stable
+     geometry to measure while logical float directions exercise both sides. */
+  .article p.has-float-card { display: flow-root; }
+  .article .float-card {
+    box-sizing: border-box;
+    width: 5.5em;
+    height: 6.35em;
+    padding: 0.55em;
+    border: 1px solid var(--hairline);
+    line-height: 1.05;
+    text-align: left;
+  }
+  /* At a specimen measure narrower than 16em, the full-size card leaves too
+     little prose measure for useful justification. Scale the whole folio so
+     its dimensions, type, and internal proportions continue to agree. */
+  .article.narrow-float-cards .float-card { font-size: 0.78em; }
+  .article .float-card-start {
+    float: inline-start;
+    margin-block: 0.16em 0.12em;
+    margin-inline: 0 0.7em;
+  }
+  .article .float-card-end {
+    float: inline-end;
+    /* Margin box: 6.84 + .16 + .12 = 7.12em, safely inside the five-line
+       7.25em band at the article's 1.45 line height. */
+    height: 6.84em;
+    margin-block: 0.16em 0.12em;
+    margin-inline: 0.7em 0;
+  }
+  .article .float-card-label {
+    display: block;
+    padding-bottom: 0.3em;
+    border-bottom: 1px solid var(--hairline);
+    font-size: 0.65em;
+    font-variant-caps: small-caps;
+    letter-spacing: 0.08em;
+  }
+  .article .float-card-value {
+    display: block;
+    margin-top: 0.15em;
+    font-size: 2.45em;
+    line-height: 1;
+    font-variant-numeric: lining-nums;
+  }
+  .article .float-card-note {
+    display: block;
+    margin-top: 0.35em;
+    font-size: 0.7em;
+    line-height: 1.15;
+  }
+
   /* No content-visibility anywhere: real-Safari skip/render transitions
      shifted the page in ways no placeholder scheme fully cured (see the
      project log for the full elimination trail). Width drags on very long
@@ -945,6 +997,28 @@
     overflow-x: auto;
   }
   .article pre code { font-size: inherit; }
+
+  /* Native MathML and a conventional inline-block label both become rigid
+     inline objects. Their own typography must stay untouched by the spacing
+     and letterfit chosen for the surrounding line. */
+  .article math {
+    font-size: 1.08em;
+    vertical-align: -0.08em;
+  }
+  .article .object-chip {
+    display: inline-block;
+    box-sizing: border-box;
+    padding: 0.05em 0.4em 0;
+    border: 1px solid color-mix(in srgb, var(--ink) 35%, var(--paper));
+    border-radius: 999px;
+    font-family: system-ui, sans-serif;
+    font-size: 0.72em;
+    font-weight: 600;
+    line-height: 1.4;
+    letter-spacing: 0.04em;
+    vertical-align: 0.08em;
+    white-space: nowrap;
+  }
 
   .gapmark {
     position: absolute;
@@ -1180,6 +1254,7 @@
         </optgroup>
         <optgroup label="Technical">
           <option value="tech">Technical post</option>
+          <option value="showcase">Feature showcase</option>
           <option value="rfc2324">RFC 2324</option>
         </optgroup>
         <optgroup label="Typography">
@@ -1305,8 +1380,9 @@
 
   // Sample texts. "tale": smart quotes, quote-opening paragraphs (left
   // protrusion). "tech": inline <code> in another font inside justified
-  // lines, plus a <pre> block that justif leaves untouched. "specimen":
-  // a floated drop cap (the leading-element float path), small caps, soft
+  // lines, plus a <pre> block that justif leaves untouched. "showcase":
+  // logical start/end floats, native MathML, and inline-block boxes in the
+  // same paragraphs. "specimen": a floated drop cap, small caps, soft
   // hyphens, no-break spaces, dashes, mixed inline markup.
   // "aliceExcerpt": a punctuation-rich passage that makes the spacing
   // comparison especially visible at the default measure. "alice":
@@ -1374,6 +1450,27 @@ await controller.ready;</code></pre>
       paragraphs again; after fonts change, <code>controller.refresh()</code>
       repeats measurement, and <code>controller.destroy()</code> restores
       the original content.</p>`,
+
+    showcase: `
+      <p class="has-float-card"><span class="float-card float-card-start"><span class="float-card-label">Width</span><span class="float-card-value">5½</span><span class="float-card-note">ems wide</span></span><span class="object-chip">ATOMIC</span> A leading float can share a
+      paragraph with other rich inline content. This folio is a nested,
+      bordered element; beside it, Euler’s identity
+      <math aria-label="e to the i pi plus one equals zero"><mrow><msup><mi>e</mi><mrow><mi>i</mi><mi>π</mi></mrow></msup><mo>+</mo><mn>1</mn><mo>=</mo><mn>0</mn></mrow></math>
+      remains one rigid object. Justif narrows only the lines overlapping the
+      float, chooses breaks around the equation, then opens the paragraph to
+      its full measure below.</p>
+      <p class="has-float-card"><span class="float-card float-card-end"><span class="float-card-label">Direction</span><span class="float-card-value">↤</span><span class="float-card-note">inline end, not a physical side</span></span>The second card uses the logical
+      opposite edge and a different height. A longer formula such as
+      <math aria-label="x equals negative b plus or minus the square root of b squared minus four a c, over two a"><mrow><mi>x</mi><mo>=</mo><mfrac><mrow><mo>−</mo><mi>b</mi><mo>±</mo><msqrt><mrow><msup><mi>b</mi><mn>2</mn></msup><mo>−</mo><mn>4</mn><mi>a</mi><mi>c</mi></mrow></msqrt></mrow><mrow><mn>2</mn><mi>a</mi></mrow></mfrac></mrow></math>
+      moves whole instead of wrapping through its fraction. Resize the
+      column and both the intrusion geometry and the surrounding line breaks
+      are calculated again.</p>
+      <p><span class="object-chip">INLINE-BLOCK</span> Ordinary styled labels
+      follow the same atomic model. Their padding, border, tracking, and
+      internal white space remain untouched while links, <em>emphasis</em>,
+      <code>inline code</code>, hyphenation, and hanging punctuation continue
+      to participate in the surrounding paragraph: “everything keeps its own
+      job.”</p>`,
 
     specimen: `
       <!-- The initial's outline is traced from DS Goudy Initialen v2.001
@@ -3814,9 +3911,11 @@ await controller.ready;</code></pre>
     // the computed style of every element that can see it — with the long
     // sample that is tens of thousands of segment spans, and WebKit paid
     // ~100ms of style recalc per slider step before layout even began.
-    const width = `min(${$("measure").value}em, calc(100vw - 2.75rem))`;
+    const measure = parseFloat($("measure").value);
+    const width = `min(${measure}em, calc(100vw - 2.75rem))`;
     for (const article of document.querySelectorAll(".article")) {
       article.style.width = width;
+      article.classList.toggle("narrow-float-cards", measure < 16);
     }
     $("measure-out").textContent = $("measure").value + "em";
     applyDropCapScale();

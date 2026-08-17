@@ -419,7 +419,124 @@ test("sample menu groups entries by type", async ({ page }) => {
     "Other scripts",
   ]);
   await expect(page.locator('#sample optgroup[label="Prose"] option')).toHaveCount(5);
-  await expect(page.locator('#sample optgroup[label="Technical"] option')).toHaveCount(2);
+  await expect(page.locator('#sample optgroup[label="Technical"] option')).toHaveCount(3);
+  await expect(page.locator('#sample optgroup[label="Typography"] option')).toHaveCount(1);
+});
+
+test("feature showcase combines floats and inline objects", async ({ page }) => {
+  await page.goto("/demo/");
+  await page.click("#dock-toggle");
+  await page.selectOption("#sample", "showcase");
+
+  await expect(page.locator("#enhanced > p")).toHaveCount(3);
+  await expect(page.locator("#enhanced > p[data-justif]")).toHaveCount(3);
+  await expect(page.locator("#enhanced .float-card-start")).toHaveCSS("float", "inline-start");
+  await expect(page.locator("#enhanced .float-card-end")).toHaveCSS("float", "inline-end");
+  await expect(page.locator("#enhanced .float-card-start")).toHaveCSS(
+    "margin-inline-end",
+    /^[1-9]/,
+  );
+  await expect(page.locator("#enhanced .float-card-end")).toHaveCSS(
+    "margin-inline-start",
+    /^[1-9]/,
+  );
+  await expect(page.locator("#enhanced math")).toHaveCount(2);
+  await expect(page.locator("#enhanced .object-chip")).toHaveCount(2);
+  await expect(page.locator("#enhanced .object-chip").first()).toHaveCSS("display", "inline-block");
+
+  const sweep = await page.evaluate(async () => {
+    const measure = document.getElementById("measure") as HTMLInputElement;
+    const paragraph = document.querySelector<HTMLElement>("#enhanced > p:nth-child(2)")!;
+    const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const widths = [12.5, 16, 20, 21.5, 24, 26.5, 27.5, 30];
+    let minimum = { gap: Infinity, width: 0, pair: "", segments: ["", ""] };
+    let narrowCardFontSize = 0;
+    let wideCardFontSize = 0;
+    const unstable: number[] = [];
+    const trappedBelowFloat: Array<{
+      width: number;
+      shortfall: number;
+      floatBottom: number;
+      lines: Array<{ top: number; right: number }>;
+    }> = [];
+    for (const width of widths) {
+      measure.value = String(width);
+      measure.dispatchEvent(new Event("input", { bubbles: true }));
+      for (let i = 0; i < 12; i++) await frame();
+      const first = paragraph.innerHTML;
+      for (let i = 0; i < 8; i++) await frame();
+      if (paragraph.innerHTML !== first) unstable.push(width);
+      const cardFontSize = parseFloat(
+        getComputedStyle(paragraph.querySelector(".float-card-end")!).fontSize,
+      );
+      if (width === 12.5) narrowCardFontSize = cardFontSize;
+      if (width === 16) wideCardFontSize = cardFontSize;
+      const float = paragraph.querySelector<HTMLElement>(".float-card-end")!;
+      const floatStyle = getComputedStyle(float);
+      const floatBottom =
+        float.getBoundingClientRect().bottom + (parseFloat(floatStyle.marginBottom) || 0);
+      for (const segment of paragraph.querySelectorAll<HTMLElement>(".justif-seg")) {
+        const walker = document.createTreeWalker(segment, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+          const text = node.nodeValue ?? "";
+          for (let i = 1; i + 1 < text.length; i++) {
+            if (text[i] !== " ") continue;
+            const before = document.createRange();
+            before.setStart(node, i - 1);
+            before.setEnd(node, i);
+            const after = document.createRange();
+            after.setStart(node, i + 1);
+            after.setEnd(node, i + 2);
+            const beforeRect = before.getBoundingClientRect();
+            const afterRect = after.getBoundingClientRect();
+            if (Math.abs(beforeRect.top - afterRect.top) >= 0.5) continue;
+            const gap = afterRect.left - beforeRect.right;
+            if (gap >= minimum.gap) continue;
+            minimum = {
+              gap,
+              width,
+              pair: text.slice(Math.max(0, i - 12), Math.min(text.length, i + 13)),
+              segments: [segment.getAttribute("style") ?? "", segment.getAttribute("style") ?? ""],
+            };
+          }
+        }
+      }
+      const paragraphRect = paragraph.getBoundingClientRect();
+      const style = getComputedStyle(paragraph);
+      const contentRight =
+        paragraphRect.right -
+        (parseFloat(style.borderRightWidth) || 0) -
+        (parseFloat(style.paddingRight) || 0);
+      const lines: Array<{ top: number; right: number }> = [];
+      for (const segment of paragraph.querySelectorAll<HTMLElement>(".justif-seg")) {
+        const rect = segment.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) continue;
+        let line = lines.find((candidate) => Math.abs(candidate.top - rect.top) < 1);
+        if (line === undefined) {
+          line = { top: rect.top, right: rect.right };
+          lines.push(line);
+        } else line.right = Math.max(line.right, rect.right);
+      }
+      lines.sort((a, b) => a.top - b.top);
+      const fullLinesBelow = lines.filter(
+        (line, index) => line.top >= floatBottom + 0.5 && index < lines.length - 1,
+      );
+      const shortfall = Math.max(0, ...fullLinesBelow.map((line) => contentRight - line.right));
+      if (shortfall > 10) {
+        trappedBelowFloat.push({
+          width,
+          shortfall,
+          floatBottom,
+          lines: fullLinesBelow,
+        });
+      }
+    }
+    return { minimum, unstable, trappedBelowFloat, narrowCardFontSize, wideCardFontSize };
+  });
+  expect(sweep.unstable).toEqual([]);
+  expect(sweep.trappedBelowFloat).toEqual([]);
+  expect(sweep.narrowCardFontSize).toBeLessThan(sweep.wideCardFontSize * 0.8);
+  expect(sweep.minimum.gap, JSON.stringify(sweep)).toBeGreaterThan(1.9);
 });
 
 test("technical and specimen samples preserve their showcase markup", async ({ page }) => {

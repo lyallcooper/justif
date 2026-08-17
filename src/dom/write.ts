@@ -2,15 +2,14 @@
  * DOM emission via native soft wrap: each line's content is one or more
  * INLINE `white-space: nowrap` segments carrying that line's word-spacing /
  * font-stretch, with the real break space (or a zero-width break span at
- * hyphen points) left between lines. Because every justified line fills the measure exactly, the
- * browser's own greedy wrap is forced to break at precisely the chosen
- * points — and because the flow stays inline:
+ * hyphen points) left between lines. Because the text stays inline:
  *   - assistive tech reads one continuous paragraph (no block boundaries),
  *     and hyphenated word fragments rejoin seamlessly;
  *   - original inline elements (links!) are cloned once and wrap across
  *     lines whole — one element, one tab stop, one accessible name;
  *   - find-in-page matches phrases across line breaks;
- *   - selection copies with spaces, not hard newlines.
+ *   - the source space remains in the text layer, while clipboard cleanup
+ *     reconstructs the author text without visual hard breaks.
  * Mid-line spaces live inside the segments, so line boundaries are the only
  * soft-wrap opportunities regardless of sub-pixel rounding. Hyphens render
  * as pseudo-content, invisible to the clipboard and accessibility tree.
@@ -66,6 +65,8 @@ export interface RenderSegment {
    * Includes synthetic NBSP used to keep run-boundary glue unbreakable;
    * excludes author U+00A0/U+202F, which remain fixed box content. */
   adjustableSpaceCount: number;
+  /** Lowest word-spacing allowed while fitting beside a float. */
+  minimumWordSpacingPx: number;
   /** False for an own-segment fixed-space box. A correction to the segment's
    * inherited letter-spacing would change the separator's authored advance,
    * so drift must be absorbed by other segments on the line. */
@@ -345,6 +346,7 @@ const SHEET_TEXT =
   // in those cases; Chromium consults the block container and ignores it.
   ".justif-seg,.justif-hyphen,.justif-break{overflow-wrap:normal;word-break:normal;line-break:auto}" +
   ".justif-seg{white-space:nowrap}" +
+  '.justif-soft-break::after{content:"\\A";white-space:pre}' +
   // The break space beside a float, written with neither advance nor
   // leading (see RenderSegment.jointFlat). It still breaks: a space is a
   // break opportunity whatever it measures.
@@ -643,6 +645,11 @@ export function writeParagraph(
         const brk = doc.createElement("span");
         brk.className = "justif-break";
         container.append(brk);
+      }
+      if (segment.jointFlat) {
+        const softBreak = container.appendChild(doc.createElement("span"));
+        softBreak.className = "justif-soft-break";
+        softBreak.ariaHidden = "true";
       }
     }
 
