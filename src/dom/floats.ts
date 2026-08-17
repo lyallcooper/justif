@@ -19,7 +19,10 @@
  *
  * An unreadable float is deliberately not a verdict here: whether that means
  * "wait" or "give the paragraph back to the engine" depends on whether the
- * float is painted at all, which only the caller knows.
+ * float is painted at all, which only the caller knows. An element that is no
+ * longer floated is a different answer again, and has to be told apart before
+ * the box is measured — it collapses to nothing exactly like one that is not
+ * being rendered.
  */
 
 import type { PatchEntry } from "./corrections.js";
@@ -36,7 +39,7 @@ import { contentWidthOf } from "./read.js";
 
 /** Sub-pixel noise in a live rect read must not count as a geometry
  * change, or every remeasure would invalidate every float paragraph. */
-export function floatGeometryEquals(
+function floatGeometryEquals(
   a: { inlineSize: number; lines: number },
   b: { inlineSize: number; lines: number },
 ): boolean {
@@ -118,11 +121,7 @@ export function createFloatTracking(host: FloatHost) {
     if (physicalFloatSide(getComputedStyle(rendered).float, direction) === null) {
       return "unfloated";
     }
-    const next = renderedElementFloatIntrusionOf(
-      p,
-      rendered,
-      intrusion,
-    );
+    const next = renderedElementFloatIntrusionOf(p, rendered, intrusion);
     if (next === null) return "unmeasurable";
     if (floatGeometryEquals(next, intrusion)) return "unchanged";
     state.scan.floatIntrusion = next;
