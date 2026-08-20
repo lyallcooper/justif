@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.1 (2026-08-20)
+
 - Fixed cramped spacing and overflowing lines around an inline formula once the
   fonts inside it finished loading. Fixes #17.
 - Firefox no longer moves a `<math>` formula and the rest of its line down to
