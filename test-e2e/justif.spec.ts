@@ -7395,6 +7395,56 @@ test("auto drop-in: booted awaits delayed pattern modules", async ({ page }) => 
   expect(await page.locator("#de-just .justif-hyphen").count()).toBeGreaterThan(0);
 });
 
+test("auto drop-in: data-justif-defer waits for the page's own transform", async ({
+  page,
+}) => {
+  // A page whose script rewrites the text — a math renderer, a highlighter —
+  // has to finish before justif reads a paragraph, and this fixture registers
+  // that work in a DOMContentLoaded listener AFTER the drop-in's own tag: the
+  // arrangement that the default boot, and a listener of justif's own, would
+  // both beat. With the attribute the read happens one task after the whole
+  // DOMContentLoaded dispatch, so the page's order is the one that holds.
+  await page.goto("/test-e2e/fixture-auto-late.html");
+  const result = await page.evaluate(async () => {
+    const g = window as Window & {
+      justif?: { booted: Promise<void>; controllers: unknown[] };
+      __page?: { segsBeforeTransform: number | null; transformed: number };
+    };
+    await g.justif!.booted;
+    const p = document.getElementById("manual-math")!;
+    const contentRight = p.getBoundingClientRect().right;
+    const lines: Array<{ top: number; right: number }> = [];
+    for (const seg of p.querySelectorAll<HTMLElement>(".justif-seg")) {
+      const rect = seg.getBoundingClientRect();
+      const line = lines.find((l) => Math.abs(l.top - rect.top) < 4);
+      if (line === undefined) lines.push({ top: rect.top, right: rect.right });
+      else line.right = Math.max(line.right, rect.right);
+    }
+    lines.sort((a, b) => a.top - b.top);
+    return {
+      segsBeforeTransform: g.__page!.segsBeforeTransform,
+      transformed: g.__page!.transformed,
+      controllers: g.justif!.controllers.length,
+      objectsInSegments: p.querySelectorAll(".justif-seg > .formula").length,
+      rawSourceLeft: /\$/.test(p.textContent ?? ""),
+      lines: lines.length,
+      maxDeviation: Math.max(
+        ...lines.slice(0, -1).map((l) => Math.abs(l.right - contentRight)),
+      ),
+    };
+  });
+
+  // Nothing had been read when the page's own listener ran.
+  expect(result.segsBeforeTransform).toBe(0);
+  expect(result.transformed).toBe(1);
+  expect(result.controllers).toBe(1);
+  // The object the transform inserted is modeled, not stranded in prose.
+  expect(result.objectsInSegments).toBe(1);
+  expect(result.rawSourceLeft).toBe(false);
+  expect(result.lines).toBeGreaterThan(2);
+  expect(result.maxDeviation).toBeLessThan(1);
+});
+
 test("auto drop-in: configures typography from CSS custom properties", async ({ page }) => {
   const messages: Array<{ type: string; text: string }> = [];
   page.on("console", (m) => messages.push({ type: m.type(), text: m.text() }));
@@ -9414,6 +9464,536 @@ test("an object renders at the width the author's own layout gave it", async ({ 
       1,
     );
   }
+});
+
+test("an object's late inner font refreshes its rigid width", async ({ page }) => {
+  let releaseUnrelated!: () => void;
+  const unrelatedGate = new Promise<void>((resolve) => {
+    releaseUnrelated = resolve;
+  });
+  await page.route(/Junicode-Roman\.ttf\?atomic-late$/, async (route) => {
+    // Keep the face behind the initial synchronous commit. This reproduces
+    // formula renderers whose own stylesheet discovers a font after justif
+    // has already measured the inline object in its fallback.
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await route.continue();
+  });
+  await page.route(/Junicode-Roman\.ttf\?atomic-unrelated$/, async (route) => {
+    await unrelatedGate;
+    await route.continue();
+  });
+  await openFixture(page);
+  let result: {
+    readySettled: boolean;
+    beforeWidth: number;
+    afterWidth: number;
+    relayoutsAtCommit: number;
+    finalRelayouts: number;
+    maxDeviation: number;
+    fragmented: boolean;
+    lines: number;
+    minWordSpacing: number;
+  };
+  try {
+    result = await page.evaluate(async (plain) => {
+      const style = document.createElement("style");
+      style.textContent = `@font-face {
+        font-family: "AtomicLate";
+        src: url("/demo/fonts/Junicode-Roman.ttf?atomic-late") format("truetype");
+        font-display: swap;
+      }`;
+      document.head.append(style);
+      // This face is loading in the same document but is unrelated to the
+      // paragraph. A targeted controller.ready must not widen into the global
+      // document.fonts.ready and wait for it.
+      const unrelated = new FontFace(
+        "UnrelatedAtomicWait",
+        'url("/demo/fonts/Junicode-Roman.ttf?atomic-unrelated")',
+      );
+      document.fonts.add(unrelated);
+      void unrelated.load().catch(() => {});
+
+      const p = document.createElement("p");
+      p.id = "atomic-late-font";
+      p.style.cssText =
+        "width:360px;text-align:justify;font:17px/1.45 Georgia,serif;margin:0";
+      p.append(
+        document.createTextNode(
+          "Measured prose before the rendered expression gives the breaker enough material " +
+            "to form several complete lines around ",
+        ),
+      );
+      const object = document.createElement("span");
+      object.className = "late-font-object";
+      object.style.cssText = "display:inline-block;white-space:nowrap";
+      const glyphs = document.createElement("span");
+      glyphs.style.fontFamily = '"AtomicLate", monospace';
+      glyphs.textContent = "mmmmmmmmmmmm";
+      object.append(glyphs);
+      p.append(
+        object,
+        document.createTextNode(
+          " while more measured prose follows it and fills several additional lines " +
+            "so the object's line is not mistaken for a ragged final line.",
+        ),
+      );
+      document.getElementById("host")!.replaceChildren(p);
+      p.scrollIntoView({ block: "center" });
+
+      let relayouts = 0;
+      const controller = window.__justif.justify(p, {
+        ...(plain as object),
+        hyphenate: undefined,
+        onRelayout: () => relayouts++,
+      });
+      const initialObject = p.querySelector<HTMLElement>(
+        ".justif-seg > .late-font-object",
+      )!;
+      const beforeWidth = initialObject.getBoundingClientRect().width;
+      const relayoutsAtCommit = relayouts;
+
+      const readySettled = await Promise.race([
+        controller.ready.then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), 1_800)),
+      ]);
+      const renderedObject = p.querySelector<HTMLElement>(
+        ".justif-seg > .late-font-object",
+      )!;
+      const afterWidth = renderedObject.getBoundingClientRect().width;
+      const geometry = window.__justifObjectLines(p);
+      const wordSpacings = [...p.querySelectorAll<HTMLElement>(".justif-seg")]
+        .filter((seg) => seg.firstElementChild === null && /\s/.test(seg.textContent ?? ""))
+        .map((seg) => parseFloat(getComputedStyle(seg).wordSpacing))
+        .filter(Number.isFinite);
+      const maxDeviation = Math.max(
+        ...geometry.lines
+          .slice(0, -1)
+          .map((line) => Math.abs(line.right - geometry.contentRight)),
+      );
+      const fragmented = geometry.lines.some((line) => line.fragmented);
+      const lines = geometry.lines.length;
+      const finalRelayouts = relayouts;
+      controller.destroy();
+      p.remove();
+      style.remove();
+      return {
+        beforeWidth,
+        afterWidth,
+        readySettled,
+        relayoutsAtCommit,
+        finalRelayouts,
+        maxDeviation,
+        fragmented,
+        lines,
+        minWordSpacing: Math.min(...wordSpacings),
+      };
+    }, PLAIN);
+  } finally {
+    releaseUnrelated();
+    await page.evaluate(async () => {
+      await document.fonts.ready;
+      for (const face of document.fonts) {
+        if (face.family.replace(/["']/g, "") === "UnrelatedAtomicWait") {
+          document.fonts.delete(face);
+        }
+      }
+    });
+  }
+
+  expect(result.readySettled).toBe(true);
+  expect(Math.abs(result.afterWidth - result.beforeWidth)).toBeGreaterThan(5);
+  expect(result.finalRelayouts).toBeGreaterThan(result.relayoutsAtCommit);
+  expect(result.lines).toBeGreaterThan(3);
+  expect(result.fragmented).toBe(false);
+  expect(result.maxDeviation).toBeLessThan(1);
+  // The stale-width bug hid the object's growth by forcing roughly -6px of
+  // word spacing into nearby prose.
+  expect(result.minWordSpacing).toBeGreaterThan(-2);
+});
+
+test("rescan() re-reads an atomic object whose descendant CSS resized it", async ({
+  page,
+}) => {
+  await openFixture(page);
+  const result = await page.evaluate((plain) => {
+    const style = document.createElement("style");
+    style.textContent = `
+      #atomic-rescan .rescan-object { width: 64px; }
+      #atomic-rescan.object-wide .rescan-object { width: 148px; }
+    `;
+    document.head.append(style);
+    const p = document.createElement("p");
+    p.id = "atomic-rescan";
+    p.style.cssText =
+      "width:360px;text-align:justify;font:17px/1.45 Georgia,serif;margin:0";
+    p.innerHTML =
+      "The first part of this paragraph supplies measured words before " +
+      '<span class="rescan-object" style="display:inline-block">object</span>' +
+      " and the remainder supplies enough measured words after it to form several full lines.";
+    document.getElementById("host")!.replaceChildren(p);
+    p.scrollIntoView({ block: "center" });
+    const controller = window.__justif.justify(p, {
+      ...(plain as object),
+      hyphenate: undefined,
+    });
+    const width = () =>
+      p.querySelector<HTMLElement>(".justif-seg > .rescan-object")!.getBoundingClientRect()
+        .width;
+    const beforeWidth = width();
+
+    // The class changes only descendant CSS, so the paragraph-level style key
+    // remains identical. The live object's new advance is the rescan signal.
+    p.classList.add("object-wide");
+    const changed = controller.rescan([p]).map((element) => element.id);
+    const afterWidth = width();
+    const unchanged = controller.rescan([p]).map((element) => element.id);
+    const geometry = window.__justifObjectLines(p);
+    const maxDeviation = Math.max(
+      ...geometry.lines
+        .slice(0, -1)
+        .map((line) => Math.abs(line.right - geometry.contentRight)),
+    );
+    controller.destroy();
+    p.remove();
+    style.remove();
+    return {
+      beforeWidth,
+      afterWidth,
+      changed,
+      unchanged,
+      maxDeviation,
+      fragmented: geometry.lines.some((line) => line.fragmented),
+    };
+  }, PLAIN);
+
+  expect(result.beforeWidth).toBeCloseTo(64, 0);
+  expect(result.afterWidth).toBeCloseTo(148, 0);
+  expect(result.changed).toEqual(["atomic-rescan"]);
+  expect(result.unchanged).toEqual([]);
+  expect(result.fragmented).toBe(false);
+  expect(result.maxDeviation).toBeLessThan(1);
+});
+
+test("an object's line survives every measure it is set at", async ({ page }) => {
+  // The junctions on either side of an object are the only break opportunities
+  // inside a set line, and no word joiner is strong enough for all of them:
+  // Firefox breaks at a native <math> as soon as the cumulative advance
+  // reaches the measure, which a hanging mark right after the formula makes
+  // exact. Protrusion stays ON here — that is the configuration that puts the
+  // junction on the measure — and the sweep is what finds the measures where
+  // it lands there.
+  await openFixture(page);
+  const result = await page.evaluate(async () => {
+    const p = document.createElement("p");
+    p.id = "math-junction";
+    p.style.cssText = "width:420px;text-align:justify;font:17px/1.5 Georgia,serif;margin:0";
+    p.innerHTML =
+      "The energy of a body at rest is " +
+      '<math xmlns="http://www.w3.org/1998/Math/MathML"><mrow><mi>E</mi><mo>=</mo>' +
+      "<mi>m</mi><msup><mi>c</mi><mn>2</mn></msup></mrow></math>" +
+      ", a relation that follows from the transformation and holds for every " +
+      "inertial observer who cares to measure it carefully in the laboratory " +
+      "over many long afternoons.";
+    document.getElementById("host")!.replaceChildren(p);
+    p.scrollIntoView({ block: "center" });
+    const controller = window.__justif.justify(p, { hyphenate: undefined });
+    await controller.ready;
+    const measures: Array<{ width: number; over: number; short: number; objects: number }> = [];
+    for (let width = 300; width <= 420; width += 4) {
+      p.style.width = `${width}px`;
+      controller.refresh();
+      const geometry = window.__justifObjectLines(p);
+      const interior = geometry.lines.slice(0, -1);
+      measures.push({
+        width,
+        over: Math.max(...interior.map((line) => line.right - geometry.contentRight)),
+        short: Math.min(...interior.map((line) => line.right - geometry.contentRight)),
+        objects: geometry.objects.length,
+      });
+    }
+    const enhanced = p.hasAttribute("data-justif");
+    controller.destroy();
+    p.remove();
+    return { measures, enhanced };
+  });
+
+  expect(result.enhanced).toBe(true);
+  for (const measure of result.measures) {
+    // The object is one box at every measure, and every set line ends at the
+    // measure — within the hanging mark's own protrusion, and never short of
+    // it by the width of a formula that dropped to the next line.
+    expect(measure.objects, `objects at ${measure.width}px`).toBe(1);
+    expect(measure.over, `overflow at ${measure.width}px`).toBeLessThan(8);
+    expect(measure.short, `short line at ${measure.width}px`).toBeGreaterThan(-20);
+  }
+});
+
+test("a line the engine re-breaks is set from its own widths", async ({ page }) => {
+  // An author NBSP measures wider in the DOM than on canvas, so this line's
+  // modeled advance lands ~1.4px over its measure and Chromium moves the last
+  // segment down — an end margin does not enter its fit decision. The line's
+  // painted edge then belongs to the line below it, and correcting to that
+  // coordinate is what turns 1.4px into a 42px word space (which is what
+  // 0.9.0 does here). Summed widths still describe the line, so it is set from
+  // those instead, and the engine takes the tail back.
+  await openFixture(page);
+  const result = await page.evaluate(async () => {
+    const p = document.createElement("p");
+    p.id = "rebroken-line";
+    p.style.cssText = "width:245px;word-spacing:2px;font:17px/1.5 Georgia,serif;margin:0";
+    p.innerHTML =
+      "The reference <em>Fig.\u00A07</em> stays intact while the numbered note " +
+      "No.\u202F12 remains together in justified prose across several ordinary lines.";
+    document.getElementById("host")!.replaceChildren(p);
+    p.scrollIntoView({ block: "center" });
+    const controller = window.__justif.justify(p, {
+      hyphenate: window.__justif.hyphenateEnUS,
+    });
+    await controller.ready;
+    await new Promise((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(resolve)),
+    );
+    const geometry = window.__justifLines(p);
+    const spacings = [...p.querySelectorAll<HTMLElement>(".justif-seg")]
+      .filter((seg) => /\s/.test(seg.textContent ?? ""))
+      .map((seg) => Math.abs(parseFloat(getComputedStyle(seg).wordSpacing) || 0));
+    const out = {
+      lines: geometry.lines.length,
+      worstDeviation: Math.max(
+        ...geometry.lines
+          .slice(0, -1)
+          .map((line) => Math.abs(line.right - geometry.contentRight)),
+      ),
+      worstWordSpacing: Math.max(...spacings),
+      firstLine: (p.querySelector(".justif-seg")?.textContent ?? "").trim(),
+    };
+    controller.destroy();
+    p.remove();
+    return out;
+  });
+
+  expect(result.lines).toBeGreaterThan(3);
+  // Every set line ends at its measure, and none of them paid for it with a
+  // word space several times its natural width.
+  expect(result.worstDeviation).toBeLessThan(1.5);
+  expect(result.worstWordSpacing).toBeLessThan(20);
+});
+
+test("an object resized while its paragraph is layout-skipped is re-priced on reveal", async ({
+  page,
+}) => {
+  // The one path that reaches the correction pass's own object check: while the
+  // paragraph is skipped its rects read zero, so the font-load refresh finds
+  // nothing to update, and the change is discovered later — by the parked
+  // correction, once the viewport observers promote it.
+  await openFixture(page);
+  const result = await page.evaluate(async (plain) => {
+    const spacer = document.createElement("div");
+    spacer.id = "skipped-spacer";
+    spacer.style.height = "300vh";
+    const style = document.createElement("style");
+    style.textContent = "#skipped-object .chip { display:inline-block; width:40px }";
+    document.head.append(style);
+    const p = document.createElement("p");
+    p.id = "skipped-object";
+    p.style.cssText =
+      "content-visibility:auto;contain-intrinsic-size:auto 8em;width:380px;" +
+      "text-align:justify;font:17px/1.5 Georgia,serif;margin:0";
+    p.innerHTML =
+      "Prose before the chip gives the breaker material to work with, then the " +
+      '<span class="chip">chip</span> sits in the middle of the paragraph while ' +
+      "further prose after it fills out several more complete justified lines.";
+    const host = document.getElementById("host")!;
+    host.replaceChildren(spacer, p);
+    const controller = window.__justif.justify(p, {
+      ...(plain as object),
+      hyphenate: undefined,
+    });
+    await controller.ready;
+    // Widen the object while the paragraph is (or may be) skipped, then reveal
+    // it. Nothing here tells justif; the correction pass has to notice.
+    style.textContent = "#skipped-object .chip { display:inline-block; width:120px }";
+    p.scrollIntoView({ block: "center" });
+    return { controllerHeld: controller.managed.length };
+  }, PLAIN);
+  await waitForQuiescence(page, "#skipped-object");
+
+  const geometry = await page.evaluate(() => {
+    const p = document.getElementById("skipped-object")!;
+    const g = window.__justifObjectLines(p);
+    const out = {
+      objectWidth: g.objects[0]?.width ?? 0,
+      worstDeviation: Math.max(
+        ...g.lines.slice(0, -1).map((line) => Math.abs(line.right - g.contentRight)),
+      ),
+      fragmented: g.lines.some((line) => line.fragmented),
+    };
+    window.__justif.controller?.destroy();
+    document.getElementById("skipped-spacer")?.remove();
+    p.remove();
+    window.scrollTo(0, 0);
+    return out;
+  });
+
+  expect(result.controllerHeld).toBe(1);
+  // The object is rendered at its new width, and the paragraph was re-priced
+  // around it rather than having the difference squeezed out of its prose.
+  expect(geometry.objectWidth).toBeCloseTo(120, 0);
+  expect(geometry.fragmented).toBe(false);
+  expect(geometry.worstDeviation).toBeLessThan(1.5);
+});
+
+test("unsupported individual transforms do not reject atomic objects", async ({ page }) => {
+  await openFixture(page);
+  const result = await page.evaluate(() => {
+    const p = document.createElement("p");
+    p.style.cssText =
+      "width:360px;text-align:justify;font:17px/1.5 Georgia,serif;margin:0";
+    p.innerHTML =
+      "Prose before an " +
+      '<span style="display:inline-block">inline object</span> and enough prose ' +
+      "after it to make several complete justified lines across the measure.";
+    document.getElementById("host")!.replaceChildren(p);
+
+    const getPropertyValue = CSSStyleDeclaration.prototype.getPropertyValue;
+    CSSStyleDeclaration.prototype.getPropertyValue = function (property: string) {
+      if (property === "scale" || property === "rotate") return "";
+      return getPropertyValue.call(this, property);
+    };
+    try {
+      const controller = window.__justif.justify(p, { hyphenate: undefined });
+      const out = {
+        managed: controller.managed.length,
+        objects: p.querySelectorAll(".justif-seg > span").length,
+      };
+      controller.destroy();
+      return out;
+    } finally {
+      CSSStyleDeclaration.prototype.getPropertyValue = getPropertyValue;
+      p.remove();
+    }
+  });
+
+  expect(result.managed).toBe(1);
+  expect(result.objects).toBeGreaterThan(0);
+});
+
+test("a transform applied after the scan is never read as an object's width", async ({
+  page,
+}) => {
+  await openFixture(page);
+  const result = await page.evaluate((plain) => {
+    const style = document.createElement("style");
+    // A chip that scales on hover, expressed as a class the test can toggle.
+    // readAtomicBox rejects a transformed object outright — the rect a
+    // transform scales is not the advance the box takes — so a transform that
+    // appears after the scan must not be measured either.
+    // Both spellings: the individual `scale` property does NOT appear in
+    // computed `transform`, so a check that reads `transform` alone lets it
+    // through and models the scaled rect as the object's advance.
+    style.textContent = `
+      #atomic-transform .chip { display: inline-block; }
+      #atomic-transform.scaled .chip { transform: scale(1.6); }
+      #atomic-transform.scaled-property .chip { scale: 1.6; }
+    `;
+    document.head.append(style);
+    const p = document.createElement("p");
+    p.id = "atomic-transform";
+    p.style.cssText =
+      "width:400px;text-align:justify;font:17px/1.5 Georgia,serif;margin:0";
+    p.innerHTML =
+      "Prose before the chip gives the breaker material to work with, then the " +
+      '<span class="chip">chip</span> sits in the middle of the paragraph while ' +
+      "further prose after it fills out several more complete justified lines.";
+    document.getElementById("host")!.replaceChildren(p);
+    p.scrollIntoView({ block: "center" });
+    const controller = window.__justif.justify(p, {
+      ...(plain as object),
+      hyphenate: undefined,
+    });
+    const read = () => {
+      const geometry = window.__justifObjectLines(p);
+      return {
+        lines: geometry.lines.length,
+        maxDeviation: Math.max(
+          ...geometry.lines
+            .slice(0, -1)
+            .map((line) => Math.abs(line.right - geometry.contentRight)),
+        ),
+      };
+    };
+    const before = read();
+    const scaled: Record<string, ReturnType<typeof read>> = {};
+    for (const spelling of ["scaled", "scaled-property"]) {
+      p.classList.add(spelling);
+      controller.refresh();
+      scaled[spelling] = read();
+      p.classList.remove(spelling);
+      controller.refresh();
+    }
+    const unscaled = read();
+    controller.destroy();
+    p.remove();
+    style.remove();
+    return { before, scaled, unscaled };
+  }, PLAIN);
+
+  expect(result.before.lines).toBeGreaterThan(2);
+  expect(result.before.maxDeviation).toBeLessThan(1);
+  // The scaled rect is 60% wider than the advance. Modeling it left the
+  // object's line ~19px short of the measure (~22px via `scale`).
+  for (const [spelling, scaled] of Object.entries(result.scaled)) {
+    expect(scaled.lines, spelling).toBe(result.before.lines);
+    expect(scaled.maxDeviation, spelling).toBeLessThan(1);
+  }
+  expect(result.unscaled.maxDeviation).toBeLessThan(1);
+});
+
+test("a paragraph-ending line beside an object keeps its natural spacing", async ({
+  page,
+}) => {
+  // Object lines are set a sliver tight so the engine cannot break at the
+  // object's junctions. A ragged ending needs none of that — nothing on it is
+  // near the measure — and it is outside the correction window that would give
+  // the slack back, so tightening it once is tightening it for good: measured,
+  // a closing line whose only space sat beside the object rendered that space
+  // 1.5px narrow, against 0 for the same line without an object.
+  await openFixture(page);
+  const result = await page.evaluate(() => {
+    const build = (id: string, tail: string) => {
+      const p = document.createElement("p");
+      p.id = id;
+      p.style.cssText =
+        "width:360px;text-align:justify;font:17px/1.5 Georgia,serif;margin:0 0 1em";
+      p.innerHTML =
+        "This paragraph is written so that its closing line carries a single " +
+        "space and one object, which puts every bit of a line-wide tightening " +
+        `on that space: the ${tail}.`;
+      return p;
+    };
+    const host = document.getElementById("host")!;
+    const object = build("tail-object", '<span style="display:inline-block">chip</span>');
+    const plain = build("tail-plain", "chip");
+    host.replaceChildren(object, plain);
+    object.scrollIntoView({ block: "center" });
+    const controller = window.__justif.justify([object, plain], { hyphenate: undefined });
+    const tailSpacing = (p: HTMLElement) => {
+      const segs = [...p.querySelectorAll<HTMLElement>(".justif-seg")];
+      const lastTop = Math.max(...segs.map((seg) => seg.getBoundingClientRect().top));
+      return segs
+        .filter((seg) => Math.abs(seg.getBoundingClientRect().top - lastTop) < 4)
+        .filter((seg) => /\s/.test(seg.textContent ?? ""))
+        .map((seg) => parseFloat(getComputedStyle(seg).wordSpacing) || 0);
+    };
+    const out = { object: tailSpacing(object), plain: tailSpacing(plain) };
+    controller.destroy();
+    host.replaceChildren();
+    return out;
+  });
+
+  expect(result.object.length).toBeGreaterThan(0);
+  expect(Math.min(...result.object)).toBeGreaterThan(-0.5);
+  expect(Math.min(...result.object)).toBeCloseTo(Math.min(...result.plain), 1);
 });
 
 test("an out-of-flow subtree keeps its accessible content and takes no advance", async ({

@@ -25,6 +25,7 @@
 
 import { describeError } from "../core/errors.js";
 import { FRAGMENT_WIDTH_TOLERANCE_PX, fragmentBoxesOf } from "./geometry.js";
+import { type AtomicBox, atomicWidthStale } from "./read.js";
 import { endWithoutCollapsibleSpaces } from "./whitespace.js";
 import {
   CORRECTION_WINDOW_PX,
@@ -82,6 +83,8 @@ export type ParagraphOutcome =
    * `contain`, which any repair must compose with rather than replace.
    */
   | { status: "resized"; width: number; minWidth: string; contain: string }
+  /** A live atomic object changed advance after the breaker priced it. */
+  | { status: "atomic-resized" }
   /** Cannot be corrected safely; the paragraph should go back to the engine. */
   | { status: "invalid"; reason: string }
   /** Correctable. `corrections` may be empty when no line needed one. */
@@ -195,26 +198,87 @@ interface LineExtent {
    * on a segment whose transform changes the text's length. No correction can
    * be derived; the line keeps its provisional pad, as for a re-wrapped one. */
   unmeasurable: boolean;
+  /** The engine put this line's segments on more than one line box, so its
+   * measured edge belongs to a line that is not the one being corrected. */
+  split: boolean;
 }
+
+/**
+ * Whether `rect`, belonging to an entry after the line's first, can still be
+ * on the line box that `lineRect` (the first entry's rect) is on.
+ *
+ * TWO signals, and a split needs both, because either alone false-positives on
+ * content this codebase does set.
+ *
+ * WHERE IT STARTS: only a line's first entry may start at the line's own start
+ * edge, so an entry reporting that coordinate has gone back to a line start.
+ * Alone this fires on bidi reordering — measured, two adjacent digit runs in an
+ * RTL paragraph lay out left to right in all three engines, so the second one
+ * reports a start edge it shares a line box with — which is why it is not
+ * enough on its own. (Mixed-direction PARAGRAPHS never reach a scan; a number
+ * inside RTL prose is ordinary supported content.)
+ *
+ * WHICH LINE IT IS ON: a moved entry sits below the line's first entry. Alone
+ * this fires on any short inline box that hangs below the text's own top, and
+ * comparing box overlap instead cannot see a split at all once `line-height` is
+ * tight enough that adjacent line boxes' rects overlap (measured at
+ * `line-height: 1`). Together with the start edge it is decisive: a taller
+ * object reaches ABOVE the text it sits beside, never below it.
+ *
+ * An all-zero rect answers neither question — a Range whose trimmed endpoints
+ * leave it empty reports zeros in Firefox, where the same read gives a real
+ * rect in Chromium and WebKit, and layout-skipped content reports zeros
+ * everywhere — so it counts as sharing: an engine quirk must never cost a line
+ * its correction.
+ */
+function sharesLineBox(rect: DOMRect, lineRect: DOMRect, rtl: boolean): boolean {
+  if (rect.width === 0 && rect.height === 0) return true;
+  const startsAtLineStart =
+    lineRect.width > LINE_START_TOLERANCE_PX &&
+    (rtl
+      ? rect.right >= lineRect.right - LINE_START_TOLERANCE_PX
+      : rect.left <= lineRect.left + LINE_START_TOLERANCE_PX);
+  const below = rect.top > lineRect.top + LINE_START_TOLERANCE_PX;
+  return !(startsAtLineStart && below);
+}
+
+/** Slack in the tests above, covering the fractions of a pixel a segment's own
+ * start margin, or a sub-pixel baseline difference, can contribute. A moved
+ * entry returns to the line start by the whole width of what preceded it, and
+ * drops by a whole line. */
+const LINE_START_TOLERANCE_PX = 1;
 
 /** Reads one line's true painted extent. Rect reads only for the glyph runs;
  * every space at a segment edge is taken from the model instead, because a
  * Range over a leading space measures narrower at a line start than mid-line
  * (which made the naive correction circular). */
-function measureLineExtent(entries: readonly LineEntry[], range: Range): LineExtent {
+function measureLineExtent(
+  entries: readonly LineEntry[],
+  range: Range,
+  rtl: boolean,
+): LineExtent {
   let rectPx = 0;
   let modelPx = 0;
   let ownMargins = 0;
   let lineRect: DOMRect | null = null;
   let unmeasurable = false;
-  for (const { el, seg, marginEndEl } of entries) {
+  let split = false;
+  for (let index = 0; index < entries.length; index++) {
+    const { el, seg, marginEndEl } = entries[index]!;
     let elRect: DOMRect | undefined;
     if (lineRect === null) {
       elRect = el.getBoundingClientRect();
       lineRect = elRect;
     }
+    // Only entries AFTER the line's first can report a line start (see
+    // sharesLineBox). Told apart by position, not by rect identity: the first
+    // entry's trimmed Range is a different rect from the element rect that
+    // defines the line, and may legitimately share its start coordinate.
+    const later = index > 0;
     if (seg === null || (seg.edgeTrim.lead === 0 && seg.edgeTrim.trail === 0)) {
-      rectPx += (elRect ?? el.getBoundingClientRect()).width;
+      const rect = elRect ?? el.getBoundingClientRect();
+      rectPx += rect.width;
+      if (later && !sharesLineBox(rect, lineRect, rtl)) split = true;
     } else {
       // Only edge spaces force this branch, and only a Range can exclude them
       // (the element rect above includes them). A transform that changes the
@@ -233,7 +297,9 @@ function measureLineExtent(entries: readonly LineEntry[], range: Range): LineExt
       } else {
         range.setStart(start.node, start.offset);
         range.setEnd(end.node, end.offset);
-        rectPx += range.getBoundingClientRect().width;
+        const rect = range.getBoundingClientRect();
+        rectPx += rect.width;
+        if (later && !sharesLineBox(rect, lineRect, rtl)) split = true;
         modelPx += seg.edgeTrim.modelPx;
       }
     }
@@ -246,7 +312,7 @@ function measureLineExtent(entries: readonly LineEntry[], range: Range): LineExt
     modelPx += me;
     ownMargins += me;
   }
-  return { rectPx, modelPx, ownMargins, lineRect, unmeasurable };
+  return { rectPx, modelPx, ownMargins, lineRect, unmeasurable, split };
 }
 
 /** Coordinate of a fragment's content-box end edge (its line-end side). */
@@ -454,6 +520,31 @@ export function measureCorrections(
         });
         continue;
       }
+      // An object width is a rigid model input, not DOM/canvas drift. Detect
+      // it before line correction can squeeze the discrepancy out of prose.
+      // Detected, not refreshed: this is the read pass, and the model it
+      // reports on has to still describe the layout the caller measured — the
+      // caller refreshes it when it acts (see the atomic-resized outcome).
+      // Walked rather than collected: every paragraph pays this loop on every
+      // correction pass, and prose — which is most of them — must allocate
+      // nothing for it. The Set exists only where objects do, and only to keep
+      // an object split across two lines from being measured twice.
+      let atomicResized = false;
+      let seen: Set<AtomicBox> | null = null;
+      for (const line of lineElements) {
+        for (const entry of line) {
+          const box = entry.seg?.atomic?.box;
+          if (box === undefined) continue;
+          seen ??= new Set();
+          if (seen.has(box)) continue;
+          seen.add(box);
+          if (atomicWidthStale(box)) atomicResized = true;
+        }
+      }
+      if (atomicResized) {
+        outcomes.push({ status: "atomic-resized" });
+        continue;
+      }
       if (detailed?.[i] === false) {
         outcomes.push({ status: "hidden" });
         continue;
@@ -474,9 +565,10 @@ export function measureCorrections(
           continue;
         }
         const availableWidth = lineWidths[li] ?? lineWidths[lineWidths.length - 1] ?? 0;
-        const { rectPx, modelPx, ownMargins, lineRect, unmeasurable } = measureLineExtent(
+        const { rectPx, modelPx, ownMargins, lineRect, unmeasurable, split } = measureLineExtent(
           entries,
           range,
+          rtl === true,
         );
         // Skipped content (content-visibility: auto off-screen) measures
         // zero rects; model widths and margins still parse, so the "is this
@@ -487,11 +579,15 @@ export function measureCorrections(
         if (unmeasurable) continue;
         const layout = rectPx + modelPx;
         const overflow = layout - availableWidth;
-        if (overflow > CORRECTION_WINDOW_PX) {
-          const textEntries = entries.filter(
-            (entry): entry is LineEntry & { seg: RenderSegment } => entry.seg !== null,
-          );
-          const endText = textEntries[textEntries.length - 1];
+        const textEntries = entries.filter(
+          (entry): entry is LineEntry & { seg: RenderSegment } => entry.seg !== null,
+        );
+        const endText = textEntries[textEntries.length - 1];
+        // A line the writer set tight to protect an object's junctions starts
+        // that much further from its measure, so the window that tells a set
+        // line from a ragged one has to move with it.
+        const objectTighten = endText?.seg.objectTightenPx ?? 0;
+        if (overflow > CORRECTION_WINDOW_PX - objectTighten) {
           const rightHang = endText?.seg.rightHangPx ?? 0;
           // Terminal-glyph and pseudo-hyphen removals are mutually exclusive
           // (a line ends in one or the other); both mean "this much of
@@ -512,6 +608,26 @@ export function measureCorrections(
           );
           const deliberateOverflow = endText?.seg.overflowPx ?? 0;
           const besideFloat = li < physicalFitLines;
+          // The engine broke this modeled line — measured, Firefox does that at
+          // a native <math> boundary as soon as the advance reaches the measure,
+          // and Chromium does it at a segment boundary when an author NBSP
+          // measures wider in the DOM than on canvas. Its painted edge now
+          // belongs to a line box that is not this one, and correcting to that
+          // coordinate is what turns a 1px overshoot into a 40px word space.
+          // Summed widths still describe the line, though — a width does not
+          // care which line box it is on — so it is corrected the way a line
+          // beside a float is: physically, against the measure, with slack
+          // enough that the engine takes the tail back.
+          const physicalFit = besideFloat || split;
+          // A line holding an object is set a sliver short of its measure: its
+          // interior is the only interior the engine can still break, and it
+          // breaks there on the cumulative advance at the junction — which an
+          // end margin cannot reduce, sitting behind it. The writer leaves the
+          // same slack (see WRAP_SAFETY_PAD_PX in segments.ts); this is what
+          // keeps it once the correction has replaced the pad.
+          const objectSpare = entries.some((entry) => entry.seg?.atomic !== undefined)
+            ? OBJECT_WRAP_SPARE_PX
+            : 0;
           // Set lines should PAINT at the modeled edge too. The former
           // margin-only correction made their layout advance fit but left
           // Firefox's Georgia glyphs visibly 2–3px outside the column. Away
@@ -523,11 +639,12 @@ export function measureCorrections(
           // preceding glyph.
           const physicalLayout = layout - ownMargins;
           let adjustmentPx: number;
-          if (besideFloat) {
+          if (physicalFit) {
             adjustmentPx =
               physicalLayout -
               (availableWidth -
-                FLOAT_WRAP_SPARE_PX +
+                FLOAT_WRAP_SPARE_PX -
+                objectSpare +
                 rightHang -
                 physicalEndHang -
                 physicalPad +
@@ -559,16 +676,11 @@ export function measureCorrections(
                 continue;
               }
             }
-            const desiredEnd = (rtl ? -contentEnd : contentEnd) + rightHang + deliberateOverflow;
+            const desiredEnd =
+              (rtl ? -contentEnd : contentEnd) + rightHang + deliberateOverflow - objectSpare;
             adjustmentPx = painted.value - desiredEnd;
           }
           const spacing = distributeAdjustment(textEntries, adjustmentPx);
-          // A line holding an object keeps a sliver of layout slack: it is
-          // the only line whose interior the engine can still break (see
-          // OBJECT_WRAP_SPARE_PX).
-          const objectSpare = entries.some((entry) => entry.seg?.atomic !== undefined)
-            ? OBJECT_WRAP_SPARE_PX
-            : 0;
           // With no legitimate spacing recipient, keep the provisional wrap
           // margin instead of changing an author no-break-space box. This is
           // the only faithful fallback for a line made solely of fixed boxes.
@@ -582,13 +694,11 @@ export function measureCorrections(
             // exactly the intentional hang/overfull amount; deriving this
             // margin again from summed DOM widths lets engine-specific inline
             // rounding leak back in (notably Firefox's persistent 1.5px).
-            marginPx:
-              -(
-                rightHang -
-                (besideFloat ? physicalEndHang : 0) +
-                deliberateOverflow +
-                objectSpare
-              ),
+            // The object spare is NOT part of this: the spacing above already
+            // set the line that much short, so the advance this excludes is the
+            // intentional hang alone. Counting the spare here too would take
+            // the same slack out twice.
+            marginPx: -(rightHang - (besideFloat ? physicalEndHang : 0) + deliberateOverflow),
             spacing: spacing.length > 0 ? spacing : undefined,
           });
         }

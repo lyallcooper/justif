@@ -23,6 +23,7 @@ import {
   measureCorrections,
   type ParagraphOutcome,
 } from "./line-corrections.js";
+import { refreshAtomicWidths } from "./read.js";
 import type { PendingParagraph } from "./write.js";
 
 /** What one call to the patch writer did. */
@@ -47,6 +48,8 @@ export interface CorrectionHost {
   bailToNative(p: HTMLElement, reason: string): boolean;
   /** Re-break and re-write one paragraph, never throwing. */
   safePatch(p: HTMLElement): PatchOutcome;
+  /** Rebuild measured runs and breaker items after a rigid object changes. */
+  rebuildMetrics(state: ParaState): void;
   /** Tell user code a paragraph's rendering changed. */
   emitRelayout(p: HTMLElement): void;
   /** Classify a batch's viewport proximity directly, for the window before
@@ -183,6 +186,28 @@ export function createCorrectionPass(host: CorrectionHost) {
             corrections.push(...outcome.corrections);
             measured.push(entry);
             break;
+          case "atomic-resized": {
+            const state = host.ownedState(entry.p);
+            if (state === undefined) {
+              wrote = true;
+              break;
+            }
+            // Out of settling budget: leave the paragraph as it stands, and
+            // leave the model describing what it stands at. The read pass
+            // refreshes nothing, so the discrepancy is still there to be found
+            // when this paragraph is next measured.
+            if (pass >= SETTLE_PASSES) break;
+            wrote = true;
+            // Take the new widths now, in the write phase, and re-price the
+            // paragraph against them.
+            refreshAtomicWidths(state.scan);
+            host.rebuildMetrics(state);
+            state.lastPatch = "";
+            const patched = host.safePatch(entry.p);
+            if (patched.pending !== null) entry.pending = patched.pending;
+            if (patched.changed) noteRelayout(entry.p);
+            break;
+          }
           case "invalid":
             rejectPatch(entry, outcome.reason, noteRelayout);
             wrote = true;

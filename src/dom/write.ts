@@ -22,6 +22,7 @@
  */
 
 import { graphemes } from "../core/cjk.js";
+import type { AtomicBox } from "./read.js";
 
 export interface RenderSegment {
   text: string;
@@ -40,8 +41,7 @@ export interface RenderSegment {
    * segment is a break that MUST remain available.
    */
   atomic?: {
-    source: Element;
-    style: readonly (readonly [property: string, value: string])[];
+    box: AtomicBox;
     weldStart: boolean;
     weldEnd: boolean;
   };
@@ -103,6 +103,13 @@ export interface RenderSegment {
    * can actually give up, so the model never claims a removal the DOM did
    * not make. */
   physicalPadPx?: number;
+  /** Set on the last segment of a line the writer set TIGHT because the line
+   * holds an atomic object: the slack that protects the object's junctions has
+   * to live in the line's spacing, since an end margin sits behind them. The
+   * correction pass reads it to widen its own "is this line set or ragged"
+   * window by the same amount — without that, a line tightened here and
+   * drifting like any other measures as ragged and is never corrected. */
+  objectTightenPx?: number;
   /** Absolute letter-spacing emitted on that hyphen span (the run's own
    * letter-spacing minus hyphenEndHangPx): spacing after the "-" shrinks
    * its advance while the ink still paints past the shortened line box. */
@@ -326,8 +333,11 @@ export const FLOAT_WRAP_SPARE_PX = 0.25;
  * over its 440px measure, and Firefox moved everything after the formula to
  * the next line; a quarter pixel of margin put it back.
  *
- * Costs nothing visible: the margin shortens the line's layout advance, not
- * its ink, so the glyphs paint exactly where the correction placed them.
+ * Held in the line's SPACING, not in an end margin: a margin behind the
+ * junction does not change the advance the engine measures at it. The line
+ * therefore paints a quarter pixel inside the measure — below the sub-pixel
+ * flushness the corrections themselves guarantee, and invisible beside the
+ * hanging punctuation that routinely stands further out than that.
  */
 export const OBJECT_WRAP_SPARE_PX = 0.25;
 const STYLE_ID = "justif-style";
@@ -508,6 +518,9 @@ export function writeParagraph(
   /** Per intended line: its visual elements (with their segment data);
    * the last one takes the corrective margin. */
   const lineElements: LineEntry[][] = [[]];
+  /** Installed only after the fragment itself succeeds, so a failed write
+   * never points an atomic model at a detached provisional clone. */
+  const atomicBindings: Array<{ box: AtomicBox; clone: Element }> = [];
 
   const fragment = doc.createDocumentFragment();
   let renderedFloat: Element | null = null;
@@ -686,13 +699,14 @@ export function writeParagraph(
       const el = doc.createElement("span");
       el.className = "justif-seg";
       disableTextAutosizing(el);
-      const clone = segment.atomic.source.cloneNode(true) as HTMLElement;
+      const clone = segment.atomic.box.source.cloneNode(true) as HTMLElement;
       // Pinned on the CLONE, not on this segment: the segment must stay
       // nowrap (it is a line fragment like any other), while the object
       // inside it has to lay out under the values it was measured under.
-      for (const [property, value] of segment.atomic.style) {
+      for (const [property, value] of segment.atomic.box.style) {
         clone.style?.setProperty(property, value);
       }
+      atomicBindings.push({ box: segment.atomic.box, clone });
       if (segment.atomic.weldStart) el.append(WORD_JOINER);
       el.append(clone);
       if (segment.atomic.weldEnd) el.append(WORD_JOINER);
@@ -793,6 +807,7 @@ export function writeParagraph(
     while (keptFloat.nextSibling !== null) keptFloat.nextSibling.remove();
     p.append(fragment);
   }
+  for (const { box, clone } of atomicBindings) box.rendered = clone;
   return {
     doc,
     paragraph: p,

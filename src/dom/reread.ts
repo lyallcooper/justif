@@ -31,7 +31,7 @@ import {
   states,
   unmaskAuthorStyle,
 } from "./paragraph-state.js";
-import { paragraphStyleKey, type ParagraphScan } from "./read.js";
+import { paragraphStyleKey, type ParagraphScan, refreshAtomicWidths } from "./read.js";
 import { disableTextAutosizing } from "./write.js";
 
 /**
@@ -240,8 +240,20 @@ export function createRereadPass(record: AdoptionRecord, host: RereadHost) {
     } finally {
       restoreLifted();
     }
+    // Descendant CSS is absent from the paragraph key. A live object whose
+    // advance moved is enough evidence to do the destructive full reread;
+    // unchanged object paragraphs retain their DOM and any selection in it.
+    const atomicChanged = new Set(
+      considered.filter((p) => {
+        const state = host.ownedState(p);
+        return state !== undefined && refreshAtomicWidths(state.scan);
+      }),
+    );
     const stale = considered.filter(
-      (p) => record.floatDecisions.has(p) || record.decidedStyleKey.get(p) !== current.get(p),
+      (p) =>
+        record.floatDecisions.has(p) ||
+        atomicChanged.has(p) ||
+        record.decidedStyleKey.get(p) !== current.get(p),
     );
     if (stale.length === 0) return [];
     const restoreStale = suppressTransitions(stale);

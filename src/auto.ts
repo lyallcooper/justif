@@ -31,6 +31,8 @@
  *
  * The script tag carries only what is not element-scoped:
  *   data-justif-selector="article p"   candidate elements (default below)
+ *   data-justif-defer                  read the page after the page's own
+ *                                      DOMContentLoaded work, not before it
  *
  * Controllers are exposed at `window.justif.controllers` (with `justify`
  * and `unjustify`) as an escape hatch for debugging or teardown, and
@@ -117,6 +119,24 @@ function reportUnknownProperties(style: CSSStyleDeclaration, el: Element): void 
   }
 }
 
+/**
+ * The public surface, and the one boot behind it.
+ *
+ * These live outside `boot()` so that `window.justif` is published when this
+ * module runs, whenever the boot itself happens (see the bottom of this file).
+ * A `data-justif-defer` page reading the global from its own DOMContentLoaded
+ * listener — earlier than its boot — finds the same `controllers` array and the
+ * same `booted` promise it would find afterwards.
+ */
+const controllers: Controller[] = [];
+let resolveBooted!: () => void;
+const booted = new Promise<void>((resolve) => {
+  resolveBooted = resolve;
+});
+/** Set by the boot; absent until then, which is what makes `reconfigure()`
+ * a no-op rather than a wait on a boot that may never be asked for. */
+let reconfigureImpl: (() => Promise<void>) | null = null;
+
 function boot(): Promise<void> {
   // document.currentScript is null inside module scripts, so configuration
   // is looked up by attribute on whichever script tag carries it.
@@ -142,7 +162,6 @@ function boot(): Promise<void> {
   const released = new WeakSet<Element>();
 
   let entries: Entry[] = [];
-  const controllers: Controller[] = [];
 
   /**
    * Live updates: `--justif-*` changes reconcile, author-CSS changes rescan.
@@ -356,28 +375,22 @@ function boot(): Promise<void> {
 
   // `booted`: final controllers in place, fonts settled, layouts
   // converged. allSettled — one group's failure must not block the rest.
-  const booted = Promise.allSettled(settled).then(() =>
-    Promise.allSettled(controllers.map((c) => c.ready)).then(() => undefined),
-  );
-  window.justif = {
-    justify,
-    unjustify,
-    controllers,
-    booted,
-    reconfigure(): Promise<void> {
-      // A paragraph this loader still lists but the controller no longer manages
-      // was torn down from outside. Record that before re-reading, so the
-      // reconciliation below does not re-adopt it.
-      for (const entry of entries) {
-        const managed = new Set<Element>(entry.controller?.managed ?? []);
-        for (const el of entry.els) {
-          if (!managed.has(el)) released.add(el);
-        }
+  void Promise.allSettled(settled)
+    .then(() => Promise.allSettled(controllers.map((c) => c.ready)))
+    .then(resolveBooted);
+  reconfigureImpl = (): Promise<void> => {
+    // A paragraph this loader still lists but the controller no longer manages
+    // was torn down from outside. Record that before re-reading, so the
+    // reconciliation below does not re-adopt it.
+    for (const entry of entries) {
+      const managed = new Set<Element>(entry.controller?.managed ?? []);
+      for (const el of entry.els) {
+        if (!managed.has(el)) released.add(el);
       }
-      watcher?.cancelPendingReconcile();
-      reconcile();
-      return Promise.allSettled(controllers.map((c) => c.ready)).then(() => undefined);
-    },
+    }
+    watcher?.cancelPendingReconcile();
+    reconcile();
+    return Promise.allSettled(controllers.map((c) => c.ready)).then(() => undefined);
   };
   return booted;
 }
@@ -388,8 +401,73 @@ function sameElements(a: readonly Element[], b: readonly Element[]): boolean {
   return a.length === b.length && a.every((el, i) => el === b[i]);
 }
 
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", () => void boot(), { once: true });
+// Published when this module runs, not by the boot: with `data-justif-defer`
+// the boot is later, and a page reading the global before then must find the
+// same objects the boot fills in.
+window.justif = {
+  justify,
+  unjustify,
+  controllers,
+  booted,
+  reconfigure: () => reconfigureImpl?.() ?? Promise.resolve(),
+};
+
+/**
+ * WHEN the page is read, and the one reason to change it.
+ *
+ * By DEFAULT: now, synchronously, while this module executes. A module script
+ * runs after parsing, when `readyState` is already "interactive", so this is
+ * before DOMContentLoaded — and, with `blocking="render"` on the tag, inside
+ * the window where the browser has not painted yet. That is what makes the
+ * first painted frame the final one (test-e2e/noshift.spec.ts), and it is worth
+ * defending: measured, the enhancement lands ~5ms before first contentful paint
+ * on a fast load and on a throttled one alike.
+ *
+ * The cost is that a page whose OWN script rewrites the text — a math renderer
+ * like KaTeX, a syntax highlighter, a translation pass — must have finished by
+ * now, because justif reads a paragraph once and then owns its DOM. Script tag
+ * order settles it for free: deferred scripts execute in document order, so a
+ * transform whose tags come before this one, rendering from its own `onload`,
+ * has always run first. A transform in a `DOMContentLoaded` listener has NOT,
+ * whatever the order, because that event is after every deferred script.
+ *
+ * `data-justif-defer` is for that page: it moves the read to one task after the
+ * DOMContentLoaded dispatch, which is after every deferred script, after the
+ * `onload` handlers those tags carry, and after every DOMContentLoaded
+ * listener, registered before or after this module. Verified in Chromium,
+ * Firefox and WebKit. What it does NOT outlast is a listener that defers its own
+ * work into a task of its own: two timers run in the order they were queued, and
+ * this one is queued from a listener. It also gives up the first-frame guarantee
+ * above — the browser may paint native justification and reflow — which is why
+ * it is opt-in and not the default.
+ *
+ * Deferring waits on the event rather than queuing a task straight away, which
+ * would look equivalent and is not: a deferred script still downloading makes
+ * the parser yield, and a task queued now would then beat the very script it is
+ * meant to follow. `load` is watched too, since a module injected after
+ * DOMContentLoaded has already missed it and `readyState` cannot say whether it
+ * has fired. Booting is idempotent, so whichever signal arrives first wins.
+ *
+ * Content that arrives later still — an async script that lands after the
+ * event, a fetch, a client-rendered view — is the API's job: `justify()` it
+ * when it is ready.
+ */
+let booting: Promise<void> | null = null;
+const start = (): void => {
+  booting ??= boot();
+};
+const startAfterDispatch = (): void => {
+  setTimeout(start, 0);
+};
+
+if (document.querySelector("script[data-justif-defer]") !== null) {
+  if (document.readyState === "complete") startAfterDispatch();
+  else {
+    document.addEventListener("DOMContentLoaded", startAfterDispatch, { once: true });
+    window.addEventListener("load", startAfterDispatch, { once: true });
+  }
+} else if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", start, { once: true });
 } else {
-  void boot();
+  start();
 }

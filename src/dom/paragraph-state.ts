@@ -12,7 +12,7 @@
 import type { ParagraphItems, RunMetrics } from "../core/types.js";
 import type { FontSpec } from "./measure.js";
 import { TEXT_AUTOSIZING_DECLARATIONS } from "./write.js";
-import type { HardBreak, ParagraphScan } from "./read.js";
+import { clearAtomicRendered, type HardBreak, type ParagraphScan } from "./read.js";
 
 export interface ParaPart {
   para: ParagraphItems;
@@ -335,6 +335,7 @@ export function restoreManagedOutput(
     styleAttribute === "restore" ? clearNativeHang(p, state) : forgetNativeHang(state);
   if (!state.enhanced) return clearedHang;
   p.replaceChildren(state.original);
+  clearAtomicRendered(state.scan);
   if (styleAttribute === "restore") {
     restoreStyleAttribute(p, state.originalStyleAttr);
     // The author's style attribute is back, so nothing of justif's covers it.

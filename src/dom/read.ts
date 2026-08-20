@@ -36,7 +36,15 @@ import {
   type ScanBatch,
 } from "./float-geometry.js";
 import { fragmentBoxesOf } from "./geometry.js";
-import { type FontSpec, fontSpecOf } from "./measure.js";
+import { ctxFontOf, type FontSpec, fontSpecOf } from "./measure.js";
+
+/** A font actually used by text inside an opaque atomic object. The object
+ * remains opaque to line breaking; this is only enough information to await
+ * the faces whose arrival can change its measured advance. */
+export interface AtomicFontSample {
+  font: string;
+  text: string;
+}
 
 /**
  * An inline-level object the model places whole and never looks inside: a
@@ -50,6 +58,14 @@ export interface AtomicBox {
   source: Element;
   /** Margin-box advance, measured in the author's own layout. */
   widthPx: number;
+  /** Whether this object's rendered advance is measurable and must be kept
+   * current. Out-of-flow accessibility subtrees deliberately stay at zero. */
+  inFlow: boolean;
+  /** Text-bearing fonts used inside the opaque subtree at scan time. */
+  fonts: readonly AtomicFontSample[];
+  /** The clone installed by the latest successful patch. The source remains
+   * the active element while a managed one-line paragraph stays native. */
+  rendered: Element | null;
   /**
    * Inherited declarations pinned on the clone so the enhancement's own
    * segment styling cannot resize a box whose width is already modeled.
@@ -58,6 +74,93 @@ export interface AtomicBox {
    * carries widens a wrappable inline-block by a quarter of its width.
    */
   style: readonly (readonly [property: string, value: string])[];
+}
+
+/**
+ * Whether this element's own box is scaled or rotated, so the rect it reports
+ * is not the advance it takes on the line.
+ *
+ * Three properties, because the individual `scale` and `rotate` do NOT appear
+ * in computed `transform` and either one alone resizes the rect. `translate` is
+ * deliberately absent: it moves the box without resizing it, so the width read
+ * is still the advance.
+ */
+function boxTransformed(style: CSSStyleDeclaration): boolean {
+  const scale = style.getPropertyValue("scale");
+  const rotate = style.getPropertyValue("rotate");
+  return (
+    style.transform !== "none" ||
+    (scale !== "" && scale !== "none") ||
+    (rotate !== "" && rotate !== "none")
+  );
+}
+
+/** The element whose geometry currently represents this object. */
+function activeAtomicElement(box: AtomicBox): Element | null {
+  if (box.source.isConnected) return box.source;
+  return box.rendered?.isConnected === true ? box.rendered : null;
+}
+
+/** Margin-box advance of an in-flow atomic object in its current rendering.
+ * Null means the number this reads is not the object's advance — the paragraph
+ * is layout-skipped, no live rendering exists, or a transform has appeared. */
+function atomicAdvance(box: AtomicBox): number | null {
+  if (!box.inFlow) return 0;
+  const el = activeAtomicElement(box);
+  if (el === null) return null;
+  const view = el.ownerDocument.defaultView;
+  if (view === null) return null;
+  const rect = el.getBoundingClientRect();
+  // content-visibility can make a connected descendant report a zero rect.
+  // Never replace a real modeled object with that placeholder measurement.
+  if (box.widthPx > 0 && rect.width === 0 && rect.height === 0) return null;
+  const style = view.getComputedStyle(el);
+  // A scaled or rotated box is why readAtomicBox rejects such an object
+  // outright: the rect is not the advance. One that appears AFTER the scan —
+  // a chip that scales on hover, a keyframed badge — must not be measured
+  // either, so the object keeps the width it was modeled at.
+  if (boxTransformed(style)) return null;
+  const margins =
+    (parseFloat(style.marginLeft) || 0) + (parseFloat(style.marginRight) || 0);
+  return Math.max(0, rect.width + margins);
+}
+
+/** Whether this object's live rendering disagrees with its modeled advance.
+ * Reads only: a caller measuring a batch must not change the model it is about
+ * to compare the batch against, and one that answers "yes" and then cannot act
+ * on it (out of settling budget, no longer ours) has to leave the discrepancy
+ * detectable for the pass that can. */
+export function atomicWidthStale(box: AtomicBox): boolean {
+  const width = atomicAdvance(box);
+  return width !== null && Math.abs(width - box.widthPx) > ATOMIC_WIDTH_EPSILON_PX;
+}
+
+/** Refresh one object's modeled advance from its live rendering. */
+export function refreshAtomicBox(box: AtomicBox): boolean {
+  const width = atomicAdvance(box);
+  if (width === null || Math.abs(width - box.widthPx) <= ATOMIC_WIDTH_EPSILON_PX) return false;
+  box.widthPx = width;
+  return true;
+}
+
+/** Below this an object's advance has not moved: engine sub-pixel noise, not a
+ * resized object. */
+const ATOMIC_WIDTH_EPSILON_PX = 0.01;
+
+/** Refresh every atomic object in a paragraph scan. */
+export function refreshAtomicWidths(scan: ParagraphScan): boolean {
+  let changed = false;
+  for (const run of scan.runs) {
+    if (run.atomic !== undefined && refreshAtomicBox(run.atomic)) changed = true;
+  }
+  return changed;
+}
+
+/** Drop references to generated clones when author DOM is restored. */
+export function clearAtomicRendered(scan: ParagraphScan): void {
+  for (const run of scan.runs) {
+    if (run.atomic !== undefined) run.atomic.rendered = null;
+  }
 }
 
 /** One resolved styling run; adjacent sibling text nodes may be coalesced. */
@@ -503,6 +606,30 @@ function supportedTextTransform(value: string): boolean {
   return value === "none" || value === "uppercase" || value === "lowercase";
 }
 
+/** The fonts whose glyphs give an opaque object's contents their width.
+ * Computed while the author subtree is live: after enhancement it is detached,
+ * and the clone is deliberately not walked by the line model. */
+function atomicFontSamples(el: Element): AtomicFontSample[] {
+  const view = el.ownerDocument.defaultView;
+  if (view === null) return [];
+  const textByFont = new Map<string, string>();
+  const styles = new Map<Element, string>();
+  const walker = el.ownerDocument.createTreeWalker(el, 4 /* SHOW_TEXT */);
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    const text = node.nodeValue ?? "";
+    if (text.length === 0) continue;
+    const parent = node.parentElement;
+    if (parent === null) continue;
+    let font = styles.get(parent);
+    if (font === undefined) {
+      font = ctxFontOf(fontSpecOf(view.getComputedStyle(parent)));
+      styles.set(parent, font);
+    }
+    textByFont.set(font, (textByFont.get(font) ?? "") + text);
+  }
+  return [...textByFont].map(([font, text]) => ({ font, text }));
+}
+
 /**
  * Reads one atomic box, or says why this element is not one.
  *
@@ -536,12 +663,14 @@ function readAtomicBox(el: Element, elStyle: CSSStyleDeclaration): AtomicBox | s
   if (el.querySelector(UNCLONEABLE) !== null) {
     return `atomic <${name}> contains content a clone would not reproduce`;
   }
-  if (outOfFlow) return { source: el, widthPx: 0, style: [] };
+  if (outOfFlow) {
+    return { source: el, widthPx: 0, inFlow: false, fonts: [], rendered: null, style: [] };
+  }
   // A transform scales the rect but not the advance the box occupies, so the
   // one number this model has for the object would be the wrong one. (An
   // ANCESTOR transform scales the paragraph's own measure by the same factor
   // — see contentWidthOf — so those stay consistent and are not rejected.)
-  if (elStyle.transform !== "none") return `transformed atomic <${name}>`;
+  if (boxTransformed(elStyle)) return `transformed atomic <${name}>`;
   const rect = el.getBoundingClientRect();
   // Margins on an atomic box ARE modelable, unlike the ones on an inline: the
   // object's contribution to the line is its margin box, and the clone
@@ -553,6 +682,9 @@ function readAtomicBox(el: Element, elStyle: CSSStyleDeclaration): AtomicBox | s
   return {
     source: el,
     widthPx: Math.max(0, rect.width + margins),
+    inFlow: true,
+    fonts: atomicFontSamples(el),
+    rendered: null,
     style: ATOMIC_PINNED_PROPERTIES.map(
       (property) => [property, elStyle.getPropertyValue(property)] as const,
     ).filter(([, value]) => value !== ""),

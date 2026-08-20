@@ -53,40 +53,51 @@ export function collectFontProbes(
     string,
     { chars: Set<string>; ascii: Uint8Array; kern: string }
   >();
-  for (const scan of scans) {
-    for (const spec of scan.specs) {
-      const font = ctxFontOf(spec);
-      if (!fontSample.has(font)) {
-        fontSample.set(font, { chars: new Set(), ascii: new Uint8Array(128), kern: "" });
+  const sampleFor = (font: string) => {
+    let sample = fontSample.get(font);
+    if (sample === undefined) {
+      sample = { chars: new Set(), ascii: new Uint8Array(128), kern: "" };
+      fontSample.set(font, sample);
+    }
+    return sample;
+  };
+  const addText = (font: string, text: string): void => {
+    const s = sampleFor(font);
+    for (let i = 0; i < text.length; i++) {
+      const code = text.charCodeAt(i);
+      if (code < 128) {
+        if (s.ascii[code] === 1) continue;
+        s.ascii[code] = 1;
+        s.chars.add(text[i]!);
+      } else {
+        const cp = String.fromCodePoint(text.codePointAt(i)!);
+        s.chars.add(cp);
+        i += cp.length - 1;
       }
     }
+    if (s.kern.length < KERN_SAMPLE_MAX) {
+      s.kern += text.slice(0, KERN_SAMPLE_MAX - s.kern.length);
+    }
+  };
+  for (const scan of scans) {
+    for (const spec of scan.specs) {
+      sampleFor(ctxFontOf(spec));
+    }
     for (const run of scan.runs) {
-      const s = fontSample.get(ctxFontOf(scan.specs[run.spec]!))!;
+      const font = ctxFontOf(scan.specs[run.spec]!);
       // ASCII — nearly every code unit of a Latin document — is screened by a
       // flat table first: this walk covers every character of every run, and
       // hashing the same 70-odd strings into a Set was most of its cost.
-      const text = run.text;
-      for (let i = 0; i < text.length; i++) {
-        const code = text.charCodeAt(i);
-        if (code < 128) {
-          if (s.ascii[code] === 1) continue;
-          s.ascii[code] = 1;
-          s.chars.add(text[i]!);
-        } else {
-          // Non-ASCII: take the whole code point, so a surrogate pair enters
-          // the set as one character exactly as the string iterator gave it.
-          const cp = String.fromCodePoint(text.codePointAt(i)!);
-          s.chars.add(cp);
-          i += cp.length - 1;
-        }
-      }
-      if (s.kern.length < KERN_SAMPLE_MAX) {
-        s.kern += run.text.slice(0, KERN_SAMPLE_MAX - s.kern.length);
-      }
+      addText(font, run.text);
+      // Atomic contents never enter normal runs, but their faces still decide
+      // the rigid width the breaker assigns the object. Await them explicitly
+      // instead of widening controller.ready to every font loading anywhere
+      // in the document.
+      for (const atomic of run.atomic?.fonts ?? []) addText(atomic.font, atomic.text);
       // Hyphenatable content renders a "-" the runs may not contain (the
       // break glyph is measured per spec and painted via ::after) — a face
       // serving U+002D must be awaited and watched too.
-      if (hyphenating || run.text.includes("\u00AD")) s.chars.add("-");
+      if (hyphenating || run.text.includes("\u00AD")) sampleFor(font).chars.add("-");
     }
   }
   // A font no run draws from (a base spec whose text all sits in inline

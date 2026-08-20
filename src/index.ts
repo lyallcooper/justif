@@ -28,7 +28,12 @@ import { createWidthObserver, type WidthObserver } from "./dom/observe.js";
 import { createMetricsPass } from "./dom/metrics.js";
 import { type ParaState, restoreManagedOutput, states } from "./dom/paragraph-state.js";
 import { createPatchPass } from "./dom/patch.js";
-import { contentWidthOf, type ParagraphScan, readParagraph } from "./dom/read.js";
+import {
+  contentWidthOf,
+  type ParagraphScan,
+  readParagraph,
+  refreshAtomicWidths,
+} from "./dom/read.js";
 import {
   createAdoptionRecord,
   createRereadPass,
@@ -340,6 +345,15 @@ export function justify(
    */
   const remeasureAll = (floatGeometryFresh = false, fontsStale = true): void => {
     if (destroyed) return;
+    // Atomic widths are scan inputs too. Refresh them before deriving any
+    // items so a font swap or explicit refresh can never be mistaken for
+    // correctable prose drift. Read from `paragraphs` rather than from a list
+    // of owned ones taken before `refreshIntrusions`, which can disown a
+    // paragraph mid-pass.
+    for (const p of paragraphs) {
+      const state = ownedState(p);
+      if (state !== undefined) refreshAtomicWidths(state.scan);
+    }
     if (!floatGeometryFresh) floats.refreshIntrusions();
     if (fontsStale) {
       clearMeasureCache();
@@ -351,6 +365,7 @@ export function justify(
       clearComposedProtrusionCache();
       reprobeBaselines(fontProbes);
     }
+    // Taken after the float pass above, which can disown a paragraph.
     const mine = paragraphs.filter((p) => ownedState(p) !== undefined);
     // All width reads first, then all patches, then one correction flush —
     // interleaving reads with the DOM writes would force a layout per
@@ -455,6 +470,7 @@ export function justify(
     bailToNative: (p, reason) => bailToNative(p, reason),
     emitRelayout: (p) => emitRelayout(p),
     safePatch: (p) => safePatch(p),
+    rebuildMetrics: (state) => rebuildMetrics(state),
     seedNearViewport: (batch) => drain.seedNearViewport(batch),
     restartPendingOrder: () => drain.restartPendingOrder(),
     verifyElementFloats: (batch) => floats.verifyElementFloats(batch),
@@ -507,10 +523,15 @@ export function justify(
 
   const onFontsLoaded = (): void => {
     const metricsChanged = probesChanged(fontProbes);
+    let atomicChanged = false;
+    for (const p of paragraphs) {
+      const state = ownedState(p);
+      if (state !== undefined && refreshAtomicWidths(state.scan)) atomicChanged = true;
+    }
     const floatChanged = metricsChanged
       ? floats.refreshNativeIntrusions()
       : floats.refreshIntrusions();
-    if (metricsChanged || floatChanged) remeasureAll(true);
+    if (metricsChanged || atomicChanged || floatChanged) remeasureAll(true);
   };
 
   const attachObservers = (): void => {

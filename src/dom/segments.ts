@@ -140,13 +140,24 @@ function terminalPairKern(
   return Math.abs(kern) > KERN_EPSILON ? kern : undefined;
 }
 
-/** Tighten a line without collapsing protected word spaces. */
+/** Whether this line holds an atomic object, and so a break opportunity
+ * between two of its own segments that nothing in the line can forbid. */
+function hasObjectJunction(segments: readonly RenderSegment[], first: number): boolean {
+  for (let i = first; i < segments.length; i++) {
+    if (segments[i]!.atomic !== undefined) return true;
+  }
+  return false;
+}
+
+/** Tighten a line without collapsing protected word spaces. Returns the amount
+ * it managed to take out, which is less than asked wherever the line's spaces
+ * are already at their floor and its glyphs decline letter correction. */
 function tightenLine(
   segments: readonly RenderSegment[],
   first: number,
   px: number,
-): void {
-  if (px <= 0.001) return;
+): number {
+  if (px <= 0.001) return 0;
   const countAt = (index: number): number =>
     Math.max(
       0,
@@ -167,14 +178,14 @@ function tightenLine(
     segment.wordSpacingPx = next;
   }
 
-  if (remaining <= 0.001) return;
+  if (remaining <= 0.001) return px;
   const charCounts = segments.slice(first).map((segment) =>
     segment.allowLetterCorrection
       ? Array.from(segment.text).filter((char) => char.trim()).length
       : 0,
   );
   const chars = charCounts.reduce((sum, count) => sum + count, 0);
-  if (chars === 0) return;
+  if (chars === 0) return px - remaining;
   const tracking = remaining / chars;
   for (let i = first; i < segments.length; i++) {
     const segment = segments[i]!;
@@ -186,6 +197,7 @@ function tightenLine(
       segment.minimumWordSpacingPx += tracking;
     }
   }
+  return px;
 }
 
 export function buildRenderSegments(
@@ -245,6 +257,19 @@ export function buildRenderSegments(
       );
     /** Where this line's own segments start, for line-wide adjustments. */
     const lineFirstSegment = segments.length;
+    /**
+     * A paragraph-ending line that was not set to the measure. It ends where
+     * its text ends, so nothing on it — least of all an object's junction — is
+     * near the measure, and slack taken out of it would be slack the line
+     * never needed: measured, a closing line whose only space sat beside an
+     * object rendered that space 1.5px narrow, permanently, because a ragged
+     * line is outside the correction window that would have restored it.
+     * A natural ending is the one the breaker left alone: `layoutLines` gives a
+     * fil line ratio 0 unless something asked for it to be filled, so anything
+     * NONZERO here — `justify-all`, a `lastLineMinWidth` floor, `lastLineFit`
+     * colouring, or an ending pressed past the measure — is a set line.
+     */
+    const raggedEnding = lineIndex === lines.length - 1 && line.glueRatio === 0;
     let floorOverflowPx = 0;
     // Absolute word-spacing per run on this line: the author's own
     // word-spacing, the offset from the space glyph's advance to the glue
@@ -499,8 +524,7 @@ export function buildRenderSegments(
         segments.push({
           text: "",
           atomic: {
-            source: srcRun.atomic!.source,
-            style: srcRun.atomic!.style,
+            box: srcRun.atomic!,
             // A weld at the line's own edge would forbid the break the joint
             // there depends on. The trailing one is withdrawn below, once
             // the line's last segment is known.
@@ -821,6 +845,22 @@ export function buildRenderSegments(
           lineFirstSegment,
           floorOverflowPx + unshed + (WRAP_SAFETY_PAD_PX - pad),
         );
+      }
+      // An object's junctions sit BETWEEN segments, where this line's nowrap
+      // cannot reach: the engine measures the cumulative advance there and
+      // decides on its own whether what follows still fits. Nothing shed from
+      // the line's closing box can answer for that — a junction is not at the
+      // end of the line — so the slack has to be in the spacing, which is also
+      // why a line beside a float needs this on TOP of the pad it sheds.
+      // Measured without it: Firefox moved everything after a native <math> to
+      // the next line as soon as the advance reached the measure, which a
+      // hanging comma after the formula makes exact.
+      if (!raggedEnding && hasObjectJunction(segments, lineFirstSegment)) {
+        // What the line could actually give up, not what was asked of it: the
+        // correction pass widens its set-or-ragged window by this, and a line
+        // of fixed boxes that gave up nothing must not move that window.
+        const slack = tightenLine(segments, lineFirstSegment, WRAP_SAFETY_PAD_PX);
+        if (slack > 0.001) last.objectTightenPx = slack;
       }
       // Whatever the writer ends up shedding, the carrier it sheds from is
       // shaped apart from the cluster before it. Hand it the pair kern that

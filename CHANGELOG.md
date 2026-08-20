@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Fixed cramped spacing and overflowing lines around an inline formula once the
+  fonts inside it finished loading. Fixes #17.
+- Firefox no longer moves a `<math>` formula and the rest of its line down to
+  the next line at some column widths, leaving a gap mid-paragraph.
+- Fixed a line whose end the browser moved down on its own being stretched to
+  several times its natural word spacing, seen in Chrome on lines holding a
+  no-break space.
+- New `data-justif-defer` attribute holds the drop-in script back until other
+  scripts that transform text (e.g. math rendering, syntax highlighting) have
+  run. See the [README
+  section](https://github.com/lyallcooper/justif#playing-nicely-with-other-scripts).
+
 ## 0.9.0 (2026-08-17)
 
 - Paragraphs with `<math>` or `inline-block` elements are now supported by

@@ -105,6 +105,10 @@ To limit the automatic scan, add a `data-justif-selector` such as `"article
 Add `data-justif-debug` to log why a paragraph kept native justification.
 With the JavaScript API, pass `onSkip` instead.
 
+Justif needs to run after other scripts that modify the on-page text, e.g. math
+rendering or code syntax highlighting. See [Playing nicely with other
+scripts](#playing-nicely-with-other-scripts) for more details.
+
 To change how the text is set, use `--justif-*` custom properties in your CSS,
 on the page or on individual sections: see [Setting options in
 CSS](#setting-options-in-css).
@@ -202,6 +206,24 @@ for (const controller of window.justif.controllers) {
   controller.destroy();
 }
 ```
+
+#### Playing nicely with other scripts
+
+Other scripts may transform on-page text, e.g. a math renderer or a syntax
+highlighter. For best results, Justif should run _after_ these other scripts
+have completed their text transformations.
+
+Putting Justif's script tag after other scripts is usually sufficient, unless
+the other script acts on `DOMContentLoaded`. In that case, add
+`data-justif-defer` to Justif's tag, which prevents justification from running
+until other listeners have finished.
+
+```html
+<script type="module" src="/justif/auto.js" data-justif-defer></script>
+```
+
+The trade-off is that the browser may paint native justification and reflow when
+Justif runs, so prefer the tag order where you can.
 
 ## Hyphenation
 
@@ -410,35 +432,6 @@ tracking may use up to one additional shrink budget (6% total under the
 default) to retain those insets instead of overflowing or inventing a break
 inside code. With tracking disabled—or a token still too wide after that
 bounded fallback—ordinary overfull-line behavior remains.
-
-### Inline math and other inline objects
-
-Inline-level boxes that the browser lays out as a single object—rendered math
-(KaTeX, MathJax's CommonHTML output, or native `<math>`), `inline-block` chips,
-`inline-flex` and `inline-grid` elements—are set as fixed, unbreakable boxes at
-the width they have in your own layout. The text around them is justified
-normally, and a line may break before or after such a box, but never inside it.
-Where a rendered formula is split into several boxes (KaTeX splits at relations
-and operators), lines may break between them, which is where TeX breaks
-displayed relations too.
-
-An object's own typography is left alone: the letter-spacing, word-spacing and
-font-stretch that justification applies to a line stop at its edge, so an
-equation is never stretched or tracked to fill a line.
-
-Math needs no configuration. If you use KaTeX, either output mode works, and
-the accessible MathML that its default output carries is preserved.
-
-Objects wrapping content that cannot be copied faithfully—a `canvas`, a media
-element, a form control, an `iframe`, or a shadow root—leave the paragraph on
-native rendering, as do images and SVG, whose size can still change after the
-page has been measured.
-
-An object's width is read when the paragraph is scanned. Rendered math and
-chips are sized by their own content, so that width holds at any measure; an
-object sized against the measure itself—a percentage width, or an
-`inline-block` wide enough that its own text rewraps—is re-read by `rescan()`
-rather than on resize.
 
 ### Hard line breaks
 

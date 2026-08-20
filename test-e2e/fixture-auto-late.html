@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>justif auto drop-in fixture: a late transform</title>
+<style>
+  .col { width: 360px; }
+  .col p {
+    font-family: Georgia, serif;
+    font-size: 17px;
+    line-height: 1.45;
+    margin: 0 0 1em;
+    text-align: justify;
+  }
+  .formula { display: inline-block; white-space: nowrap; font-family: Georgia, serif; }
+</style>
+<!-- The drop-in loads first and still must not read the page before this
+     fixture's own transform. The transform is registered from a MODULE script
+     after the drop-in's tag, so it runs after the drop-in's module and its
+     DOMContentLoaded listener is therefore registered second: only reading the
+     page a task after the whole dispatch puts the drop-in last. A listener of
+     the drop-in's own, or a plain inline script here, would both beat it. -->
+<script type="module" src="../dist/auto.js" data-justif-defer></script>
+<script type="module">
+  window.__page = { segsBeforeTransform: null, transformed: 0 };
+  document.addEventListener("DOMContentLoaded", () => {
+    // What the default boot would already have done by now.
+    window.__page.segsBeforeTransform = document.querySelectorAll(".justif-seg").length;
+    // Stand-in for a math renderer: replace $…$ source with a rendered object.
+    for (const p of document.querySelectorAll(".col p")) {
+      for (const node of [...p.childNodes]) {
+        if (node.nodeType !== 3) continue;
+        const parts = (node.nodeValue ?? "").split(/\$([^$]+)\$/);
+        if (parts.length === 1) continue;
+        const frag = document.createDocumentFragment();
+        parts.forEach((part, i) => {
+          if (i % 2 === 0) {
+            frag.append(document.createTextNode(part));
+            return;
+          }
+          const object = document.createElement("span");
+          object.className = "formula";
+          object.textContent = part.replace(/\s+/g, " ");
+          frag.append(object);
+          window.__page.transformed++;
+        });
+        node.replaceWith(frag);
+      }
+    }
+    // Nothing to call: the drop-in reads the page after this listener returns.
+  });
+</script>
+</head>
+<body>
+  <div class="col">
+    <p id="manual-math">The energy of a body at rest is $E = m c 2$, a relation that
+    follows from the transformation and holds for every inertial observer who cares
+    to measure it carefully in the laboratory.</p>
+    <p id="manual-plain">Ordinary prose in the same group, with no object in it at
+    all, so the group still has a paragraph whose lines are decided by spacing
+    alone across the whole measure.</p>
+  </div>
+</body>
+</html>
