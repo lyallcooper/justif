@@ -3,9 +3,8 @@ import { expect, type Page, test } from "@playwright/test";
 /**
  * Load the demo as a first-time visitor would, after the caller has cleared
  * the saved parameters. It must be a NAVIGATION and not a reload: Firefox
- * restores form control state across a reload, and `#view` is the one control
- * the demo's init reads rather than assigns, so a restored "flicker" would
- * silently pick the flicker defaults out of a supposedly fresh load.
+ * restores form control state across a reload, while fresh responsive
+ * defaults must start from the authored controls rather than a prior visit.
  */
 async function freshVisit(page: Page): Promise<void> {
   await page.goto("/demo/");
@@ -764,7 +763,7 @@ test("comparison controls stay stable and explain flicker once", async ({ page }
 
   // The masthead github link is normal navigation, not part of the
   // comparison: pressing it must not swap layers.
-  const ghLink = page.locator(".gh-link a");
+  const ghLink = page.getByRole("link", { name: "learn more on github" });
   await ghLink.dispatchEvent("pointerdown", { button: 0 });
   await expect(page.locator("body")).not.toHaveClass(/show-browser/);
   await ghLink.dispatchEvent("pointerup", { button: 0 });
@@ -796,7 +795,7 @@ test("flicker toast uses touch wording on coarse pointers", async ({ browser }) 
   await context.close();
 });
 
-test("narrow windows use the 10em type specimen defaults", async ({ page }) => {
+test("narrow windows use Alice in the flicker view", async ({ page }) => {
   await page.setViewportSize({ width: 455, height: 844 });
   await page.goto("/demo/");
   await page.waitForFunction(
@@ -805,8 +804,10 @@ test("narrow windows use the 10em type specimen defaults", async ({ page }) => {
 
   const sample = page.locator("#sample");
   const measure = page.locator("#measure");
-  await expect(sample).toHaveValue("specimen");
-  await expect(measure).toHaveValue("10");
+  await expect(sample).toHaveValue("aliceExcerpt");
+  await expect(measure).toHaveValue("19");
+  await expect(page.locator("body")).toHaveClass(/flicker-mode/);
+  await expect(page.locator("#view-flicker")).toHaveAttribute("aria-pressed", "true");
 
   await page.click("#dock-toggle");
   await page.selectOption("#sample", "tale");
@@ -815,8 +816,9 @@ test("narrow windows use the 10em type specimen defaults", async ({ page }) => {
     element.dispatchEvent(new Event("input", { bubbles: true }));
   });
   await page.click("#reset");
-  await expect(sample).toHaveValue("specimen");
-  await expect(measure).toHaveValue("10");
+  await expect(sample).toHaveValue("aliceExcerpt");
+  await expect(measure).toHaveValue("19");
+  await expect(page.locator("body")).toHaveClass(/flicker-mode/);
 
   await page.selectOption("#sample", "tale");
   await measure.evaluate((element: HTMLInputElement) => {
@@ -832,6 +834,7 @@ test("narrow windows use the 10em type specimen defaults", async ({ page }) => {
   await freshVisit(page);
   await expect(sample).toHaveValue("aliceExcerpt");
   await expect(measure).toHaveValue("12");
+  await expect(page.locator("body")).not.toHaveClass(/flicker-mode/);
 });
 
 test("comparison views retain independent widths", async ({ page }) => {
