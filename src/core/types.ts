@@ -83,6 +83,13 @@ export interface RunMetrics {
   familyKey?: string;
 }
 
+/** Fixed inline-boundary advance and the portion allowed outside the measure.
+ * Both values are in px; neither participates in glyph expansion. */
+export interface InlineEdge {
+  advancePx: number;
+  protrusionPx: number;
+}
+
 /** A piece of paragraph text in one run, in document order. */
 export interface RunText {
   text: string;
@@ -118,6 +125,11 @@ export interface RunText {
    */
   padStartPx?: number;
   padEndPx?: number;
+  /** Resolved boundaries, replacing the corresponding padding and fixed
+   * protrusion fields above. A zero protrusion still marks a real edge,
+   * suppressing character hanging there without affecting internal slices. */
+  startEdge?: InlineEdge;
+  endEdge?: InlineEdge;
   /**
    * Set when this piece lives inside a `white-space: nowrap` inline
    * element: no break opportunity may be created between two boxes that
@@ -169,7 +181,7 @@ export interface Box {
    * breakpoint, and an absent field there costs more than the field does. */
   hangStretch: number;
   hangShrink: number;
-  /** This is the actual final box of a painted inline. Renderers use the
+  /** This is the actual final box of a fixed inline boundary. Renderers use the
    * marker (independent of rp, which may legitimately be zero) to keep
    * wrap-safety margins outside the decoration instead of pinching it. */
   paintedEnd?: boolean;
@@ -187,7 +199,7 @@ export interface Box {
    * the end of this box and must emit a zero-width joint rather than inserting
    * an ordinary space. */
   otherSpace?: boolean;
-  /** Inline padding/border px folded into `width` (RunText extras). The
+  /** Fixed inline-boundary px folded into `width` (RunText extras). The
    * glyph run's own advance is width − padPx: expansion gain must scale
    * only the glyphs, never the box decorations. */
   padPx?: number;

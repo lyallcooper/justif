@@ -454,6 +454,8 @@ reliably. This includes:
 - vertical writing, Thai, and Lao;
 - images, form controls, SVG, or block descendants in the text flow;
 - floats, except a single one as the paragraph's first child;
+- generated content beyond simple, unbroken text on inline descendants, or
+  generated content combined with a floated `::first-letter`;
 - inline descendants with horizontal margins, `box-decoration-break: clone`,
   or preserved-whitespace `white-space` values;
 - `text-transform: capitalize` (other `text-transform` values are supported);

@@ -396,6 +396,43 @@ function paragraphContentBox(
   };
 }
 
+/** Check placement after width correction, before displaced text can be
+ * mistaken for a change in the float's overlap count. Unrendered boxes do
+ * not provide evidence. A half-line tolerance excludes short partial bands
+ * whose glyph rect can legitimately start below the float's bottom. */
+export function displacedFloatLines(
+  p: HTMLElement,
+  source: Element,
+  lines: readonly (readonly { el: HTMLElement; seg: unknown | null }[])[],
+  affected: number,
+): boolean {
+  const view = p.ownerDocument.defaultView;
+  if (view === null) return false;
+  const style = view.getComputedStyle(source);
+  const side = physicalFloatSide(style.float, style.direction === "rtl" ? "rtl" : "ltr");
+  if (side === null) return false;
+  const rect = source.getBoundingClientRect();
+  if (rect.width === 0 || rect.height === 0) return false;
+  const paragraphStyle = view.getComputedStyle(p);
+  const content = paragraphContentBox(p, paragraphStyle);
+  const bottom = rect.bottom + pxValue(style.marginBottom);
+  const edge = side === "left" ? rect.right + pxValue(style.marginRight) : rect.left - pxValue(style.marginLeft);
+  const tolerance = Math.max(1, pxValue(paragraphStyle.fontSize));
+  for (let i = 0; i < Math.min(affected, lines.length); i++) {
+    if (content.top + (i + 0.5) * content.lineHeight >= bottom) break;
+    for (const entry of lines[i]!) {
+      if (entry.seg === null || !entry.el.isConnected) continue;
+      const line = entry.el.getBoundingClientRect();
+      if (line.width === 0 || line.height === 0) continue;
+      if (line.top >= bottom + 0.5) return true;
+      // Optical hanging may cross the slot boundary by a glyph advance.
+      // Anything beyond that is a placement error, not optical alignment.
+      if (side === "left" ? line.left < edge - tolerance : line.right > edge + tolerance) return true;
+    }
+  }
+  return false;
+}
+
 /** Whether the paragraph's last line is naturally short at `floatSide`. A
  * start-aligned (or centered) final line measures short at its ragged edge
  * whether or not a float reaches it, so observed shortfall there is not
@@ -421,7 +458,7 @@ function lastLineRaggedAt(
   return floatSide !== flushEdge;
 }
 
-function intrudedLineCount(
+export function intrudedLineCount(
   lines: ReadonlyArray<{ top: number; left: number; right: number }>,
   content: { left: number; right: number; top: number; lineHeight: number },
   paragraphStyle: CSSStyleDeclaration,
@@ -461,7 +498,9 @@ function intrudedLineCount(
   }
   const firstLine = lines[0];
   const textTop =
-    firstLine !== undefined && firstLine.top < floatBottom ? firstLine.top : content.top;
+    firstLine !== undefined && firstLine.top < floatBottom
+      ? Math.max(content.top, firstLine.top)
+      : content.top;
   const geometricLines = Math.max(
     1,
     Math.ceil((floatBottom - textTop) / content.lineHeight - 1e-6),

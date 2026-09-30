@@ -625,6 +625,7 @@ export function buildItems(
   // measure while the decoration itself hangs outside it. Ordinary boxes
   // between those markers retain glyph protrusion at internal line slices.
   let pendingPad = 0;
+  let explicitStart = false;
   let lastBox: Box | null = null;
   let lastBoxRun = -1;
   let lastBoxKey: number | undefined;
@@ -648,13 +649,13 @@ export function buildItems(
       // painted descendant's own inset may have been recorded before an
       // unpainted padded ancestor closes in the DOM walk, so the complete
       // pending padding is the authoritative border-to-glyph distance.
-      const boxHang =
-        pendingPaintedStart
-          ? Math.max(pendingBoxStartProtrusion, pendingPad)
-          : 0;
+      const boxHang = !pendingPaintedStart ? 0 : explicitStart
+        ? pendingBoxStartProtrusion
+        : Math.max(pendingBoxStartProtrusion, pendingPad);
       box.lp = boxHang;
       box.lpFirst = boxHang;
       pendingPad = 0;
+      explicitStart = false;
       pendingBoxStartProtrusion = 0;
       pendingPaintedStart = false;
     }
@@ -1283,8 +1284,16 @@ export function buildItems(
     pieceKey = piece.atomicKey;
     piecePaintedStart = piece.paintedBox === true || piece.paintedStart === true;
     piecePaintedEnd = piece.paintedBox === true || piece.paintedEnd === true;
-    if (piece.padStartPx !== undefined) pendingPad += piece.padStartPx;
-    if (opts.protrusion !== false && piece.boxStartProtrusionPx !== undefined) {
+    if (piece.startEdge !== undefined) {
+      pendingPad += piece.startEdge.advancePx;
+      pendingPaintedStart = true;
+      explicitStart = true;
+      pendingBoxStartProtrusion += opts.protrusion === false ? 0 : piece.startEdge.protrusionPx;
+    } else if (piece.padStartPx !== undefined) pendingPad += piece.padStartPx;
+    if (
+      piece.startEdge === undefined && opts.protrusion !== false &&
+      piece.boxStartProtrusionPx !== undefined
+    ) {
       pendingPaintedStart = true;
       pendingBoxStartProtrusion += piece.boxStartProtrusionPx;
     }
@@ -1341,7 +1350,12 @@ export function buildItems(
     // cast: lastBox is only ever assigned inside emitBox, which TS's
     // narrowing can't see.)
     const lb = lastBox as Box | null;
-    if ((piece.padEndPx !== undefined || piece.boxEndProtrusionPx !== undefined) && lb !== null) {
+    if (piece.endEdge !== undefined && lb !== null) {
+      lb.paintedEnd = true;
+      lb.width += piece.endEdge.advancePx;
+      lb.padPx = (lb.padPx ?? 0) + piece.endEdge.advancePx;
+      lb.rp = opts.protrusion === false ? 0 : piece.endEdge.protrusionPx;
+    } else if ((piece.padEndPx !== undefined || piece.boxEndProtrusionPx !== undefined) && lb !== null) {
       if (piece.padEndPx !== undefined) {
         lb.width += piece.padEndPx;
         lb.padPx = (lb.padPx ?? 0) + piece.padEndPx;

@@ -89,6 +89,9 @@ export function collectFontProbes(
       // flat table first: this walk covers every character of every run, and
       // hashing the same 70-odd strings into a Set was most of its cost.
       addText(font, run.text);
+      for (const generated of [...(run.generatedStart ?? []), ...(run.generatedEnd ?? [])]) {
+        addText(ctxFontOf(scan.specs[generated.spec]!), generated.text);
+      }
       // Atomic contents never enter normal runs, but their faces still decide
       // the rigid width the breaker assigns the object. Await them explicitly
       // instead of widening controller.ready to every font loading anywhere

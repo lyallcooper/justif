@@ -30,6 +30,7 @@ import type { DrainQueues } from "./drain.js";
 import { type ParaState, restoreManagedOutput } from "./paragraph-state.js";
 import {
   type ElementFloatIntrusion,
+  displacedFloatLines,
   floatInlineSizeOf,
   floatIntrusionOf,
   physicalFloatSide,
@@ -148,7 +149,7 @@ export function createFloatTracking(host: FloatHost) {
   };
 
   /**
-   * Second look at an element float's intrusion, from the layout the patch
+   * Second look at a float's intrusion, from the layout the patch
    * just produced. The first reading after a width change is taken while the
    * paragraph still holds the PREVIOUS break's segments; when those no longer
    * fit beside the float the engine pushes them under it, and the tail rects
@@ -163,10 +164,33 @@ export function createFloatTracking(host: FloatHost) {
    */
   const verifyElementFloats = (batch: readonly PatchEntry[]): void => {
     let queued = false;
-    for (const { p } of batch) {
+    for (const { p, pending } of batch) {
       const state = host.ownedState(p);
       const intrusion = state?.scan.floatIntrusion;
-      if (state === undefined || intrusion?.kind !== "element") continue;
+      if (state === undefined || intrusion === null || intrusion === undefined) continue;
+      const source = intrusion.kind === "element" ? state.renderedFloat : pending.floatSource;
+      if (intrusion.kind === "first-letter" && source !== null) {
+        const inlineSize = floatInlineSizeOf(p);
+        if (inlineSize !== null && Math.abs(inlineSize - intrusion.inlineSize) > 0.05) {
+          state.scan.floatIntrusion = { ...intrusion, inlineSize };
+          state.lastPatch = "";
+          host.queues.pendingFloatRelayout.add(p);
+          queued = true;
+          continue;
+        }
+      }
+      if (
+        source !== null &&
+        !host.queues.pendingWidths.has(p) &&
+        displacedFloatLines(p, source, pending.lineElements, intrusion.lines)
+      ) {
+        host.queues.drop(p);
+        const changed = host.bailToNative(p, "corrected lines do not fit beside the float");
+        rebind(p);
+        if (changed) host.emitRelayout(p);
+        continue;
+      }
+      if (intrusion.kind !== "element") continue;
       // Unmeasurable is not a verdict: the paragraph keeps the geometry it
       // has, exactly as the resize observer leaves an unrendered float alone.
       if (refreshElementFloat(p, state, intrusion, undefined, true) !== "changed") continue;

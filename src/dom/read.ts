@@ -27,6 +27,8 @@
  */
 
 import { textMakesBox } from "../core/items.js";
+import type { InlineEdge } from "../core/types.js";
+import { readGeneratedText, type GeneratedText } from "./generated-content.js";
 import {
   type FirstLetterFloatIntrusion,
   type FloatIntrusion,
@@ -187,6 +189,13 @@ export interface StyledRun {
   padEndPx?: number;
   /** Outermost inline whose clone owns the closing padding/border edge. */
   padEndOwner?: Element;
+  /** Generated advances, measured with their own font when metrics rebuild. */
+  generatedStart?: GeneratedText[];
+  generatedEnd?: GeneratedText[];
+  /** Resolved boundaries shared by the breaker and corrective measurement. */
+  startEdge?: InlineEdge;
+  endEdge?: InlineEdge;
+  endEdgeOwner?: Element;
   /** Innermost `white-space: nowrap` inline element containing this run
    * (one id per element instance): no break opportunity inside. */
   atomicKey?: number;
@@ -213,6 +222,8 @@ export interface HardBreak {
 export interface ParagraphScan {
   runs: StyledRun[];
   hardBreaks: HardBreak[];
+  /** Scan-time pseudo state for each reconstructable inline element. */
+  generated: ReadonlyMap<Element, readonly [GeneratedText | null, GeneratedText | null]>;
   specs: FontSpec[];
   /** Spec index of the paragraph element itself. */
   baseSpec: number;
@@ -797,8 +808,17 @@ export function readParagraph(p: HTMLElement, batch?: ScanBatch): ParagraphScan 
   };
 
   const baseSpec = indexSpec(cs);
+  for (const pseudo of ["::before", "::after"]) {
+    const generated = readGeneratedText(view.getComputedStyle(p, pseudo), cs, indexSpec);
+    if (generated !== null) return `generated content on the paragraph ${pseudo}`;
+  }
+
   const runs: StyledRun[] = [];
   const hardBreaks: HardBreak[] = [];
+  const generatedByElement = new Map<
+    Element,
+    readonly [GeneratedText | null, GeneratedText | null]
+  >();
   let skip: string | null = null;
 
   let nextAtomicKey = 0;
@@ -955,6 +975,18 @@ export function readParagraph(p: HTMLElement, batch?: ScanBatch): ParagraphScan 
           });
           continue;
         }
+        const pseudoStyles = ["::before", "::after"].map((pseudo) =>
+          view.getComputedStyle(el, pseudo),
+        );
+        const generated = pseudoStyles.map((style) =>
+          readGeneratedText(style, elStyle, indexSpec),
+        );
+        const unsupported = generated.find((value) => typeof value === "string");
+        if (typeof unsupported === "string") {
+          skip = `${unsupported} on <${el.tagName.toLowerCase()}>`;
+          return;
+        }
+        generatedByElement.set(el, generated as [GeneratedText | null, GeneratedText | null]);
         const insets = inlineInsets(elStyle, direction);
         const padded = insets.start > 0 || insets.end > 0;
         skip = inlineBailReason(el, elStyle, cs, padded);
@@ -974,6 +1006,44 @@ export function readParagraph(p: HTMLElement, batch?: ScanBatch): ParagraphScan 
           firstLetterInnerStyle(elStyle, cs),
         );
         if (skip !== null) return;
+        if (
+          runs.length === before &&
+          pseudoStyles.some(
+            (style) =>
+              style.display !== "none" &&
+              style.content !== "none" &&
+              style.content !== "normal" &&
+              style.content !== '""',
+          )
+        ) {
+          skip = "generated content on an empty inline element";
+          return;
+        }
+        if (generated.some((value) => value !== null)) {
+          const first = runs[before];
+          const last = runs[runs.length - 1];
+          // Spaces at a generated boundary become interior source spaces,
+          // whereas ordinary inline edges trim them. Keep that case native
+          // until it has a corresponding whitespace item in the model.
+          if (first === undefined || last === undefined || runs.length === before ||
+              !textMakesBox(first.text) || !textMakesBox(last.text) ||
+              /^\s/.test(first.text) || /\s$/.test(last.text) ||
+              hardBreaks.some((br) => br.ancestors.includes(el))) {
+            skip = "generated content around empty, spaced or hard-broken inline content";
+            return;
+          }
+          const start = generated[0];
+          const end = generated[1];
+          if (start !== null && typeof start === "object") {
+            // The walk is post-order: an outer ::before renders before the
+            // inner one already attached to this run.
+            (first.generatedStart ??= []).unshift(start);
+          }
+          if (end !== null && typeof end === "object") {
+            (last.generatedEnd ??= []).push(end);
+            last.padEndOwner = el;
+          }
+        }
         skip = attachInlineExtras(el, before, insets, padded, paintedHere);
         if (skip !== null) return;
       }
@@ -987,6 +1057,16 @@ export function readParagraph(p: HTMLElement, batch?: ScanBatch): ParagraphScan 
   const text = runs.map((r) => r.text).join("");
   if (text.length > 0 && !textSupported(text, direction)) {
     return "unsupported text (forced separators, bidi controls, mixed direction, or a script without break support)";
+  }
+  const textWithGenerated = runs.map((run) =>
+    [
+      ...(run.generatedStart ?? []).map((generated) => generated.text),
+      run.text,
+      ...(run.generatedEnd ?? []).map((generated) => generated.text),
+    ].join(""),
+  ).join("");
+  if (textWithGenerated !== text && !textSupported(textWithGenerated, direction)) {
+    return "unsupported generated text direction or script";
   }
 
   const floatDetails = floatDetailsOf(
@@ -1002,6 +1082,14 @@ export function readParagraph(p: HTMLElement, batch?: ScanBatch): ParagraphScan 
   if (typeof floatDetails === "string") return floatDetails;
   if (elementFloat !== null && floatDetails !== null) {
     return "leading floated element conflicts with ::first-letter";
+  }
+  if (
+    floatDetails !== null &&
+    runs.some(
+      (run) => run.generatedStart !== undefined || run.generatedEnd !== undefined,
+    )
+  ) {
+    return "generated inline content with a floated ::first-letter";
   }
   const floatIntrusion = elementFloat ?? floatDetails?.intrusion ?? null;
   if (floatDetails !== null && elementFloat === null) {
@@ -1037,6 +1125,7 @@ export function readParagraph(p: HTMLElement, batch?: ScanBatch): ParagraphScan 
   return {
     runs,
     hardBreaks,
+    generated: generatedByElement,
     specs,
     baseSpec,
     contentWidth,

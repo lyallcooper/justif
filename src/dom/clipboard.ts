@@ -132,6 +132,29 @@ function removeVoidJoints(fragment: DocumentFragment): void {
   for (const joint of fragment.querySelectorAll(".justif-joint-void")) joint.remove();
 }
 
+/** Remove pseudo snapshot metadata from semantic inline clones in copied HTML. */
+function removeGeneratedMetadata(fragment: DocumentFragment): void {
+  for (const el of fragment.querySelectorAll<HTMLElement>(
+    ".justif-generated-before,.justif-generated-after," +
+    ".justif-generated-before-none,.justif-generated-after-none",
+  )) {
+    el.classList.remove(
+      "justif-generated-before",
+      "justif-generated-after",
+      "justif-generated-before-none",
+      "justif-generated-after-none",
+    );
+    if (el.classList.length === 0) el.removeAttribute("class");
+    for (let i = el.style.length - 1; i >= 0; i--) {
+      const property = el.style.item(i);
+      if (property.startsWith("--j-b-") || property.startsWith("--j-a-")) {
+        el.style.removeProperty(property);
+      }
+    }
+    if (el.style.length === 0) el.removeAttribute("style");
+  }
+}
+
 /**
  * Clipboard cleanup is a DOCUMENT-level concern, so all controllers share one
  * listener: registering per controller meant a page that re-justifies without
@@ -173,6 +196,7 @@ const onDocumentCopy = (e: ClipboardEvent): void => {
     const frag = range.cloneContents();
     removeCopiedBoundaryJoints(range, frag);
     removeVoidJoints(frag);
+    removeGeneratedMetadata(frag);
     const walker = document.createTreeWalker(frag, NodeFilter.SHOW_TEXT);
     for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
       n.nodeValue = clean(n.nodeValue ?? "");

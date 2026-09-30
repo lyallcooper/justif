@@ -311,6 +311,7 @@ export function createPatchPass(host: PatchHost) {
       state.scan.floatIntrusion?.lines ?? 0,
       elementFloat,
       state.renderedFloat,
+      state.scan.generated,
     );
     state.renderedFloat = pending.renderedFloat;
     return {

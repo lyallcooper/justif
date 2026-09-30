@@ -24,6 +24,7 @@
  */
 
 import { describeError } from "../core/errors.js";
+import { GENERATED_STYLE_PROPERTIES } from "./generated-content.js";
 import { FRAGMENT_WIDTH_TOLERANCE_PX, fragmentBoxesOf } from "./geometry.js";
 import { type AtomicBox, atomicWidthStale } from "./read.js";
 import { endWithoutCollapsibleSpaces } from "./whitespace.js";
@@ -487,6 +488,7 @@ export function measureCorrections(
         lineWidths,
         contentWidth,
         physicalFitLines,
+        generatedOwners,
       } = pending[i]!;
       // A pending whose nodes were detached (the paragraph was re-patched,
       // restored, or replaced since it was queued) is stale: say so before
@@ -518,6 +520,35 @@ export function measureCorrections(
           minWidth: paragraphStyle?.minWidth ?? "auto",
           contain: paragraphStyle?.contain ?? "none",
         });
+        continue;
+      }
+      // A stronger author rule can override the pinned pseudo after the
+      // enhancement marker appears. A changed generated box invalidates the
+      // measured edge, so return the paragraph to native layout.
+      let generatedChanged = false;
+      for (const { clone, snapshots } of generatedOwners) {
+        for (let side = 0; side < 2; side++) {
+          const actual = doc.defaultView!.getComputedStyle(
+            clone,
+            side === 0 ? "::before" : "::after",
+          );
+          const snapshot = snapshots[side]!;
+          if (snapshot === null) {
+            if (actual.content !== "none" && actual.content !== "normal") {
+              generatedChanged = true;
+              break;
+            }
+          } else if (GENERATED_STYLE_PROPERTIES.some(
+            (property, index) => actual.getPropertyValue(property) !== snapshot.style[index],
+          )) {
+            generatedChanged = true;
+            break;
+          }
+        }
+        if (generatedChanged) break;
+      }
+      if (generatedChanged) {
+        outcomes.push({ status: "invalid", reason: "generated content changed after enhancement" });
         continue;
       }
       // An object width is a rigid model input, not DOM/canvas drift. Detect

@@ -22,6 +22,10 @@
  */
 
 import { graphemes } from "../core/cjk.js";
+import {
+  GENERATED_STYLE_PROPERTIES,
+  type GeneratedText,
+} from "./generated-content.js";
 import type { AtomicBox } from "./read.js";
 
 export interface RenderSegment {
@@ -74,6 +78,12 @@ export interface RenderSegment {
   /** Prevent the browser inventing a wrap after a fixed-space segment when
    * the line model kept the following box on this same line. */
   weldEnd?: boolean;
+  /** Suppress a native break between authored generated content and the
+   * adjacent source text. These stay distinct from `weldEnd`: a selected
+   * line break may clear that separator weld, but generated content remains
+   * part of the rigid boundary priced into this segment. */
+  generatedWeldStart?: boolean;
+  generatedWeldEnd?: boolean;
   /** Absolute letter-spacing (author's + letterfit tracking), or null to
    * inherit the author's value untouched (tracking inactive on this line). */
   letterSpacingPx: number | null;
@@ -183,7 +193,7 @@ export interface RenderSegment {
    * segments, and skip the line outright where they cannot.
    */
   transformChangesLength?: boolean;
-  /** Inline padding/border px of cloned ancestors that open/close at this
+  /** Fixed boundary px (decoration and generated content) of ancestors at this
    * segment. Layout width the text rects can't see (it sits on the clone,
    * outside the segment span) — added to the corrective model like the
    * edge-trim widths. */
@@ -347,6 +357,22 @@ const STYLE_ID = "justif-style";
 const WORD_JOINER = "\u2060";
 export const px = (v: number): string => `${Math.round(v * 1000) / 1000}px`;
 
+const generatedRule = (side: "before" | "after"): string =>
+  `.justif-generated-${side}::${side}{` +
+  GENERATED_STYLE_PROPERTIES.map(
+    (property, index) => `${property}:var(--j-${side[0]}-${index})!important`,
+  ).join(";") +
+  "}";
+
+const GENERATED_RESET_RULE =
+  ".justif-generated-before::before,.justif-generated-after::after{" +
+  "display:inline!important;position:static!important;float:none!important;" +
+  "direction:inherit!important;writing-mode:horizontal-tb!important;" +
+  "vertical-align:baseline!important;text-transform:none!important;" +
+  "transform:none!important;scale:none!important;rotate:none!important;" +
+  "translate:none!important;margin:0!important;" +
+  "animation:none!important;transition:none!important}";
+
 const SHEET_TEXT =
   // Emergency-break licences are neutralized on the paragraph too, but
   // Firefox resolves them from the element AT the break point, so the
@@ -356,6 +382,15 @@ const SHEET_TEXT =
   // in those cases; Chromium consults the block container and ignores it.
   ".justif-seg,.justif-hyphen,.justif-break{overflow-wrap:normal;word-break:normal;line-break:auto}" +
   ".justif-seg{white-space:nowrap}" +
+  '.justif-generated-weld-start::before{content:"\u2060";letter-spacing:0!important}' +
+  '.justif-generated-weld-end::after{content:"\u2060";letter-spacing:0!important}' +
+  '.justif-generated-outer-weld::before{content:"\u2060";letter-spacing:0!important}' +
+  "[data-justif]::before,[data-justif]::after{content:none!important}" +
+  ".justif-generated-before-none::before{content:none!important}" +
+  ".justif-generated-after-none::after{content:none!important}" +
+  GENERATED_RESET_RULE +
+  generatedRule("before") +
+  generatedRule("after") +
   '.justif-soft-break::after{content:"\\A";white-space:pre}' +
   // The break space beside a float, written with neither advance nor
   // leading (see RenderSegment.jointFlat). It still breaks: a space is a
@@ -390,7 +425,10 @@ const SHEET_TEXT =
   '.justif-weld-end::after{content:"\u2060"}' +
   '@supports (content:"-" / ""){.justif-hyphen::after{content:"-" / ""}' +
   '.justif-break::after{content:"\u200B" / ""}' +
-  '.justif-weld-end::after{content:"\u2060" / ""}}';
+  '.justif-weld-end::after{content:"\u2060" / ""}' +
+  '.justif-generated-weld-start::before{content:"\u2060" / ""}' +
+  '.justif-generated-weld-end::after{content:"\u2060" / ""}' +
+  '.justif-generated-outer-weld::before{content:"\u2060" / ""}}';
 
 /**
  * Pin rendered text to the CSS font size. iOS Safari's automatic text
@@ -490,6 +528,14 @@ export interface PendingParagraph {
   physicalFitLines: number;
   /** Live deep clone of an authored leading float, when present. */
   renderedFloat: Element | null;
+  /** Reconstructed source for a floated `::first-letter`, wherever its
+   * authored inline ancestry places it. */
+  floatSource: HTMLElement | null;
+  /** Reconstructed pseudo owners checked against the scan before correction. */
+  generatedOwners: readonly {
+    clone: HTMLElement;
+    snapshots: readonly [GeneratedText | null, GeneratedText | null];
+  }[];
 }
 
 
@@ -507,6 +553,10 @@ export function writeParagraph(
    * transitions and image decode, drop listeners the page attached to it,
    * and blur anything focused inside it. */
   previousFloat?: Element | null,
+  generated: ReadonlyMap<
+    Element,
+    readonly [GeneratedText | null, GeneratedText | null]
+  > = new Map(),
 ): PendingParagraph {
   const doc = p.ownerDocument;
   const root = p.getRootNode();
@@ -521,6 +571,10 @@ export function writeParagraph(
   /** Installed only after the fragment itself succeeds, so a failed write
    * never points an atomic model at a detached provisional clone. */
   const atomicBindings: Array<{ box: AtomicBox; clone: Element }> = [];
+  const generatedOwners: Array<{
+    clone: HTMLElement;
+    snapshots: readonly [GeneratedText | null, GeneratedText | null];
+  }> = [];
 
   const fragment = doc.createDocumentFragment();
   let renderedFloat: Element | null = null;
@@ -544,7 +598,7 @@ export function writeParagraph(
   // same source element are contiguous, so a plain stack suffices and
   // elements never need duplicating (ids, tab stops, and accessible names
   // stay singular).
-  const stack: Array<{ src: Element; clone: Element }> = [];
+  const stack: Array<{ src: Element; clone: Element; weldAfter: boolean }> = [];
   const containerAt = (depth: number): ParentNode =>
     depth === 0 ? fragment : stack[depth - 1]!.clone;
 
@@ -554,14 +608,53 @@ export function writeParagraph(
     return i;
   };
 
+  const generatedWeld = (): HTMLElement => {
+    const weld = doc.createElement("span");
+    weld.className = "justif-generated-outer-weld";
+    weld.ariaHidden = "true";
+    return weld;
+  };
+
+  const closeTo = (depth: number): void => {
+    while (stack.length > depth) {
+      const entry = stack.pop()!;
+      if (entry.weldAfter) entry.clone.after(generatedWeld());
+    }
+  };
+
+  const pinGenerated = (
+    clone: HTMLElement,
+    side: "before" | "after",
+    snapshot: GeneratedText | null,
+  ): void => {
+    if (snapshot === null) {
+      clone.classList.add(`justif-generated-${side}-none`);
+      return;
+    }
+    clone.classList.add(`justif-generated-${side}`);
+    for (let index = 0; index < snapshot.style.length; index++) {
+      clone.style.setProperty(`--j-${side[0]}-${index}`, snapshot.style[index]!);
+    }
+  };
+
   const containerFor = (chain: readonly Element[]): ParentNode => {
     let depth = commonDepth(chain);
-    stack.length = depth;
+    closeTo(depth);
     for (; depth < chain.length; depth++) {
       const src = chain[depth]!;
-      const clone = src.cloneNode(false) as Element;
-      containerAt(depth).append(clone);
-      stack.push({ src, clone });
+      const snapshots = generated.get(src);
+      const parent = containerAt(depth);
+      if (snapshots?.[0] !== null && snapshots?.[0] !== undefined) {
+        parent.append(generatedWeld());
+      }
+      const clone = src.cloneNode(false) as HTMLElement;
+      if (snapshots !== undefined) {
+        pinGenerated(clone, "before", snapshots[0]);
+        pinGenerated(clone, "after", snapshots[1]);
+        generatedOwners.push({ clone, snapshots });
+      }
+      parent.append(clone);
+      stack.push({ src, clone, weldAfter: snapshots?.[1] != null });
     }
     return containerAt(chain.length);
   };
@@ -629,7 +722,7 @@ export function writeParagraph(
       // The joint lives at the deepest container common to both sides, so a
       // break inside a link keeps its space/wbr inside the link.
       const depth = Math.min(commonDepth(segment.ancestors), stack.length);
-      stack.length = depth;
+      closeTo(depth);
       const container = containerAt(depth);
       if (segment.joint === "space") {
         const space = doc.createTextNode(" ");
@@ -737,8 +830,12 @@ export function writeParagraph(
       continue;
     }
     const el = doc.createElement("span");
-    el.className =
-      segment.weldEnd === true ? "justif-seg justif-weld-end" : "justif-seg";
+    el.className = [
+      "justif-seg",
+      segment.weldEnd === true ? "justif-weld-end" : "",
+      segment.generatedWeldStart === true ? "justif-generated-weld-start" : "",
+      segment.generatedWeldEnd === true ? "justif-generated-weld-end" : "",
+    ].filter(Boolean).join(" ");
     disableTextAutosizing(el);
     // Always written (even "0px"): an inherited word-spacing from ancestor
     // CSS must not leak into a segment whose computed adjustment is zero.
@@ -798,6 +895,8 @@ export function writeParagraph(
     });
   }
 
+  closeTo(0);
+
   // A trailing <br> terminates the current line but does not create another
   // line box after itself. Consecutive breaks retain all preceding empty
   // entries, so <br><br> still contributes two native-height lines.
@@ -816,5 +915,7 @@ export function writeParagraph(
     contentWidth,
     physicalFitLines,
     renderedFloat,
+    floatSource,
+    generatedOwners,
   };
 }

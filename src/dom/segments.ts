@@ -217,8 +217,8 @@ export function buildRenderSegments(
    * atomic object's junction — see RenderSegment.jointVoid). */
   let pendingJointVoid = false;
 
-  // Inline padding/border (StyledRun.padStartPx/padEndPx) is layout width
-  // the corrective measurement can't see in the text rects — it renders on
+  // Fixed inline boundaries (padding, borders, and generated content) add
+  // layout width the corrective measurement can't see in text rects. It renders on
   // the clone around the run's first/last content. Attribute it to the
   // run's first/last SEGMENT: those share a line with the decorated clone
   // edge by construction (a break next to the element puts the joint
@@ -405,9 +405,12 @@ export function buildRenderSegments(
           : 0;
       const srcRun = scan.runs[run]!;
       let decorPx: number | undefined;
-      if (srcRun.padStartPx !== undefined && !decorStartSeen.has(run)) {
+      let generatedWeldStart = false;
+      const startEdgePx = srcRun.startEdge?.advancePx ?? srcRun.padStartPx;
+      if (startEdgePx !== undefined && !decorStartSeen.has(run)) {
         decorStartSeen.add(run);
-        decorPx = srcRun.padStartPx;
+        decorPx = startEdgePx;
+        generatedWeldStart = srcRun.generatedStart !== undefined;
       }
       segments.push({
         text: flowText,
@@ -426,6 +429,7 @@ export function buildRenderSegments(
         minimumWordSpacingPx,
         allowLetterCorrection: !fixedSpaceBox,
         weldEnd: weldFixedSeparator,
+        generatedWeldStart: generatedWeldStart ? true : undefined,
         letterSpacingPx: ls !== 0 ? spec.letterSpacingPx + ls : null,
         resolvedLetterSpacingPx: spec.letterSpacingPx + ls,
         fontFeatureSettings: trackingFeatureSettings(
@@ -451,7 +455,9 @@ export function buildRenderSegments(
         marginEndOwner: undefined,
       });
       if (floatedPrefix !== undefined) floatStyleEmitted = true;
-      if (srcRun.padEndPx !== undefined) lastSegForRun.set(run, segments.length - 1);
+      if ((srcRun.endEdge?.advancePx ?? srcRun.padEndPx) !== undefined) {
+        lastSegForRun.set(run, segments.length - 1);
+      }
       if (flowText.length > 0) {
         joint = "none";
         jointFlat = false;
@@ -517,9 +523,10 @@ export function buildRenderSegments(
         // whose whole content is one object opens its padding on that
         // object's segment and closes it there too.
         let decorPx: number | undefined;
-        if (srcRun.padStartPx !== undefined && !decorStartSeen.has(it.run)) {
+        const startEdgePx = srcRun.startEdge?.advancePx ?? srcRun.padStartPx;
+        if (startEdgePx !== undefined && !decorStartSeen.has(it.run)) {
           decorStartSeen.add(it.run);
-          decorPx = srcRun.padStartPx;
+          decorPx = startEdgePx;
         }
         segments.push({
           text: "",
@@ -556,7 +563,9 @@ export function buildRenderSegments(
           jointVoid: jointVoid ? true : undefined,
           marginEndOwner: undefined,
         });
-        if (srcRun.padEndPx !== undefined) lastSegForRun.set(it.run, segments.length - 1);
+        if ((srcRun.endEdge?.advancePx ?? srcRun.padEndPx) !== undefined) {
+          lastSegForRun.set(it.run, segments.length - 1);
+        }
         joint = "none";
         jointFlat = false;
         jointVoid = false;
@@ -931,8 +940,11 @@ export function buildRenderSegments(
   // only now that every line is built.
   for (const [runIndex, segIndex] of lastSegForRun) {
     const seg = segments[segIndex]!;
-    seg.decorPx = (seg.decorPx ?? 0) + scan.runs[runIndex]!.padEndPx!;
-    seg.decorEndOwner = scan.runs[runIndex]!.padEndOwner;
+    const run = scan.runs[runIndex]!;
+    const endEdge = run.endEdge;
+    seg.decorPx = (seg.decorPx ?? 0) + (endEdge?.advancePx ?? run.padEndPx!);
+    seg.decorEndOwner = run.endEdgeOwner ?? run.padEndOwner;
+    if (run.generatedEnd !== undefined) seg.generatedWeldEnd = true;
   }
 
   return segments;

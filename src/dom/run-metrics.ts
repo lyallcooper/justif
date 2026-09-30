@@ -13,6 +13,7 @@
  * guarantee exists to catch.
  */
 
+import { textMakesBox } from "../core/items.js";
 import {
   type ExpansionOptions,
   type Measure,
@@ -96,10 +97,61 @@ export function measureFor(specByKey: Map<string, FontSpec>): Measure {
 
 /** The core's RunText input, aligned index-for-index with scan.runs. */
 export function runTexts(scan: ParagraphScan): RunText[] {
+  // Resolve all ancestor contributions at the actual box-bearing run. A
+  // whitespace-only run cannot own an edge, but may carry an ancestor's
+  // padding or painted marker. Both consumers use these same resolved values.
+  for (const side of ["start", "end"] as const) {
+    let advance = 0;
+    let painted = false;
+    let generated = false;
+    let present = false;
+    let owner: Element | undefined;
+    const order = side === "start" ? scan.runs : [...scan.runs].reverse();
+    for (const run of order) {
+      if (side === "start") {
+        run.startEdge = undefined;
+      } else {
+        run.endEdge = undefined;
+        run.endEdgeOwner = undefined;
+      }
+      const pad = side === "start" ? run.padStartPx : run.padEndPx;
+      const hang = side === "start" ? run.boxStartProtrusionPx : run.boxEndProtrusionPx;
+      const content = side === "start" ? run.generatedStart : run.generatedEnd;
+      present ||= pad !== undefined || hang !== undefined || content !== undefined;
+      advance += pad ?? 0;
+      painted ||= hang !== undefined;
+      generated ||= content !== undefined;
+      for (const value of content ?? []) {
+        advance += measureWidth(value.text, scan.specs[value.spec]!) + value.insetPx;
+      }
+      if (owner === undefined) owner = run.padEndOwner;
+      if (run.atomic === undefined && !textMakesBox(run.text)) continue;
+      const fixedBoundary = generated || painted;
+      if (present && fixedBoundary) {
+        // Generated ink occupies the boundary: neither it nor punctuation
+        // behind it is eligible for decoration or character hanging.
+        const edge = {
+          advancePx: advance,
+          protrusionPx: painted && !generated ? advance : 0,
+        };
+        if (side === "start") run.startEdge = edge;
+        else {
+          run.endEdge = edge;
+          run.endEdgeOwner = owner;
+          run.boxEndProtrusionOwner ??= owner;
+        }
+      }
+      advance = 0;
+      painted = generated = present = false;
+      owner = undefined;
+    }
+  }
   return scan.runs.map((r, i) => ({
     text: r.text,
     run: i,
     flowExclusion: r.flowExclusion,
+    startEdge: r.startEdge,
+    endEdge: r.endEdge,
     boxStartProtrusionPx: r.boxStartProtrusionPx,
     boxEndProtrusionPx: r.boxEndProtrusionPx,
     padStartPx: r.padStartPx,
