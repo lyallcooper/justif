@@ -398,8 +398,9 @@ function paragraphContentBox(
 
 /** Check placement after width correction, before displaced text can be
  * mistaken for a change in the float's overlap count. Unrendered boxes do
- * not provide evidence. A half-line tolerance excludes short partial bands
- * whose glyph rect can legitimately start below the float's bottom. */
+ * not provide evidence. Only complete line bands are checked: the text rect
+ * of a partially overlapping band can start below the float's bottom,
+ * depending on the font's ascent and the browser's inline metrics. */
 export function displacedFloatLines(
   p: HTMLElement,
   source: Element,
@@ -419,7 +420,7 @@ export function displacedFloatLines(
   const edge = side === "left" ? rect.right + pxValue(style.marginRight) : rect.left - pxValue(style.marginLeft);
   const tolerance = Math.max(1, pxValue(paragraphStyle.fontSize));
   for (let i = 0; i < Math.min(affected, lines.length); i++) {
-    if (content.top + (i + 0.5) * content.lineHeight >= bottom) break;
+    if (content.top + (i + 1) * content.lineHeight >= bottom) break;
     for (const entry of lines[i]!) {
       if (entry.seg === null || !entry.el.isConnected) continue;
       const line = entry.el.getBoundingClientRect();
