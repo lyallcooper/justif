@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.2 (2026-09-30)
+
 - Fixed lines dropping below a leading float when inline `::before` or
   `::after` text, such as a link arrow, wasn't counted in the line width.
   Fixes #28.
