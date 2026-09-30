@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fixed lines dropping below a leading float when inline `::before` or
+  `::after` text, such as a link arrow, wasn't counted in the line width.
+  Fixes #28.
+
 ## 0.9.1 (2026-08-20)
 
 - Fixed cramped spacing and overflowing lines around an inline formula once the
