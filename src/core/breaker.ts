@@ -9,6 +9,7 @@ import {
   maxEndingStretch,
 } from "./badness.js";
 import { breakEndBox, endingFloorRatio, rpAt } from "./items.js";
+import { lineAdjustmentRatio } from "./line-fit.js";
 import {
   type Box,
   type BreakOptions,
@@ -482,10 +483,7 @@ function attempt(
       const Yfil = yFilB - cumYfil[start]!;
       const Z = zB - cumZ[start]! + (ezB - cumExpZ[start]!);
 
-      let r: number;
-      if (L < W) r = Yfil > 0 ? 0 : Y > 0 ? (W - L) / Y : Infinity;
-      else if (L > W) r = Z > 0 ? (L - W) / -Z : -Infinity;
-      else r = 0;
+      const r = lineAdjustmentRatio(L, W, Y, Z, Yfil > 0);
 
       if (r >= -1) {
         let bad: number;

@@ -1,5 +1,6 @@
 import { maxEndingStretch } from "./badness.js";
 import { breakEndBox, endingFloorRatio, rpAt } from "./items.js";
+import { lineAdjustmentRatio } from "./line-fit.js";
 import {
   type Box,
   type BreakResult,
@@ -132,10 +133,7 @@ export function layoutLines(
     // Yg/Zg are the CONTINUOUS-flex pools: glue plus letterfit tracking
     // (folded together in withSums); Ye/Ze is quantized expansion.
     const delta = W - L;
-    let ratio: number;
-    if (delta > 0) ratio = Yfil > 0 ? 0 : Yg + Ye > 0 ? delta / (Yg + Ye) : Infinity;
-    else if (delta < 0) ratio = Zg + Ze > 0 ? delta / (Zg + Ze) : -Infinity;
-    else ratio = 0;
+    let ratio = lineAdjustmentRatio(L, W, Yg + Ye, Zg + Ze, Yfil > 0);
 
     let fontStretch = 100;
     let glueRatio = 0;
